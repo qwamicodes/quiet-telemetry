@@ -210,7 +210,9 @@ describe('Settings → Storage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '3d' }))
-    await waitFor(() => expect(calls).toContainEqual({ url: '/api/settings/storage', method: 'PUT', body: { retention_ms: 72 * H } }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({ url: '/api/settings/storage', method: 'PUT', body: { retention_ms: 72 * H } }),
+    )
   })
 
   it('warns near the cap; purge needs the word typed', async () => {
@@ -242,7 +244,7 @@ describe('Settings → Storage', () => {
 })
 
 describe('Settings → General', () => {
-  it('saves instance name, timezone and stream direction; bad zones can't be saved', async () => {
+  it('saves instance name, timezone and stream direction; bad zones cannot be saved', async () => {
     const user = userEvent.setup()
     renderAt('/settings')
     const name = await screen.findByLabelText('Instance name')
