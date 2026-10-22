@@ -1,5 +1,5 @@
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Health, LogLine, SearchResponse, SourceInfo } from '@/gen'
@@ -60,7 +60,7 @@ const mk = (id: number, source: string, rid: string, level: LogLine['level'], ms
   }
 }
 const lines = [
-  mk(3, 'worker', 'req_1', 'error', 'settle_dealer_payout failed', { dealer_id: 88 }),
+  mk(3, 'worker', 'req_1', 'error', 'settle_dealer_payout failed', { dealer_id: 88, operation: 'settle_payout' }),
   mk(2, 'api', 'req_2', 'info', 'GET /health'),
   mk(1, 'api', 'req_1', 'warn', 'GET /dealers/88/payouts slow', { duration_ms: 1912 }),
 ]
@@ -204,6 +204,33 @@ describe('search route', () => {
 
     await router.navigate({ to: '/search', search: { q: 'dealer', view: 'lines' } })
     expect(await screen.findByText(/^3 lines$/)).toBeInTheDocument()
+  })
+
+  it('no results suggests similar values seen in the window (05.3)', async () => {
+    const user = userEvent.setup()
+    const router = renderAt('/search?q=nothing_settled&range=1h')
+    expect(await screen.findByText('No lines match in the last 1h')).toBeInTheDocument()
+    const chip = await screen.findByRole('button', { name: 'operation:settle_payout' }, { timeout: 5000 })
+    await user.click(chip)
+    await waitFor(() => expect(router.state.location.search.q).toBe('operation:settle_payout'))
+  })
+
+  it('the time picker shows the whole window; dragging across it picks a range (05.2)', async () => {
+    const user = userEvent.setup()
+    const router = renderAt('/search?q=dealer')
+    await screen.findByText(/3 lines in 2 flows/)
+    await user.click(screen.getByRole('button', { name: /Last 6h/ }))
+    expect(await screen.findByText('24h window')).toBeInTheDocument()
+    const bars = await screen.findAllByTestId('brush-bar')
+    expect(calls.some((c) => c.includes('buckets=48'))).toBe(true)
+    fireEvent.pointerDown(bars[10])
+    fireEvent.pointerEnter(bars[20])
+    // While dragging, the bars under the brush are highlighted.
+    expect(bars[15]).toHaveAttribute('data-on', 'true')
+    expect(bars[25]).not.toHaveAttribute('data-on')
+    fireEvent.pointerUp(bars[20])
+    await waitFor(() => expect(router.state.location.search.from).toBeTypeOf('number'))
+    expect(router.state.location.search.to).toBeTypeOf('number')
   })
 
   it('time range picker (Popover) and source select (Select) open and change the URL', async () => {

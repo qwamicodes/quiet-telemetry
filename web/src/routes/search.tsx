@@ -1,5 +1,5 @@
 import { getRouteApi } from '@tanstack/react-router'
-import { ClockIcon, CornerDownLeftIcon, DownloadIcon, SearchIcon } from 'lucide-react'
+import { ClockIcon, CornerDownLeftIcon, FileDownIcon, SearchIcon, XIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ExportDialog } from '@/components/export-dialog'
 import { Histogram } from '@/components/search/histogram'
@@ -17,6 +17,7 @@ import { fmtClock, fmtCount, fmtWindow } from '@/lib/format'
 import { displayIds, groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
 import { useSearchLines } from '@/lib/search-api'
 import { searchBounds } from '@/lib/search-params'
+import { useSimilarValues } from '@/lib/similar'
 import { useHotkeys } from '@/lib/use-hotkeys'
 
 const route = getRouteApi('/search')
@@ -75,6 +76,10 @@ export function SearchPage() {
     if (!q) inputRef.current?.focus()
   }, [q])
 
+  // Nothing matched: look for look-alike values over the whole window (05.3).
+  const empty = !res.isPending && !res.isError && lines.length === 0
+  const similar = useSimilarValues(text || splitQuery(q).text, search.source, Date.now() - retentionMs, empty)
+
   const rangeLabel = search.from ? 'this range' : `the last ${search.range}`
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 px-8 pt-6 pb-4">
@@ -117,6 +122,8 @@ export function SearchPage() {
           retentionMs={retentionMs}
           onRange={(range) => navigate({ search: (s) => ({ ...s, range, from: undefined, to: undefined }) })}
           onCustom={(from, to) => navigate({ search: (s) => ({ ...s, from, to }) })}
+          q={q}
+          source={search.source}
         />
         <Button className="h-9" onClick={submit}>
           Search
@@ -162,7 +169,7 @@ export function SearchPage() {
           </SelectContent>
         </Select>
         <Button variant="outline" size="sm" onClick={() => setExporting(true)} disabled={!total}>
-          <DownloadIcon />
+          <FileDownIcon />
           Export
         </Button>
       </div>
@@ -202,8 +209,24 @@ export function SearchPage() {
                 }
               >
                 <ClockIcon />
-                Search last 24h, all sources
+                Search last {fmtWindow(retentionMs)}
               </Button>
+            )}
+            {similar.data && similar.data.length > 0 && (
+              <p className="flex flex-wrap items-center justify-center gap-1.5 font-mono text-muted-foreground text-xs">
+                Similar values seen:
+                {similar.data.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setQ(joinQuery([...chips, c], ''))}
+                    className="flex items-center gap-1 border px-1.5 py-0.5 text-foreground hover:border-brand"
+                  >
+                    {c}
+                    <XIcon className="size-3 text-muted-foreground" aria-hidden />
+                  </button>
+                ))}
+              </p>
             )}
           </div>
         </div>
