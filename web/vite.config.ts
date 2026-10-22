@@ -10,6 +10,8 @@ export default defineConfig({
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
+  // One self-hosted UI served from the binary: a single ~210 kB (gzip) bundle is fine.
+  build: { chunkSizeWarningLimit: 800 },
   server: {
     proxy: {
       '/api/stream': { target: server.replace(/^http/, 'ws'), ws: true },
