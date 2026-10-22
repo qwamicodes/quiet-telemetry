@@ -1,7 +1,8 @@
 //! A bounded ring of recent lines per source. Fast, lossy, gone on restart.
 
-use super::{Query, Store};
+use super::{rank_similar, similar_prefix, Query, Store};
 use crate::hub::{Line, SourceKind};
+use crate::normalize::CorrId;
 use crate::search::{
     add_to_histogram, bucket_width, empty_histogram, Cursor, Order, SearchPage, SearchQuery,
 };
@@ -124,6 +125,44 @@ impl Store for MemoryStore {
         }
         page.lines = lines;
         Ok(page)
+    }
+
+    async fn line(&self, id: u64) -> anyhow::Result<Option<Line>> {
+        let rings = self.rings.read().unwrap();
+        Ok(rings.values().find_map(|r| {
+            let r = r.lock().unwrap();
+            // Ids increase within a ring: binary search instead of a scan.
+            r.binary_search_by_key(&id, |l| l.id)
+                .ok()
+                .map(|i| r[i].clone())
+        }))
+    }
+
+    async fn similar_ids(
+        &self,
+        value: &str,
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(CorrId, u64)>> {
+        let Some(prefix) = similar_prefix(value) else {
+            return Ok(Vec::new());
+        };
+        let rings = self.rings.read().unwrap();
+        let mut found = Vec::new();
+        for r in rings.values() {
+            for l in r.lock().unwrap().iter() {
+                if l.ts < since || l.ts > until {
+                    continue;
+                }
+                for i in &l.ids {
+                    if i.value.starts_with(&prefix) {
+                        found.push((i.clone(), l.id));
+                    }
+                }
+            }
+        }
+        Ok(rank_similar(value, found, limit))
     }
 
     async fn expire(&self, cutoff: i64) -> anyhow::Result<u64> {

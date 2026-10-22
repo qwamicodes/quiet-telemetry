@@ -16,8 +16,8 @@ pub use memory::MemoryStore;
 pub use sqlite::{SqliteOptions, SqliteStore};
 
 use crate::hub::{Line, SourceKind};
-use crate::normalize::Level;
-use crate::search::{SearchPage, SearchQuery};
+use crate::normalize::{CorrId, Level};
+use crate::search::{Order, SearchPage, SearchQuery};
 use async_trait::async_trait;
 
 /// What a stream or a search asks for. Shared by every store so the live
@@ -112,6 +112,47 @@ pub trait Store: Send + Sync + 'static {
         Ok(Usage::default())
     }
 
+    /// Every line carrying any of `ids` (any key) with an event time in
+    /// `[since, until]`, oldest first, at most `limit`. This is what flows
+    /// stitch on, so it must answer from the id index, never a scan.
+    async fn with_ids(
+        &self,
+        ids: &[String],
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Line>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let page = self
+            .search(&SearchQuery {
+                ids: ids.to_vec(),
+                since: Some(since),
+                until: Some(until),
+                order: Order::Oldest,
+                limit: limit.max(1),
+                ..Default::default()
+            })
+            .await?;
+        Ok(page.lines)
+    }
+
+    /// One line by its id, wherever it is in the window.
+    async fn line(&self, id: u64) -> anyhow::Result<Option<Line>>;
+
+    /// Ids that look like `value` (same prefix), for "close matches" when an
+    /// id has no lines: `(id, newest line id carrying it)`, at most `limit`.
+    async fn similar_ids(
+        &self,
+        _value: &str,
+        _since: i64,
+        _until: i64,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<(CorrId, u64)>> {
+        Ok(Vec::new())
+    }
+
     /// The newest `limit` lines of a source, unfiltered.
     async fn tail(&self, source: &str, limit: usize) -> anyhow::Result<Vec<Line>> {
         self.query(&Query {
@@ -121,6 +162,46 @@ pub trait Store: Send + Sync + 'static {
         })
         .await
     }
+}
+
+/// The prefix "close matches" share with `value`: all but its last two
+/// characters, and only for ids long enough that a prefix means something.
+pub fn similar_prefix(value: &str) -> Option<String> {
+    let n = value.chars().count();
+    (n >= 6).then(|| value.chars().take(n - 2).collect())
+}
+
+/// Keep the `limit` candidates closest to `value` (edit distance, then the
+/// newest line), never `value` itself.
+pub fn rank_similar(
+    value: &str,
+    mut found: Vec<(CorrId, u64)>,
+    limit: usize,
+) -> Vec<(CorrId, u64)> {
+    found.retain(|(c, _)| c.value != value);
+    found.sort_by(|a, b| {
+        edit_distance(value, &a.0.value)
+            .cmp(&edit_distance(value, &b.0.value))
+            .then(b.1.cmp(&a.1))
+    });
+    found.dedup_by(|a, b| a.0.value == b.0.value);
+    found.truncate(limit);
+    found
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != *cb))
+                .min(prev[j + 1] + 1)
+                .min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
 }
 
 /// What a store remembers across restarts.

@@ -21,9 +21,11 @@
 //! Reads use a small pool of read-only connections inside `spawn_blocking`,
 //! each search in one read transaction so a concurrent drop can't tear it.
 
-use super::{MemoryStore, Query, Restored, Store, StoredSource, Usage};
+use super::{
+    rank_similar, similar_prefix, MemoryStore, Query, Restored, Store, StoredSource, Usage,
+};
 use crate::hub::{Line, SourceKind};
-use crate::normalize::{normalize, Level};
+use crate::normalize::{normalize, CorrId, IdKey, Level};
 use crate::search::{
     add_to_histogram, bucket_width, empty_histogram, Cursor, Order, SearchPage, SearchQuery,
 };
@@ -197,6 +199,93 @@ impl Store for SqliteStore {
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<SearchPage> {
         let q = q.clone();
         self.read(move |c| search_sync(c, &q)).await
+    }
+
+    async fn with_ids(
+        &self,
+        ids: &[String],
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Line>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = ids.to_vec();
+        self.read(move |c| with_ids_sync(c, &ids, since, until, limit))
+            .await
+    }
+
+    async fn line(&self, id: u64) -> anyhow::Result<Option<Line>> {
+        // Not yet committed lines are still in the ring.
+        if let Some(l) = self.ring.line(id).await? {
+            return Ok(Some(l));
+        }
+        self.read(move |c| {
+            let tx = c.transaction()?;
+            let mut hours = partitions_for(&tx, &SearchQuery::default())?;
+            hours.reverse(); // newest first: the line asked for is usually recent
+            for (hour, _) in hours {
+                let found = tx
+                    .prepare_cached(&format!(
+                        "SELECT id, ts, received, source, level, raw FROM {} WHERE id = ?",
+                        t('l', hour)
+                    ))?
+                    .query_row([id as i64], row_to_line)
+                    .optional()?;
+                if found.is_some() {
+                    return Ok(found);
+                }
+            }
+            Ok(None)
+        })
+        .await
+    }
+
+    async fn similar_ids(
+        &self,
+        value: &str,
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(CorrId, u64)>> {
+        let Some(prefix) = similar_prefix(value) else {
+            return Ok(Vec::new());
+        };
+        let value = value.to_string();
+        self.read(move |c| {
+            let tx = c.transaction()?;
+            let q = SearchQuery {
+                since: Some(since),
+                until: Some(until),
+                ..Default::default()
+            };
+            // `value >= prefix AND value < prefix + U+10FFFF` is a range on the index.
+            let hi = format!("{prefix}\u{10FFFF}");
+            let mut found = Vec::new();
+            for (hour, _) in partitions_for(&tx, &q)? {
+                let mut st = tx.prepare_cached(&format!(
+                    "SELECT value, key, MAX(line_id) FROM {} WHERE value >= ? AND value < ?
+                     GROUP BY value, key LIMIT 50",
+                    t('i', hour)
+                ))?;
+                let rows = st.query_map(params![prefix, hi], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (v, key, line_id) = row?;
+                    if let Some(key) = id_key(key) {
+                        found.push((CorrId { key, value: v }, line_id as u64));
+                    }
+                }
+            }
+            Ok(rank_similar(&value, found, limit))
+        })
+        .await
     }
 
     async fn expire(&self, cutoff: i64) -> anyhow::Result<u64> {
@@ -668,6 +757,60 @@ fn row_to_line(r: &rusqlite::Row) -> rusqlite::Result<Line> {
     line.level = level.and_then(Level::from_rank);
     line.flags.retain(|f| f != "ts:collector");
     Ok(Arc::new(line))
+}
+
+fn id_key(n: i64) -> Option<IdKey> {
+    Some(match n {
+        0 => IdKey::RequestId,
+        1 => IdKey::JobId,
+        2 => IdKey::TraceId,
+        3 => IdKey::CorrelationId,
+        _ => return None,
+    })
+}
+
+/// Lines carrying any of `ids`: an index lookup per hour (`i_h.value`), then
+/// rowid fetches. No ORDER BY in SQL, so SQLite never walks the ts index;
+/// the (small) result is sorted here.
+fn with_ids_sync(
+    c: &mut Connection,
+    ids: &[String],
+    since: i64,
+    until: i64,
+    limit: usize,
+) -> anyhow::Result<Vec<Line>> {
+    let tx = c.transaction()?;
+    let q = SearchQuery {
+        since: Some(since),
+        until: Some(until),
+        ..Default::default()
+    };
+    let marks = vec!["?"; ids.len()].join(",");
+    let mut out: Vec<Line> = Vec::new();
+    for (hour, _) in partitions_for(&tx, &q)? {
+        let sql = format!(
+            "SELECT id, ts, received, source, level, raw FROM {l}
+             WHERE id IN (SELECT line_id FROM {i} WHERE value IN ({marks}))
+               AND ts >= ? AND ts <= ? LIMIT ?",
+            l = t('l', hour),
+            i = t('i', hour),
+        );
+        let mut args: Vec<SqlValue> = ids.iter().map(|s| SqlValue::from(s.clone())).collect();
+        args.push(since.into());
+        args.push(until.into());
+        args.push(((limit + 1).saturating_sub(out.len()) as i64).into());
+        let mut st = tx.prepare_cached(&sql)?;
+        let got = st
+            .query_map(params_from_iter(args), row_to_line)?
+            .collect::<Result<Vec<_>, _>>()?;
+        out.extend(got);
+        if out.len() > limit {
+            break;
+        }
+    }
+    out.sort_by_key(|l| (l.ts, l.id));
+    out.truncate(limit);
+    Ok(out)
 }
 
 fn search_sync(c: &mut Connection, q: &SearchQuery) -> anyhow::Result<SearchPage> {
