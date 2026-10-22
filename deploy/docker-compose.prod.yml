@@ -1,0 +1,37 @@
+# Production on Dokploy (deploy.legivent.com). Reference for a Compose app;
+# with a Dokploy Application, release.yml sets the same image by digest.
+# Pin by digest (from the release job summary), never by tag.
+name: quiet-prod
+services:
+  quiet:
+    image: ghcr.io/qwamicodes/quiet-telemetry@sha256:REPLACE_WITH_RELEASE_DIGEST
+    pull_policy: missing
+    restart: unless-stopped
+    environment:
+      QUIET_ADDR: 0.0.0.0:7070
+      QUIET_RING: "10000"
+      QUIET_DRAIN_MS: "3000"
+      QUIET_SHUTDOWN_TIMEOUT_MS: "10000"
+    # No auth until slice 5: publish on loopback only, or route through Dokploy's
+    # Traefik with access control in front.
+    ports: ["127.0.0.1:7070:7070"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Slice 2 (SQLite) will keep its data here.
+      - quiet-prod-data:/data
+    labels:
+      quiet.ignore: "true"
+    healthcheck:
+      test: ["CMD", "/quiet", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits: { memory: 256M }
+        reservations: { memory: 64M }
+
+volumes:
+  quiet-prod-data:

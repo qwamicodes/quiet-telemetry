@@ -1,25 +1,29 @@
-//! The live side: one ring buffer + one broadcast channel per source.
+//! The live side: the source registry and one broadcast channel per source.
 //!
-//! Receivers call [`Hub::publish`]; UI streams call [`Source::subscribe`]
-//! and read the ring for backlog. Storage (SQLite) joins in slice 2.
+//! The [`Pipeline`](crate::pipeline::Pipeline) publishes here after the line
+//! is stored; UI streams call [`Source::subscribe`]. Lines themselves live in
+//! the [`Store`](crate::store::Store), not here.
 
 use crate::normalize::LogLine;
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
+use ts_rs::TS;
 
 pub type Line = Arc<LogLine>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Per-source fan-out buffer. A client that falls further behind gets a `gap` frame.
+const FANOUT: usize = 8192;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceKind {
     Docker,
     Http,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, TS)]
 pub struct SourceMeta {
     /// Containers feeding this source (docker only).
     pub containers: Vec<String>,
@@ -33,20 +37,12 @@ pub struct Source {
     pub name: String,
     pub kind: SourceKind,
     meta: Mutex<SourceMeta>,
-    ring: Mutex<VecDeque<Line>>,
     tx: broadcast::Sender<Line>,
 }
 
 impl Source {
     pub fn subscribe(&self) -> broadcast::Receiver<Line> {
         self.tx.subscribe()
-    }
-
-    /// The newest `limit` lines, oldest first.
-    pub fn tail(&self, limit: usize) -> Vec<Line> {
-        let ring = self.ring.lock().unwrap();
-        let skip = ring.len().saturating_sub(limit);
-        ring.iter().skip(skip).cloned().collect()
     }
 
     pub fn meta(&self) -> SourceMeta {
@@ -56,9 +52,17 @@ impl Source {
     pub fn update_meta(&self, f: impl FnOnce(&mut SourceMeta)) {
         f(&mut self.meta.lock().unwrap());
     }
+
+    pub fn info(&self) -> SourceInfo {
+        SourceInfo {
+            name: self.name.clone(),
+            kind: self.kind,
+            meta: self.meta(),
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SourceInfo {
     pub name: String,
     pub kind: SourceKind,
@@ -66,19 +70,14 @@ pub struct SourceInfo {
     pub meta: SourceMeta,
 }
 
+#[derive(Default)]
 pub struct Hub {
     sources: RwLock<HashMap<String, Arc<Source>>>,
-    next_id: AtomicU64,
-    ring_cap: usize,
 }
 
 impl Hub {
-    pub fn new(ring_cap: usize) -> Arc<Hub> {
-        Arc::new(Hub {
-            sources: RwLock::new(HashMap::new()),
-            next_id: AtomicU64::new(1),
-            ring_cap,
-        })
+    pub fn new() -> Arc<Hub> {
+        Arc::new(Hub::default())
     }
 
     pub fn source(&self, name: &str) -> Option<Arc<Source>> {
@@ -92,12 +91,11 @@ impl Hub {
         let mut map = self.sources.write().unwrap();
         map.entry(name.to_string())
             .or_insert_with(|| {
-                let (tx, _) = broadcast::channel(8192);
+                let (tx, _) = broadcast::channel(FANOUT);
                 Arc::new(Source {
                     name: name.to_string(),
                     kind,
                     meta: Mutex::new(SourceMeta::default()),
-                    ring: Mutex::new(VecDeque::with_capacity(self.ring_cap.min(1024))),
                     tx,
                 })
             })
@@ -110,35 +108,20 @@ impl Hub {
             .read()
             .unwrap()
             .values()
-            .map(|s| SourceInfo {
-                name: s.name.clone(),
-                kind: s.kind,
-                meta: s.meta(),
-            })
+            .map(|s| s.info())
             .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }
 
-    /// Assign an id, keep it in the ring, fan it out. Returns the shared line.
-    pub fn publish(&self, mut line: LogLine, kind: SourceKind) -> Line {
+    /// Count the line on its source and fan it out. No subscribers is fine.
+    pub fn broadcast(&self, line: &Line, kind: SourceKind) {
         let source = self.ensure_source(&line.source, kind);
-        line.id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let line = Arc::new(line);
-        {
-            let mut ring = source.ring.lock().unwrap();
-            if ring.len() >= self.ring_cap {
-                ring.pop_front();
-            }
-            ring.push_back(line.clone());
-        }
         source.update_meta(|m| {
             m.lines += 1;
             m.last_ts = Some(m.last_ts.map_or(line.ts, |t| t.max(line.ts)));
         });
-        // No subscribers is fine.
         let _ = source.tx.send(line.clone());
-        line
     }
 }
 
@@ -147,29 +130,15 @@ mod tests {
     use super::*;
     use crate::normalize::normalize;
 
-    #[test]
-    fn ring_is_bounded_and_ids_monotonic() {
-        let hub = Hub::new(3);
-        for i in 0..5 {
-            hub.publish(
-                normalize(&format!("line {i}"), "api", None, i),
-                SourceKind::Http,
-            );
-        }
-        let s = hub.source("api").unwrap();
-        let tail = s.tail(10);
-        assert_eq!(tail.len(), 3);
-        assert_eq!(tail.iter().map(|l| l.id).collect::<Vec<_>>(), vec![3, 4, 5]);
-        assert_eq!(s.meta().lines, 5);
-        assert_eq!(s.tail(1)[0].msg, "line 4");
-    }
-
     #[tokio::test]
-    async fn subscribers_get_new_lines() {
-        let hub = Hub::new(10);
+    async fn subscribers_get_new_lines_and_meta_counts() {
+        let hub = Hub::new();
         let s = hub.ensure_source("api", SourceKind::Http);
         let mut rx = s.subscribe();
-        hub.publish(normalize("hello", "api", None, 0), SourceKind::Http);
+        let line = Arc::new(normalize("hello", "api", None, 7));
+        hub.broadcast(&line, SourceKind::Http);
         assert_eq!(rx.recv().await.unwrap().msg, "hello");
+        assert_eq!(s.meta().lines, 1);
+        assert_eq!(s.meta().last_ts, Some(7));
     }
 }

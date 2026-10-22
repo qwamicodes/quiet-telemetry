@@ -1,20 +1,14 @@
 name: ci
 on:
-  push: { branches: [main] }
   pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  server:
-    runs-on: ubuntu-latest
-    defaults: { run: { working-directory: server } }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: "clippy, rustfmt" }
-      - uses: Swatinem/rust-cache@v2
-        with: { workspaces: server }
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
   web:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: web } }
@@ -23,5 +17,57 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
       - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with: { name: web-dist, path: web/dist, retention-days: 1 }
+
+  server:
+    needs: web
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: server } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: web-dist, path: web/dist }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: server }
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # Includes ts_bindings_are_fresh (web/src/gen must match the Rust types)
+      # and the embedded-UI test (QUIET_EXPECT_UI=1 fails if web/dist isn't embedded).
+      - run: cargo test
+        env: { QUIET_EXPECT_UI: "1" }
+      - name: generated TS types are committed
+        run: git diff --exit-code -- ../web/src/gen
+
+  image:
+    # Proves the Dockerfile builds; publishing happens in release.yml on main.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: quiet:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: smoke test
+        run: |
+          docker run -d --name quiet-smoke -e QUIET_DOCKER=0 -p 7070:7070 quiet:ci
+          for i in $(seq 1 20); do curl -fs localhost:7070/ready && break; sleep 1; done
+          curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci' --data-binary '{"msg":"hello"}'
+          curl -fs localhost:7070/api/sources/ci/lines | grep -q hello
+          curl -fs localhost:7070/ | grep -q '<div id="root">'
+          for i in $(seq 1 40); do [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ] && break; sleep 1; done
+          docker inspect --format 'health: {{.State.Health.Status}}' quiet-smoke
+          [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ]
+          docker stop quiet-smoke
+          docker logs quiet-smoke 2>&1 | tail -5
