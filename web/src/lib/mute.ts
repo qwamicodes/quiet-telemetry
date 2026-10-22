@@ -87,7 +87,7 @@ export function useMuteRules(): (source: string) => readonly MuteRule[] {
 export function useSearchIncludesMuted(): (source: string) => boolean {
   const data = useSettings().data
   return useMemo(() => {
-    const instance = data?.muted_search.include ?? false
+    const instance = data?.muted_search?.include ?? false
     return (source: string) => data?.sources[source]?.search_include_muted ?? instance
   }, [data])
 }
