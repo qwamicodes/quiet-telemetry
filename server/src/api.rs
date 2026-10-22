@@ -7,6 +7,7 @@
 //! GET  /api/sources/:name/lines?limit=500
 //! GET  /api/stream?source=api&backlog=500&levels=warn,error&q=text%20status:>=400   (WebSocket)
 //! GET  /api/search, /api/export, POST /api/export/token       (see `search_api.rs`)
+//! /api/export/jobs*  server-side preparing of large exports   (see `export_jobs.rs`)
 //! GET  /api/flow, POST /api/flow-summaries                     (see `flow_api.rs`)
 //! GET/POST /api/ingest-tokens, DELETE /api/ingest-tokens/:id   (see `tokens_api.rs`)
 //! /api/auth/*, /api/account*, /api/members*, /api/invites*       (see `auth_api.rs`)
@@ -66,6 +67,8 @@ pub struct AppState {
     pub host: HostInfo,
     /// Open live-stream websockets (Settings → About).
     pub live_clients: Arc<AtomicUsize>,
+    /// Server-side preparing jobs for very large exports (05.7).
+    pub exports: Arc<crate::export_jobs::ExportJobs>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -89,6 +92,7 @@ impl AppState {
             limiter: Arc::new(LoginLimiter::default()),
             host: HostInfo::default(),
             live_clients: Arc::new(AtomicUsize::new(0)),
+            exports: Arc::new(crate::export_jobs::ExportJobs::temp()),
         }
     }
 
@@ -107,6 +111,11 @@ impl AppState {
 
     pub fn with_host(mut self, host: HostInfo) -> Self {
         self.host = host;
+        self
+    }
+
+    pub fn with_exports(mut self, exports: Arc<crate::export_jobs::ExportJobs>) -> Self {
+        self.exports = exports;
         self
     }
 
@@ -132,6 +141,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sources/:name/lines", get(lines))
         .route("/api/stream", get(stream))
         .merge(crate::search_api::routes())
+        .merge(crate::export_jobs::routes())
         .merge(crate::stream_api::routes())
         .merge(crate::lint::routes())
         .merge(crate::flow_api::routes())

@@ -233,6 +233,63 @@ fn file_name(p: &SearchQuery, fmt: ExportFormat, gzip: bool) -> String {
     format!("quiet-{label}-{day}.{ext}")
 }
 
+/// A resolved export: the query (oldest first, whole pages, bounded to the
+/// window), the formatter and the file name. Shared by the streamed export
+/// and the server-side preparing job (`export_jobs.rs`).
+pub(crate) struct Plan {
+    pub q: SearchQuery,
+    pub fmt: Formatter,
+    pub name: String,
+    pub gzip: bool,
+    pub format: ExportFormat,
+}
+
+/// `member` forces PII masking whatever the query says.
+pub(crate) fn plan(
+    s: &AppState,
+    p: SearchParams,
+    e: &ExportParams,
+    member: bool,
+) -> Result<Plan, String> {
+    let mut q = p.to_query(Order::Oldest)?;
+    bound(s, &mut q);
+    q.limit = MAX_PAGE;
+    q.histogram = None;
+    let format = e.format.unwrap_or_default();
+    let gzip = on(&e.gzip);
+    let fmt = Formatter {
+        format,
+        mask: on(&e.mask) || member,
+        raw: on(&e.raw),
+        columns: e
+            .columns
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(String::from)
+            .collect(),
+        rules: Some(s.pipeline.settings().clone()),
+    };
+    let name = file_name(&q, format, gzip);
+    Ok(Plan {
+        q,
+        fmt,
+        name,
+        gzip,
+        format,
+    })
+}
+
+pub(crate) fn content_type(format: ExportFormat, gzip: bool) -> &'static str {
+    if gzip {
+        "application/gzip"
+    } else {
+        format.content_type()
+    }
+}
+
 async fn export(
     State(s): State<AppState>,
     viewer: Option<Extension<Viewer>>,
@@ -269,34 +326,19 @@ async fn export(
         }
     }
 
-    let mut q = match p.to_query(Order::Oldest) {
-        Ok(q) => q,
-        Err(e) => return bad(e),
-    };
-    bound(&s, &mut q);
-    q.limit = MAX_PAGE;
-    q.histogram = None;
-    let format = e.format.unwrap_or_default();
-    let gzip = on(&e.gzip);
     // Members see PII masked (a qx_ token request has no viewer: its query,
     // mask included, was checked when the token was issued).
     let member = viewer.is_some_and(|v| !v.is_owner());
-    let fmt = Formatter {
+    let Plan {
+        mut q,
+        fmt,
+        name,
+        gzip,
         format,
-        mask: on(&e.mask) || member,
-        raw: on(&e.raw),
-        columns: e
-            .columns
-            .as_deref()
-            .unwrap_or("")
-            .split(',')
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(String::from)
-            .collect(),
-        rules: Some(s.pipeline.settings().clone()),
+    } = match plan(&s, p, &e, member) {
+        Ok(p) => p,
+        Err(e) => return bad(e),
     };
-    let name = file_name(&q, format, gzip);
     // Lines appended a moment ago should be in the file.
     if let Err(e) = s.pipeline.store().flush().await {
         return unavailable(e);
@@ -338,11 +380,7 @@ async fn export(
     let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|item| (item, rx))
     }));
-    let content_type = if gzip {
-        "application/gzip"
-    } else {
-        format.content_type()
-    };
+    let content_type = content_type(format, gzip);
     let mut res = Response::new(body);
     let h = res.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));

@@ -51,6 +51,8 @@ fn export_into(dir: &Path) {
     ExportParams::export_all(&cfg).unwrap();
     ExportTokenRequest::export_all(&cfg).unwrap();
     ExportTokenResponse::export_all(&cfg).unwrap();
+    crate::export_jobs::ExportJobRequest::export_all(&cfg).unwrap();
+    crate::export_jobs::ExportJob::export_all(&cfg).unwrap();
     FlowParams::export_all(&cfg).unwrap();
     FlowResponse::export_all(&cfg).unwrap();
     FlowNotFound::export_all(&cfg).unwrap();

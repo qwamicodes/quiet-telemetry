@@ -8,6 +8,7 @@ use crate::accounts::Accounts;
 use crate::api::{self, AppState, HostInfo};
 use crate::auth::{AuthConfig, AuthMode};
 use crate::cli::{ServerArgs, StoreKind};
+use crate::export_jobs::ExportJobs;
 use crate::hub::Hub;
 use crate::pipeline::Pipeline;
 use crate::receiver::{DockerReceiver, DockerStatus, HttpReceiver, IngestConfig, Receiver};
@@ -98,7 +99,12 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     };
 
     let system = pipeline.system().clone();
+    let exports_dir = args.data_dir.join("exports");
+    let exports =
+        Arc::new(tokio::task::spawn_blocking(move || ExportJobs::new(exports_dir)).await?);
+    let export_hold = exports.hold();
     let state = AppState::new(pipeline, docker_status)
+        .with_exports(exports)
         .with_ingest(ingest_tokens.clone(), ingest)
         .with_accounts(accounts.clone(), auth)
         .with_host(HostInfo {
@@ -123,6 +129,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         store.clone(),
         settings.clone(),
         system,
+        export_hold,
         shutdown.clone(),
     ));
     tasks.close();
