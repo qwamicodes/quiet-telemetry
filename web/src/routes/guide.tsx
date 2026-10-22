@@ -12,6 +12,7 @@ import {
   DownloadIcon,
   GaugeIcon,
   HashIcon,
+  InfoIcon,
   KeyboardIcon,
   ListIcon,
   PlugIcon,
@@ -177,7 +178,7 @@ function StepCard({
         {title}
       </h3>
       <div className="min-h-[88px]">{children}</div>
-      <p className="flex-1 text-muted-foreground text-sm leading-relaxed">{body}</p>
+      <p className="flex-1 text-[13px] text-muted-foreground leading-relaxed">{body}</p>
       <div className="text-brand text-sm">{link}</div>
     </section>
   )
@@ -483,8 +484,9 @@ function AgentTab({ stack, setStack }: { stack: StackId; setStack: (s: StackId) 
               </Button>
             </div>
           </div>
-          <p className="border-b px-4 py-2 text-[11px] text-muted-foreground">
-            ⓘ Copied as Markdown. Works in Claude Code, Cursor, Codex or any agent that can read the repo.
+          <p className="flex items-center gap-1.5 border-b px-4 py-2 text-[11px] text-muted-foreground">
+            <InfoIcon className="size-3" aria-hidden /> Copied as Markdown. Works in Claude Code, Cursor, Codex or any
+            agent that can read the repo.
           </p>
           <pre
             className="overflow-x-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-[12px] leading-relaxed"

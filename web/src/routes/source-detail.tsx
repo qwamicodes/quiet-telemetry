@@ -4,6 +4,7 @@ import {
   ArrowLeftIcon,
   CheckIcon,
   ChevronRightIcon,
+  GaugeIcon,
   PauseIcon,
   PencilIcon,
   PlayIcon,
@@ -116,6 +117,11 @@ export function SourceDetailPage() {
           <span className="border border-dashed px-1.5 py-0.5 font-mono text-muted-foreground text-xs">hidden</span>
         )}
         <span className="flex-1" />
+        <Link to="/guide" search={{ tab: 'check', source: name }}>
+          <Button variant="ghost">
+            <GaugeIcon /> Check logs
+          </Button>
+        </Link>
         <Button variant="outline" onClick={() => navigate({ search: { tab: 'settings' }, replace: true })}>
           <PencilIcon /> Edit
         </Button>
