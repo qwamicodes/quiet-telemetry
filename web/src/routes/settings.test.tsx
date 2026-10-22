@@ -184,6 +184,24 @@ beforeEach(() => {
         settings.sources[name] = body
         return json(body)
       }
+      if (url.startsWith('/api/id-coverage')) {
+        const keys = (new URL(url, 'http://x').searchParams.get('keys') ?? '').split(',')
+        const known: Record<string, { coverage: number; sources: string[] }> = {
+          request_id: { coverage: 0.61, sources: ['legivent-api', 'traefik'] },
+          job_id: { coverage: 0.22, sources: ['order-worker'] },
+          trace_id: { coverage: 0.09, sources: ['payments-svc', 'traefik'] },
+          correlation_id: { coverage: 0.001, sources: ['cron-runner'] },
+          'x-request-id': { coverage: 0.3, sources: ['traefik'] },
+        }
+        return json({
+          sampled: 2000,
+          keys: keys.map((key) => ({ key, ...(known[key] ?? { coverage: 0, sources: [] }) })),
+        })
+      }
+      if (url === '/api/settings/flow-ids') {
+        settings.flow_ids = body
+        return json(body)
+      }
       if (url === '/api/storage/purge') return json({ lines: 42, source: body.source ?? null })
       if (url === '/api/about') return json(aboutInfo)
       if (url.startsWith('/api/sources/grouping-preview')) {
@@ -354,7 +372,7 @@ describe('source settings', () => {
     await user.click(within(form).getByRole('button', { name: 'Move job_id up' }))
     await user.click(within(form).getByRole('button', { name: 'Stop counting correlation_id' }))
     await user.type(within(form).getByRole('textbox', { name: 'Mask another field' }), 'customer.address')
-    await user.click(within(form).getByRole('button', { name: /Add/ }))
+    await user.click(within(form).getByRole('button', { name: 'Add' }))
     await user.click(within(form).getByRole('switch', { name: 'Mask user_agent' }))
     await user.click(within(form).getByRole('switch', { name: 'Pause ingest' }))
     await user.click(within(form).getByRole('button', { name: 'Save changes' }))
@@ -548,5 +566,64 @@ describe('Settings → General → Source grouping (07.11)', () => {
     expect(within(section).getByText('set by env')).toBeInTheDocument()
     expect(within(section).getByRole('radio', { name: 'Off' })).toBeChecked()
     expect(within(section).getByRole('radio', { name: 'Auto' })).toHaveAttribute('aria-disabled', 'true')
+  })
+})
+
+describe('Settings → Flow id order (07.8)', () => {
+  it('shows coverage per key, adds a custom field, reorders and saves', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings/flow-id-order')
+    const form = await screen.findByRole('form', { name: 'Flow id order' })
+    expect(await within(form).findByText('61% of lines · legivent-api, traefik')).toBeInTheDocument()
+    expect(within(form).getByText('22% · order-worker')).toBeInTheDocument()
+    expect(within(form).getByText('0.1% · cron-runner')).toBeInTheDocument()
+
+    const field = within(form).getByRole('textbox', { name: 'Add an id field' })
+    await user.type(field, 'x-request-id{Enter}')
+    const list = within(form).getByRole('list', { name: 'Correlation id order' })
+    expect(within(list).getAllByRole('listitem')).toHaveLength(5)
+    expect(await within(form).findByText('30% · traefik')).toBeInTheDocument()
+
+    // Move the custom field up to second place with the keyboard on its handle.
+    const handle = within(form).getByRole('button', { name: 'Drag x-request-id to reorder' })
+    handle.focus()
+    for (let i = 0; i < 3; i++) await user.keyboard('{ArrowUp}')
+    await user.click(within(form).getByRole('button', { name: 'Stop counting correlation_id' }))
+    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        url: '/api/settings/flow-ids',
+        method: 'PUT',
+        body: { order: ['request_id', 'x-request-id', 'job_id', 'trace_id'], match_by: 'value' },
+      }),
+    )
+  })
+
+  it('refuses bad, duplicate and too many custom fields', async () => {
+    settings.flow_ids = {
+      order: ['request_id', 'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6'],
+      match_by: 'value',
+    }
+    const user = userEvent.setup()
+    renderAt('/settings/flow-id-order')
+    const form = await screen.findByRole('form', { name: 'Flow id order' })
+    const field = within(form).getByRole('textbox', { name: 'Add an id field' })
+    const add = within(form).getByRole('button', { name: 'Add id field' })
+    await user.type(field, 'has space')
+    expect(within(form).getByText(/Use letters, digits/)).toBeInTheDocument()
+    expect(add).toBeDisabled()
+    await user.clear(field)
+    await user.type(field, 'f3')
+    expect(within(form).getByText('f3 is already in the order')).toBeInTheDocument()
+    await user.clear(field)
+    await user.type(field, 'f7{Enter}')
+    expect(within(form).getByRole('button', { name: 'Remove f7' })).toBeInTheDocument()
+    await user.type(field, 'f8')
+    expect(within(form).getByText('At most 8 custom id fields')).toBeInTheDocument()
+    expect(add).toBeDisabled()
+    // A built-in name brings the built-in back rather than adding a field.
+    await user.clear(field)
+    await user.type(field, 'job_id{Enter}')
+    expect(within(form).getByText('job_id', { selector: 'span' })).toBeInTheDocument()
   })
 })

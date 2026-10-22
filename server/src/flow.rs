@@ -100,7 +100,7 @@ pub async fn stitch(
         }
         Seed::Line(l) => {
             for i in &l.ids {
-                keyed.insert((i.key, i.value.clone()));
+                keyed.insert((i.key.clone(), i.value.clone()));
                 if seen.insert(i.value.clone()) {
                     frontier.push(i.value.clone());
                 }
@@ -133,7 +133,7 @@ pub async fn stitch(
                 asked.contains(&i.value)
                     && (!limits.by_key
                         || opened_any.as_ref() == Some(&i.value)
-                        || keyed.contains(&(i.key, i.value.clone())))
+                        || keyed.contains(&(i.key.clone(), i.value.clone())))
             });
             if !links {
                 continue;
@@ -143,7 +143,7 @@ pub async fn stitch(
                 break;
             }
             for i in &l.ids {
-                keyed.insert((i.key, i.value.clone()));
+                keyed.insert((i.key.clone(), i.value.clone()));
                 if !seen.contains(&i.value) {
                     if seen.len() >= limits.ids {
                         out.truncated = true;
@@ -171,7 +171,7 @@ pub async fn stitch(
             .iter()
             .flat_map(|l| l.ids.iter())
             .find(|i| i.value == v)
-            .map(|i| i.key);
+            .map(|i| i.key.clone());
         if let Some(key) = key {
             out.ids.push(CorrId { key, value: v });
         }
@@ -501,12 +501,21 @@ fn shared_id(a: &LogLine, b: &LogLine) -> Option<CorrId> {
         IdKey::CorrelationId,
         IdKey::RequestId,
     ];
-    order.iter().find_map(|k| {
-        b.ids
-            .iter()
-            .find(|i| i.key == *k && a.ids.iter().any(|x| x.value == i.value))
-            .cloned()
-    })
+    order
+        .iter()
+        .find_map(|k| {
+            b.ids
+                .iter()
+                .find(|i| i.key == *k && a.ids.iter().any(|x| x.value == i.value))
+                .cloned()
+        })
+        // Custom id fields (Settings → Flow id order) come after the built-ins.
+        .or_else(|| {
+            b.ids
+                .iter()
+                .find(|i| i.key.is_custom() && a.ids.iter().any(|x| x.value == i.value))
+                .cloned()
+        })
 }
 
 /// Shape stitched lines into a flow. `expiry_edge` is the oldest stored line
@@ -656,7 +665,7 @@ pub fn build(st: Stitched, opened: Option<&str>, expiry_edge: Option<i64>) -> Fl
     let mut stitched_by: Vec<IdKey> = Vec::new();
     for i in &st.ids {
         if !stitched_by.contains(&i.key) {
-            stitched_by.push(i.key);
+            stitched_by.push(i.key.clone());
         }
     }
     let opened = opened.and_then(|v| st.ids.iter().find(|i| i.value == v).cloned());
@@ -965,7 +974,11 @@ mod tests {
             .unwrap();
             assert_eq!(ids(&st), vec![1, 2, 3, 4], "{}", store.kind());
             assert!(!st.truncated);
-            let keys: Vec<_> = st.ids.iter().map(|i| (i.key, i.value.as_str())).collect();
+            let keys: Vec<_> = st
+                .ids
+                .iter()
+                .map(|i| (i.key.clone(), i.value.as_str()))
+                .collect();
             assert_eq!(
                 keys,
                 vec![(IdKey::RequestId, "req_1"), (IdKey::JobId, "payout:1")]

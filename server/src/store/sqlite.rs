@@ -301,7 +301,7 @@ impl Store for SqliteStore {
                 let rows = st.query_map(params![prefix, hi], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
+                        r.get::<_, rusqlite::types::Value>(1)?,
                         r.get::<_, i64>(2)?,
                     ))
                 })?;
@@ -612,7 +612,7 @@ impl Writer {
                         t('i', h)
                     ))?;
                     for id in &line.ids {
-                        st.execute(params![id.value, id.key as u8 as i64, line.id as i64])?;
+                        st.execute(params![id.value, id_key_col(&id.key), line.id as i64])?;
                     }
                 }
                 let p = parts.entry(h).or_insert((0, 0, i64::MAX, i64::MIN));
@@ -1081,12 +1081,23 @@ fn row_to_line(r: &rusqlite::Row) -> rusqlite::Result<Line> {
     Ok(Arc::new(line))
 }
 
-fn id_key(n: i64) -> Option<IdKey> {
-    Some(match n {
-        0 => IdKey::RequestId,
-        1 => IdKey::JobId,
-        2 => IdKey::TraceId,
-        3 => IdKey::CorrelationId,
+/// The id index's `key` column: 0–3 for the built-ins, the field name for a
+/// custom key (SQLite keeps a non-numeric string in an INTEGER column as text).
+fn id_key_col(k: &IdKey) -> rusqlite::types::Value {
+    match k.builtin_rank() {
+        Some(n) => rusqlite::types::Value::Integer(n as i64),
+        None => rusqlite::types::Value::Text(k.as_str().to_string()),
+    }
+}
+
+fn id_key(v: rusqlite::types::Value) -> Option<IdKey> {
+    use rusqlite::types::Value as V;
+    Some(match v {
+        V::Integer(0) => IdKey::RequestId,
+        V::Integer(1) => IdKey::JobId,
+        V::Integer(2) => IdKey::TraceId,
+        V::Integer(3) => IdKey::CorrelationId,
+        V::Text(s) if !s.is_empty() => IdKey::Custom(s),
         _ => return None,
     })
 }
@@ -1316,6 +1327,58 @@ mod tests {
 
     fn ids(p: &SearchPage) -> Vec<u64> {
         p.lines.iter().map(|l| l.id).collect()
+    }
+
+    #[tokio::test]
+    // The std lock serialises tests that install the process-wide id policy;
+    // this test runs on its own current-thread runtime, so holding it is fine.
+    #[allow(clippy::await_holding_lock)]
+    async fn id_index_keeps_custom_key_names() {
+        use crate::idpolicy::{self, IdPolicy};
+        let _g = idpolicy::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let src = "sqlite-custom-id-src";
+        let mut p = IdPolicy::default();
+        p.sources.insert(
+            src.into(),
+            vec![IdKey::Custom("ctx.trace".into()), IdKey::RequestId],
+        );
+        idpolicy::install(p);
+        let path = tmp();
+        let s = open(&path);
+        s.append(
+            SourceKind::Http,
+            &[
+                line(
+                    1,
+                    src,
+                    r#"{"msg":"a","ctx":{"trace":"tr_abc1"},"request_id":"r1"}"#,
+                    T0,
+                ),
+                line(2, src, r#"{"msg":"b","ctx":{"trace":"tr_abc1"}}"#, T0 + 5),
+            ],
+        )
+        .await
+        .unwrap();
+        s.flush().await.unwrap();
+        let similar = s.similar_ids("tr_abc", T0 - 1, T0 + 10, 10).await;
+        let stitched = s.with_ids(&["tr_abc1".into()], T0 - 1, T0 + 10, 10).await;
+        idpolicy::install(IdPolicy::default());
+
+        // The index row carries the custom key's name, read back as Custom.
+        let similar = similar.unwrap();
+        assert_eq!(similar.len(), 1);
+        assert_eq!(similar[0].0.key, IdKey::Custom("ctx.trace".into()));
+        assert_eq!(similar[0].0.value, "tr_abc1");
+        assert_eq!(similar[0].1, 2);
+        // And the value stitches both lines through the index.
+        let lines = stitched.unwrap();
+        assert_eq!(lines.iter().map(|l| l.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            lines[1].display_id.as_ref().unwrap().key,
+            IdKey::Custom("ctx.trace".into())
+        );
     }
 
     #[tokio::test]

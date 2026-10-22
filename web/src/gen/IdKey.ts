@@ -2,5 +2,11 @@
 
 /**
  * Canonical correlation-id key. Order is display priority.
+ *
+ * The four built-ins match their usual spellings anywhere in the line (a few
+ * levels deep); a `Custom` key is a field name the user added in Settings →
+ * Flow id order (e.g. `x-request-id`, `ctx.trace`): it matches an exact
+ * top-level key first, then the dotted path. On the wire every key is its
+ * name, so the TypeScript type is `BuiltinIdKey | (string & {})`.
  */
-export type IdKey = "request_id" | "job_id" | "trace_id" | "correlation_id";
+export type IdKey = "request_id" | "job_id" | "trace_id" | "correlation_id" | (string & {});

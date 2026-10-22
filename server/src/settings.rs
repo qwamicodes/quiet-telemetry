@@ -764,18 +764,42 @@ pub struct Masker {
     pub unmasked: Vec<PiiKind>,
 }
 
+/// At most this many custom id fields in one order.
+pub const MAX_CUSTOM_ID_KEYS: usize = 8;
+
 fn check_order(o: &[IdKey]) -> Result<(), SettingsError> {
     if o.is_empty() {
         return invalid("order: keep at least one id key");
     }
-    let mut seen = Vec::new();
+    let mut seen: Vec<&IdKey> = Vec::new();
     for k in o {
-        if seen.contains(k) {
+        if seen.contains(&k) {
             return invalid("order: each key once");
         }
-        seen.push(*k);
+        if let IdKey::Custom(name) = k {
+            if !valid_custom_key(name) {
+                return invalid(
+                    "order: a custom id field is 1–64 characters of letters, digits and . _ - : @, with no empty path segment",
+                );
+            }
+        }
+        seen.push(k);
+    }
+    if o.iter().filter(|k| k.is_custom()).count() > MAX_CUSTOM_ID_KEYS {
+        return invalid("order: at most 8 custom id fields");
     }
     Ok(())
+}
+
+/// A field name or dotted path a custom id key can match: `x-request-id`,
+/// `ctx.trace`, `meta.correlation`. No spaces, no empty segments.
+pub fn valid_custom_key(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '@'))
+        && name.split('.').all(|seg| !seg.is_empty())
 }
 
 /// `local`, `UTC`, or something shaped like an IANA zone. The browser checks

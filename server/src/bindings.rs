@@ -21,7 +21,7 @@ use crate::settings::{
     FlowIdSettings, GeneralSettings, SettingsResponse, SourceSettings, UpdateStorage,
 };
 use crate::settings_api::{PurgeRequest, Purged, SourceActivity, StorageReport};
-use crate::stream_api::{SourceFields, StreamStats};
+use crate::stream_api::{IdCoverageReport, SourceFields, StreamStats};
 use crate::system::SystemStatus;
 use crate::tokens::{CreateIngestToken, CreatedIngestToken, IngestToken, IngestTokensResponse};
 use std::collections::BTreeMap;
@@ -38,6 +38,7 @@ fn export_into(dir: &Path) {
     Frame::export_all(&cfg).unwrap();
     StreamStats::export_all(&cfg).unwrap();
     SourceFields::export_all(&cfg).unwrap();
+    IdCoverageReport::export_all(&cfg).unwrap();
     Health::export_all(&cfg).unwrap();
     About::export_all(&cfg).unwrap();
     GroupingPreview::export_all(&cfg).unwrap();
@@ -94,6 +95,7 @@ fn export_into(dir: &Path) {
     Purged::export_all(&cfg).unwrap();
     SourceActivity::export_all(&cfg).unwrap();
     SystemStatus::export_all(&cfg).unwrap();
+    crate::normalize::BuiltinIdKey::export_all(&cfg).unwrap();
 
     // A barrel so the UI imports from one place.
     let mut names: Vec<String> = std::fs::read_dir(dir)

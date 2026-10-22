@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type {
   Bucket,
+  BuiltinIdKey,
   ChildStep,
   CloseMatch,
   CorrId,
@@ -15,6 +16,7 @@ import type {
   FlowSummariesResponse,
   FlowSummary,
   Health,
+  IdKey,
   IngestInfo,
   IngestToken,
   IngestTokensResponse,
@@ -35,8 +37,19 @@ import type {
  */
 export const level = z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']) satisfies z.ZodType<Level>
 
+/** Built-in correlation-id keys, in the default order. */
+export const BUILTIN_ID_KEYS = [
+  'request_id',
+  'job_id',
+  'trace_id',
+  'correlation_id',
+] as const satisfies readonly BuiltinIdKey[]
+
+/** A built-in key or a custom field name (Settings → Flow id order). */
+export const idKey = z.string().min(1) satisfies z.ZodType<IdKey>
+
 export const corrId = z.object({
-  key: z.enum(['request_id', 'job_id', 'trace_id', 'correlation_id']),
+  key: idKey,
   value: z.string(),
 }) satisfies z.ZodType<CorrId>
 

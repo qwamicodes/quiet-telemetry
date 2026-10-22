@@ -2,6 +2,7 @@
 //!
 //! GET /api/stream/stats?source=&q=&window=        level chips, volume histogram, totals
 //! GET /api/sources/:name/fields?sample=2000       fields detected, flow ids, malformed lines
+//! GET /api/id-coverage?keys=a,b&sample=2000       how often each id key appears, all sources
 //!
 //! Stats are counted in the store (SQL `GROUP BY` for SQLite), never from the
 //! client's buffer, so the chips say how many lines the window really holds.
@@ -25,6 +26,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/stream/stats", get(stats))
         .route("/api/sources/:name/fields", get(fields))
+        .route("/api/id-coverage", get(id_coverage))
 }
 
 /// The stream histogram covers the last hour in one-minute bars.
@@ -257,7 +259,9 @@ pub fn detect(lines: &[Line]) -> (Vec<DetectedField>, Vec<IdCoverage>, u64) {
     for (i, l) in lines.iter().enumerate() {
         for id in &l.ids {
             let shown = l.display_id.as_ref().is_some_and(|d| d.key == id.key);
-            let e = ids.entry(format!("{:?}", id.key)).or_insert((id.key, 0, 0));
+            let e = ids
+                .entry(id.key.to_string())
+                .or_insert((id.key.clone(), 0, 0));
             e.1 += 1;
             if shown {
                 e.2 += 1;
@@ -392,11 +396,146 @@ async fn fields(
     .into_response()
 }
 
+// ---- id coverage (Settings → Flow id order) ----------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct IdCoverageParams {
+    /// Comma-separated keys; built-in names or custom field names / dotted paths.
+    pub keys: Option<String>,
+    pub sample: Option<usize>,
+}
+
+/// How often one id key (built-in or custom) appears in recent lines, whatever
+/// the current order says, so a field can be judged before it is added.
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+pub struct KeyCoverage {
+    pub key: IdKey,
+    /// Share of sampled lines carrying it, 0–1.
+    pub coverage: f64,
+    /// Sources it was seen on, most lines first (at most 5).
+    pub sources: Vec<String>,
+}
+
+/// `GET /api/id-coverage`.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct IdCoverageReport {
+    /// Lines looked at (newest first across every source).
+    pub sampled: u64,
+    pub keys: Vec<KeyCoverage>,
+}
+
+/// Fold sampled lines into per-key coverage.
+pub fn key_coverage(lines: &[Line], keys: &[IdKey]) -> Vec<KeyCoverage> {
+    let n = lines.len().max(1) as f64;
+    keys.iter()
+        .map(|k| {
+            let mut hits = 0u64;
+            let mut by: HashMap<&str, u64> = HashMap::new();
+            for l in lines {
+                let Some(Value::Object(m)) = &l.fields else {
+                    continue;
+                };
+                if crate::normalize::id_value(m, k).is_some() {
+                    hits += 1;
+                    *by.entry(l.source.as_str()).or_default() += 1;
+                }
+            }
+            let mut sources: Vec<(&str, u64)> = by.into_iter().collect();
+            sources.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            KeyCoverage {
+                key: k.clone(),
+                coverage: hits as f64 / n,
+                sources: sources
+                    .into_iter()
+                    .take(5)
+                    .map(|(s, _)| s.to_string())
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+async fn id_coverage(State(s): State<AppState>, Query(p): Query<IdCoverageParams>) -> Response {
+    let mut keys: Vec<IdKey> = match p.keys.as_deref() {
+        Some(k) => k
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(IdKey::from_name)
+            .collect(),
+        None => crate::idpolicy::ALL.to_vec(),
+    };
+    keys.dedup();
+    if keys.len() > 32
+        || keys
+            .iter()
+            .any(|k| k.is_custom() && !crate::settings::valid_custom_key(k.as_str()))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "keys: up to 32 id keys or field names" })),
+        )
+            .into_response();
+    }
+    let store = s.pipeline.store();
+    let sample = p.sample.unwrap_or(2000).clamp(1, 10_000);
+    let until = chrono::Utc::now().timestamp_millis();
+    let since = until - s.retention_ms();
+    let _ = store.flush().await;
+    let page = match store
+        .search(&SearchQuery {
+            since: Some(since),
+            until: Some(until),
+            limit: sample.min(crate::search::MAX_PAGE),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => return unavailable(e),
+    };
+    Json(IdCoverageReport {
+        sampled: page.lines.len() as u64,
+        keys: key_coverage(&page.lines, &keys),
+    })
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::normalize::normalize;
     use std::sync::Arc;
+
+    #[test]
+    fn key_coverage_counts_builtin_and_custom_keys_per_source() {
+        let mk = |src: &str, raw: &str| Arc::new(normalize(raw, src, None, 0));
+        let lines: Vec<Line> = vec![
+            mk("api", r#"{"msg":"a","requestId":"r1","x-edge":"e1"}"#),
+            mk("api", r#"{"msg":"b","request_id":"r2"}"#),
+            mk(
+                "worker",
+                r#"{"msg":"c","job":{"data":{"request_id":"r1"}},"ctx":{"trace":"t"}}"#,
+            ),
+            mk("edge", "not json"),
+        ];
+        let keys = [
+            IdKey::RequestId,
+            IdKey::Custom("x-edge".into()),
+            IdKey::Custom("ctx.trace".into()),
+            IdKey::JobId,
+        ];
+        let c = key_coverage(&lines, &keys);
+        assert_eq!(c[0].coverage, 0.75);
+        assert_eq!(c[0].sources, vec!["api", "worker"]);
+        assert_eq!(
+            (c[1].coverage, c[1].sources.clone()),
+            (0.25, vec!["api".to_string()])
+        );
+        assert_eq!(c[2].sources, vec!["worker"]);
+        assert_eq!(c[3].coverage, 0.0);
+        assert!(c[3].sources.is_empty());
+    }
 
     #[test]
     fn detects_fields_ids_and_malformed() {

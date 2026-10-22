@@ -1,14 +1,17 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 import type {
+  BuiltinIdKey,
   DiskStatus,
   FlowIdSettings,
   GeneralSettings,
   GroupingPreview,
   GroupingSettings,
   HourUsage,
+  IdCoverageReport,
   IngestHealth,
   Issue,
+  KeyCoverage,
   PausedSource,
   PiiKind,
   Purged,
@@ -27,12 +30,28 @@ import type {
 } from '@/gen'
 import { fetchJson, sendJson } from '@/lib/api'
 import { AUTH_KEY } from '@/lib/auth-api'
-import { dockerStatus, level } from '@/lib/schemas'
+import { BUILTIN_ID_KEYS, dockerStatus, idKey, level } from '@/lib/schemas'
 
 // ---- schemas (each satisfies its generated type) ----------------------------
 
-export const idKey = z.enum(['request_id', 'job_id', 'trace_id', 'correlation_id'])
-export const ID_KEYS = idKey.options
+export { idKey }
+export const ID_KEYS: BuiltinIdKey[] = [...BUILTIN_ID_KEYS]
+/** At most this many custom id fields per order (the server checks too). */
+export const MAX_CUSTOM_ID_KEYS = 8
+export const isBuiltinIdKey = (k: string): k is BuiltinIdKey => (BUILTIN_ID_KEYS as readonly string[]).includes(k)
+/** Same rule as the server: letters, digits and . _ - : @, no empty path segment, ≤ 64. */
+export const validCustomIdKey = (k: string) =>
+  k.length > 0 && k.length <= 64 && /^[A-Za-z0-9._\-:@]+$/.test(k) && k.split('.').every((seg) => seg.length > 0)
+
+export const keyCoverage = z.object({
+  key: idKey,
+  coverage: z.number(),
+  sources: z.array(z.string()),
+}) satisfies z.ZodType<KeyCoverage>
+export const idCoverageReport = z.object({
+  sampled: z.number(),
+  keys: z.array(keyCoverage),
+}) satisfies z.ZodType<IdCoverageReport>
 export const piiKind = z.enum(['email', 'phone', 'name', 'ip', 'user_agent']) satisfies z.ZodType<PiiKind>
 export const PII_KINDS = piiKind.options
 
@@ -310,6 +329,19 @@ export function useSaveStorage() {
   return useMutation({
     mutationFn: (u: UpdateStorage) => fetchJson('/api/settings/storage', storageSettings, put(u)),
     onSuccess: () => refresh([['storage'], ['health'], ['system']]),
+  })
+}
+
+/** How often each key (built-in or custom) appears in recent lines across every source. */
+export function useIdCoverage(keys: string[]) {
+  const list = [...keys].sort().join(',')
+  return useQuery({
+    queryKey: ['id-coverage', list],
+    queryFn: ({ signal }) =>
+      fetchJson(`/api/id-coverage?${new URLSearchParams({ keys: list })}`, idCoverageReport, { signal }),
+    enabled: list.length > 0,
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
   })
 }
 
