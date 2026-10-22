@@ -22,8 +22,8 @@
 //! each search in one read transaction so a concurrent drop can't tear it.
 
 use super::{
-    rank_similar, similar_prefix, HourUsage, MemoryStore, Query, Restored, SourceUsage,
-    StorageUsage, Store, StoreHealth, StoredSource, Usage,
+    rank_similar, similar_prefix, HistSpec, HourUsage, LevelCounts, MemoryStore, Query, Restored,
+    SourceUsage, StorageUsage, Store, StoreHealth, StoredSource, Usage,
 };
 use crate::hub::{Line, SourceKind};
 use crate::normalize::{normalize, CorrId, IdKey, Level};
@@ -221,6 +221,15 @@ impl Store for SqliteStore {
         self.read(move |c| search_sync(c, &q)).await
     }
 
+    async fn level_counts(
+        &self,
+        q: &SearchQuery,
+        hist: Option<HistSpec>,
+    ) -> anyhow::Result<LevelCounts> {
+        let q = q.clone();
+        self.read(move |c| level_counts_sync(c, &q, hist)).await
+    }
+
     async fn with_ids(
         &self,
         ids: &[String],
@@ -292,7 +301,7 @@ impl Store for SqliteStore {
                 let rows = st.query_map(params![prefix, hi], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
+                        r.get::<_, rusqlite::types::Value>(1)?,
                         r.get::<_, i64>(2)?,
                     ))
                 })?;
@@ -603,7 +612,7 @@ impl Writer {
                         t('i', h)
                     ))?;
                     for id in &line.ids {
-                        st.execute(params![id.value, id.key as u8 as i64, line.id as i64])?;
+                        st.execute(params![id.value, id_key_col(&id.key), line.id as i64])?;
                     }
                 }
                 let p = parts.entry(h).or_insert((0, 0, i64::MAX, i64::MIN));
@@ -830,6 +839,66 @@ fn partitions_for(c: &Connection, q: &SearchQuery) -> anyhow::Result<Vec<(i64, i
     Ok(v)
 }
 
+/// Per-level counts in SQL (`GROUP BY`), so a day of lines never leaves SQLite.
+fn level_counts_sync(
+    c: &mut Connection,
+    q: &SearchQuery,
+    hist: Option<HistSpec>,
+) -> anyhow::Result<LevelCounts> {
+    let tx = c.transaction()?;
+    let mut out = LevelCounts::default();
+    if let Some((since, w, n)) = hist {
+        out.histogram = empty_histogram(since, w, n);
+    }
+    for (hour, _) in partitions_for(&tx, q)? {
+        let mut sql = format!("SELECT level, count(*) FROM {} WHERE 1", t('l', hour));
+        let mut args = Vec::new();
+        filters(q, hour, &mut sql, &mut args);
+        sql.push_str(" GROUP BY level");
+        let mut st = tx.prepare(&sql)?;
+        let mut rows = st.query(params_from_iter(args))?;
+        while let Some(r) = rows.next()? {
+            let level: Option<i64> = r.get(0)?;
+            let n: i64 = r.get(1)?;
+            out.by_rank[level.and_then(Level::from_rank).map_or(6, |l| l as usize)] += n as u64;
+        }
+        if let Some((since, w, n)) = hist {
+            let (lo, hi) = (hour * HOUR - MAX_SKEW, (hour + 1) * HOUR + MAX_SKEW);
+            let end = since + w * n as i64;
+            if hi <= since || lo >= end {
+                continue;
+            }
+            let mut sql = format!(
+                "SELECT (ts - ?) / ?, level, count(*) FROM {} WHERE ts >= ? AND ts < ?",
+                t('l', hour)
+            );
+            let mut args: Vec<SqlValue> = vec![since.into(), w.into(), since.into(), end.into()];
+            filters(q, hour, &mut sql, &mut args);
+            sql.push_str(" GROUP BY 1, 2");
+            let mut st = tx.prepare(&sql)?;
+            let mut rows = st.query(params_from_iter(args))?;
+            while let Some(r) = rows.next()? {
+                let i: i64 = r.get(0)?;
+                let level: Option<i64> = r.get(1)?;
+                let k: i64 = r.get(2)?;
+                let Some(b) = out.histogram.get_mut(i.max(0) as usize) else {
+                    continue;
+                };
+                b.count += k as u64;
+                match level.and_then(Level::from_rank) {
+                    Some(Level::Trace | Level::Debug) => b.debug += k as u64,
+                    Some(Level::Info) => b.info += k as u64,
+                    Some(Level::Warn) => b.warn += k as u64,
+                    Some(Level::Error | Level::Fatal) => b.error += k as u64,
+                    None => {}
+                }
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(out)
+}
+
 /// The WHERE clause shared by the page and the histogram, minus the cursor.
 fn filters(q: &SearchQuery, hour: i64, sql: &mut String, args: &mut Vec<SqlValue>) {
     if let Some(s) = q.since {
@@ -850,6 +919,18 @@ fn filters(q: &SearchQuery, hour: i64, sql: &mut String, args: &mut Vec<SqlValue
     if let Some(l) = q.min_level {
         sql.push_str(" AND level >= ?");
         args.push((l as u8 as i64).into());
+    }
+    if !q.levels.is_empty() {
+        let ranks: Vec<i64> = q
+            .levels
+            .iter()
+            .flat_map(|l| crate::search::chip_ranks(*l).iter().copied())
+            .collect();
+        sql.push_str(&format!(
+            " AND level IN ({})",
+            vec!["?"; ranks.len()].join(",")
+        ));
+        args.extend(ranks.into_iter().map(SqlValue::from));
     }
     if !q.ids.is_empty() {
         sql.push_str(&format!(
@@ -914,12 +995,47 @@ fn filters(q: &SearchQuery, hour: i64, sql: &mut String, args: &mut Vec<SqlValue
         };
         // CASE, not AND: json_extract raises on a plain-text line, and only
         // CASE is guaranteed not to evaluate it.
+        use crate::search::Op;
+        let (cast, cmp, arg): (&str, &str, SqlValue) = match f.op {
+            Op::Eq => ("TEXT", "= ?", f.value.clone().into()),
+            Op::Prefix => (
+                "TEXT",
+                "LIKE ? ESCAPE '\\'",
+                format!(
+                    "{}%",
+                    f.value
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                )
+                .into(),
+            ),
+            op => {
+                let n: f64 = f.value.parse().unwrap_or(f64::NAN);
+                let c = match op {
+                    Op::Gt => "> ?",
+                    Op::Ge => ">= ?",
+                    Op::Lt => "< ?",
+                    _ => "<= ?",
+                };
+                ("REAL", c, n.into())
+            }
+        };
+        // Numbers only compare when the field holds one (a text "abc" is not 0).
+        let numeric = if cast == "REAL" {
+            format!(" AND typeof({value}) IN ('integer','real')")
+        } else {
+            String::new()
+        };
         sql.push_str(&format!(
-            " AND {}COALESCE(CASE WHEN json_valid(raw) THEN CAST({value} AS TEXT) END = ?, 0)",
+            " AND {}COALESCE(CASE WHEN json_valid(raw){numeric} THEN CAST({value} AS {cast}) {cmp} END, 0)",
             if f.negate { "NOT " } else { "" }
         ));
-        args.extend(paths.into_iter().map(SqlValue::from));
-        args.push(f.value.clone().into());
+        args.extend(paths.iter().cloned().map(SqlValue::from));
+        if cast == "REAL" {
+            args.extend(paths.into_iter().map(SqlValue::from));
+        }
+        args.push(arg);
     }
 }
 
@@ -965,12 +1081,23 @@ fn row_to_line(r: &rusqlite::Row) -> rusqlite::Result<Line> {
     Ok(Arc::new(line))
 }
 
-fn id_key(n: i64) -> Option<IdKey> {
-    Some(match n {
-        0 => IdKey::RequestId,
-        1 => IdKey::JobId,
-        2 => IdKey::TraceId,
-        3 => IdKey::CorrelationId,
+/// The id index's `key` column: 0–3 for the built-ins, the field name for a
+/// custom key (SQLite keeps a non-numeric string in an INTEGER column as text).
+fn id_key_col(k: &IdKey) -> rusqlite::types::Value {
+    match k.builtin_rank() {
+        Some(n) => rusqlite::types::Value::Integer(n as i64),
+        None => rusqlite::types::Value::Text(k.as_str().to_string()),
+    }
+}
+
+fn id_key(v: rusqlite::types::Value) -> Option<IdKey> {
+    use rusqlite::types::Value as V;
+    Some(match v {
+        V::Integer(0) => IdKey::RequestId,
+        V::Integer(1) => IdKey::JobId,
+        V::Integer(2) => IdKey::TraceId,
+        V::Integer(3) => IdKey::CorrelationId,
+        V::Text(s) if !s.is_empty() => IdKey::Custom(s),
         _ => return None,
     })
 }
@@ -1200,6 +1327,58 @@ mod tests {
 
     fn ids(p: &SearchPage) -> Vec<u64> {
         p.lines.iter().map(|l| l.id).collect()
+    }
+
+    #[tokio::test]
+    // The std lock serialises tests that install the process-wide id policy;
+    // this test runs on its own current-thread runtime, so holding it is fine.
+    #[allow(clippy::await_holding_lock)]
+    async fn id_index_keeps_custom_key_names() {
+        use crate::idpolicy::{self, IdPolicy};
+        let _g = idpolicy::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let src = "sqlite-custom-id-src";
+        let mut p = IdPolicy::default();
+        p.sources.insert(
+            src.into(),
+            vec![IdKey::Custom("ctx.trace".into()), IdKey::RequestId],
+        );
+        idpolicy::install(p);
+        let path = tmp();
+        let s = open(&path);
+        s.append(
+            SourceKind::Http,
+            &[
+                line(
+                    1,
+                    src,
+                    r#"{"msg":"a","ctx":{"trace":"tr_abc1"},"request_id":"r1"}"#,
+                    T0,
+                ),
+                line(2, src, r#"{"msg":"b","ctx":{"trace":"tr_abc1"}}"#, T0 + 5),
+            ],
+        )
+        .await
+        .unwrap();
+        s.flush().await.unwrap();
+        let similar = s.similar_ids("tr_abc", T0 - 1, T0 + 10, 10).await;
+        let stitched = s.with_ids(&["tr_abc1".into()], T0 - 1, T0 + 10, 10).await;
+        idpolicy::install(IdPolicy::default());
+
+        // The index row carries the custom key's name, read back as Custom.
+        let similar = similar.unwrap();
+        assert_eq!(similar.len(), 1);
+        assert_eq!(similar[0].0.key, IdKey::Custom("ctx.trace".into()));
+        assert_eq!(similar[0].0.value, "tr_abc1");
+        assert_eq!(similar[0].1, 2);
+        // And the value stitches both lines through the index.
+        let lines = stitched.unwrap();
+        assert_eq!(lines.iter().map(|l| l.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            lines[1].display_id.as_ref().unwrap().key,
+            IdKey::Custom("ctx.trace".into())
+        );
     }
 
     #[tokio::test]

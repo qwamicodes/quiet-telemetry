@@ -1,17 +1,24 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 import type {
+  BuiltinIdKey,
   DiskStatus,
   FlowIdSettings,
   GeneralSettings,
+  GroupingPreview,
+  GroupingSettings,
   HourUsage,
+  IdCoverageReport,
   IngestHealth,
   Issue,
+  KeyCoverage,
   PausedSource,
   PiiKind,
   Purged,
   PurgeRequest,
   Rejection,
+  RemovedSource,
+  RemoveSource,
   SettingsResponse,
   SourceActivity,
   SourceSettings,
@@ -20,16 +27,33 @@ import type {
   StorageSettings,
   StoreStatus,
   SystemStatus,
+  UpdateGrouping,
   UpdateStorage,
 } from '@/gen'
 import { fetchJson, sendJson } from '@/lib/api'
 import { AUTH_KEY } from '@/lib/auth-api'
-import { dockerStatus, level } from '@/lib/schemas'
+import { BUILTIN_ID_KEYS, dockerStatus, idKey, ingestToken, level } from '@/lib/schemas'
 
 // ---- schemas (each satisfies its generated type) ----------------------------
 
-export const idKey = z.enum(['request_id', 'job_id', 'trace_id', 'correlation_id'])
-export const ID_KEYS = idKey.options
+export { idKey }
+export const ID_KEYS: BuiltinIdKey[] = [...BUILTIN_ID_KEYS]
+/** At most this many custom id fields per order (the server checks too). */
+export const MAX_CUSTOM_ID_KEYS = 8
+export const isBuiltinIdKey = (k: string): k is BuiltinIdKey => (BUILTIN_ID_KEYS as readonly string[]).includes(k)
+/** Same rule as the server: letters, digits and . _ - : @, no empty path segment, ≤ 64. */
+export const validCustomIdKey = (k: string) =>
+  k.length > 0 && k.length <= 64 && /^[A-Za-z0-9._\-:@]+$/.test(k) && k.split('.').every((seg) => seg.length > 0)
+
+export const keyCoverage = z.object({
+  key: idKey,
+  coverage: z.number(),
+  sources: z.array(z.string()),
+}) satisfies z.ZodType<KeyCoverage>
+export const idCoverageReport = z.object({
+  sampled: z.number(),
+  keys: z.array(keyCoverage),
+}) satisfies z.ZodType<IdCoverageReport>
 export const piiKind = z.enum(['email', 'phone', 'name', 'ip', 'user_agent']) satisfies z.ZodType<PiiKind>
 export const PII_KINDS = piiKind.options
 
@@ -39,6 +63,11 @@ export const generalSettings = z.object({
   instance_name: z.string(),
   stream_direction: z.enum(['bottom', 'top']),
   timezone: z.string(),
+  public_url: z.string().nullable().catch(null),
+  timestamps: z.enum(['seconds', 'millis', 'relative']).catch('millis'),
+  max_line_bytes: z.number().catch(65_536),
+  keep_non_json: z.boolean().catch(true),
+  check_updates: z.boolean().catch(false),
 }) satisfies z.ZodType<GeneralSettings>
 
 export const storageSettings = z.object({
@@ -65,11 +94,28 @@ export const sourceSettings = z.object({
   default_level: level.nullable(),
   mask_fields: z.array(z.string()),
   unmasked: z.array(piiKind),
+  muted: z.array(z.object({ field: z.string().nullable(), value: z.string() })).catch([]),
 }) satisfies z.ZodType<SourceSettings>
+
+export const groupMode = z.enum(['auto', 'label', 'off'])
+export const groupingSettings = z.object({
+  mode: groupMode,
+  label: z.string(),
+  origin: z.enum(['setting', 'flag', 'default']),
+  locked: z.boolean(),
+}) satisfies z.ZodType<GroupingSettings>
+const groupKind = z.enum(['compose', 'stack', 'custom', 'standalone', 'ingest'])
+export const groupingPreview = z.object({
+  groups: z.array(z.object({ name: z.string(), kind: groupKind, sources: z.array(z.string()) })),
+  found: z.number(),
+  docker: z.number(),
+  total: z.number(),
+}) satisfies z.ZodType<GroupingPreview>
 
 export const settingsResponse = z.object({
   general: generalSettings,
   storage: storageSettings,
+  grouping: groupingSettings.catch({ mode: 'auto', label: 'quiet.group', origin: 'default', locked: false }),
   flow_ids: flowIdSettings,
   sources: z.record(z.string(), sourceSettings),
 }) satisfies z.ZodType<SettingsResponse>
@@ -212,6 +258,7 @@ export const DEFAULT_SOURCE_SETTINGS: SourceSettings = {
   default_level: null,
   mask_fields: [],
   unmasked: [],
+  muted: [],
 }
 
 export function useSourceSettings(name: string | null): SourceSettings {
@@ -245,11 +292,60 @@ export function useSaveGeneral() {
   })
 }
 
+export function useSaveGrouping() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (g: UpdateGrouping | null) => fetchJson('/api/settings/grouping', groupingSettings, put(g)),
+    onSuccess: () => refresh([['sources']]),
+  })
+}
+
+/** How sources would group with a draft mode / label (Settings → General preview). */
+export function useGroupingPreview(mode: string, label: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['grouping-preview', mode, label],
+    queryFn: ({ signal }) =>
+      fetchJson(`/api/sources/grouping-preview?${new URLSearchParams({ mode, label })}`, groupingPreview, { signal }),
+    enabled,
+    placeholderData: (prev) => prev,
+  })
+}
+
+/** Ignore several sources at once: pause ingest and hide them (each stays reversible in its settings). */
+export function useIgnoreSources() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: async (items: { name: string; settings: SourceSettings }[]) => {
+      for (const { name, settings } of items) {
+        await fetchJson(
+          `/api/settings/sources/${encodeURIComponent(name)}`,
+          sourceSettings,
+          put({ ...settings, paused: true, hidden: true }),
+        )
+      }
+    },
+    onSuccess: () => refresh([['sources'], ['storage']]),
+  })
+}
+
 export function useSaveStorage() {
   const refresh = useRefresh()
   return useMutation({
     mutationFn: (u: UpdateStorage) => fetchJson('/api/settings/storage', storageSettings, put(u)),
     onSuccess: () => refresh([['storage'], ['health'], ['system']]),
+  })
+}
+
+/** How often each key (built-in or custom) appears in recent lines across every source. */
+export function useIdCoverage(keys: string[]) {
+  const list = [...keys].sort().join(',')
+  return useQuery({
+    queryKey: ['id-coverage', list],
+    queryFn: ({ signal }) =>
+      fetchJson(`/api/id-coverage?${new URLSearchParams({ keys: list })}`, idCoverageReport, { signal }),
+    enabled: list.length > 0,
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
   })
 }
 
@@ -275,6 +371,25 @@ export function useResetSource(name: string) {
   return useMutation({
     mutationFn: () => sendJson(`/api/settings/sources/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     onSuccess: () => refresh([['sources']]),
+  })
+}
+
+export const removedSource = z.object({
+  lines: z.number(),
+  revoked: z.array(ingestToken),
+  previous: sourceSettings,
+}) satisfies z.ZodType<RemovedSource>
+
+/**
+ * Remove a source in one step (06.4): pause + hide, purge its lines and,
+ * when asked, revoke the tokens bound to it.
+ */
+export function useRemoveSource(name: string) {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (body: RemoveSource) =>
+      fetchJson(`/api/sources/${encodeURIComponent(name)}/remove`, removedSource, put(body, 'POST')),
+    onSuccess: () => refresh([['storage'], ['health'], ['sources'], ['system'], ['ingest-tokens']]),
   })
 }
 

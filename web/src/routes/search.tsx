@@ -1,7 +1,8 @@
 import { getRouteApi } from '@tanstack/react-router'
-import { ClockIcon, CornerDownLeftIcon, DownloadIcon, SearchIcon } from 'lucide-react'
+import { ClockIcon, CornerDownLeftIcon, FileDownIcon, SearchIcon, XIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ExportDialog } from '@/components/export-dialog'
+import { MutedNote } from '@/components/muted-note'
 import { Histogram } from '@/components/search/histogram'
 import { QueryInput } from '@/components/search/query-input'
 import { SearchResults } from '@/components/search/results'
@@ -14,9 +15,11 @@ import type { SearchParams } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, fmtCount, fmtWindow } from '@/lib/format'
+import { useMuted } from '@/lib/mute'
 import { displayIds, groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
 import { useSearchLines } from '@/lib/search-api'
 import { searchBounds } from '@/lib/search-params'
+import { useSimilarValues } from '@/lib/similar'
 import { useHotkeys } from '@/lib/use-hotkeys'
 
 const route = getRouteApi('/search')
@@ -62,7 +65,10 @@ export function SearchPage() {
   const res = useSearchLines(params)
   const pages = res.data?.pages ?? []
   const first = pages[0]
-  const lines = useMemo(() => pages.flatMap((p) => p.lines), [pages])
+  const found = useMemo(() => pages.flatMap((p) => p.lines), [pages])
+  // Muted lines (06.3) are hidden unless "show"; still counted and searchable.
+  const [showMuted, setShowMuted] = useState(false)
+  const { visible: lines, muted } = useMuted(found, showMuted)
   // Group by flow: one summary per display id stitches groups across ids.
   const ids = useMemo(() => (search.view === 'flows' ? displayIds(lines) : []), [lines, search.view])
   const summaries = useFlowSummaries(ids)
@@ -74,6 +80,10 @@ export function SearchPage() {
   useEffect(() => {
     if (!q) inputRef.current?.focus()
   }, [q])
+
+  // Nothing matched: look for look-alike values over the whole window (05.3).
+  const empty = !res.isPending && !res.isError && found.length === 0
+  const similar = useSimilarValues(text || splitQuery(q).text, search.source, Date.now() - retentionMs, empty)
 
   const rangeLabel = search.from ? 'this range' : `the last ${search.range}`
   return (
@@ -117,6 +127,8 @@ export function SearchPage() {
           retentionMs={retentionMs}
           onRange={(range) => navigate({ search: (s) => ({ ...s, range, from: undefined, to: undefined }) })}
           onCustom={(from, to) => navigate({ search: (s) => ({ ...s, from, to }) })}
+          q={q}
+          source={search.source}
         />
         <Button className="h-9" onClick={submit}>
           Search
@@ -162,7 +174,7 @@ export function SearchPage() {
           </SelectContent>
         </Select>
         <Button variant="outline" size="sm" onClick={() => setExporting(true)} disabled={!total}>
-          <DownloadIcon />
+          <FileDownIcon />
           Export
         </Button>
       </div>
@@ -179,7 +191,7 @@ export function SearchPage() {
         <p role="alert" className="border border-status-err/30 bg-status-err/10 p-3 text-status-err">
           {res.error.message}
         </p>
-      ) : lines.length === 0 ? (
+      ) : found.length === 0 ? (
         <div className="flex flex-1 items-start justify-center pt-24">
           <div className="flex max-w-md flex-col items-center gap-3 border border-dashed p-10 text-center">
             <span className="border p-1.5">
@@ -202,22 +214,49 @@ export function SearchPage() {
                 }
               >
                 <ClockIcon />
-                Search last 24h, all sources
+                Search last {fmtWindow(retentionMs)}
               </Button>
+            )}
+            {similar.data && similar.data.length > 0 && (
+              <p className="flex flex-wrap items-center justify-center gap-1.5 font-mono text-muted-foreground text-xs">
+                Similar values seen:
+                {similar.data.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setQ(joinQuery([...chips, c], ''))}
+                    className="flex items-center gap-1 border px-1.5 py-0.5 text-foreground hover:border-brand"
+                  >
+                    {c}
+                    <XIcon className="size-3 text-muted-foreground" aria-hidden />
+                  </button>
+                ))}
+              </p>
             )}
           </div>
         </div>
       ) : (
-        <SearchResults
-          lines={lines}
-          view={search.view}
-          words={words}
-          hasMore={Boolean(res.hasNextPage)}
-          loadingMore={res.isFetchingNextPage}
-          onMore={() => res.fetchNextPage()}
-          onPick={addChip}
-          summaries={summaries}
-        />
+        <>
+          {muted > 0 && (
+            <MutedNote
+              count={muted}
+              shown={showMuted}
+              onToggle={() => setShowMuted((v) => !v)}
+              source={search.source}
+              className="-mt-2 flex items-center gap-2 font-mono text-muted-foreground text-xs"
+            />
+          )}
+          <SearchResults
+            lines={lines}
+            view={search.view}
+            words={words}
+            hasMore={Boolean(res.hasNextPage)}
+            loadingMore={res.isFetchingNextPage}
+            onMore={() => res.fetchNextPage()}
+            onPick={addChip}
+            summaries={summaries}
+          />
+        </>
       )}
 
       <ExportDialog

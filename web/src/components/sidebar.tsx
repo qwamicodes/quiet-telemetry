@@ -1,15 +1,25 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { PlugIcon, PlusIcon, RowsIcon, SearchIcon, SettingsIcon } from 'lucide-react'
+import {
+  BookOpenIcon,
+  ChevronsDownUpIcon,
+  KeyboardIcon,
+  PlugIcon,
+  PlusIcon,
+  RowsIcon,
+  SearchIcon,
+  SettingsIcon,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Logo } from '@/components/logo'
-import { ReceiverBadge } from '@/components/receiver-badge'
+import { SourceGroupHeader } from '@/components/source-group-header'
 import { SourceItem } from '@/components/source-item'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { UserMenu } from '@/components/user-menu'
 import { useHealth, useSources } from '@/lib/api'
+import { useConnection } from '@/lib/connection'
 import { fmtWindow } from '@/lib/format'
+import { groupSources, useCollapsedGroups } from '@/lib/source-groups'
 import { useRates } from '@/lib/use-rates'
-import { cn } from '@/lib/utils'
 
 function NavItem({
   to,
@@ -17,7 +27,7 @@ function NavItem({
   badge,
   children,
 }: {
-  to: '/' | '/search' | '/sources' | '/settings'
+  to: '/' | '/search' | '/sources' | '/settings' | '/guide'
   icon: ReactNode
   badge?: string
   children: ReactNode
@@ -25,7 +35,7 @@ function NavItem({
   return (
     <Link
       to={to}
-      activeOptions={{ exact: to !== '/settings', includeSearch: false }}
+      activeOptions={{ exact: to !== '/settings' && to !== '/guide', includeSearch: false }}
       className="flex h-7 items-center gap-2.5 px-3 text-sidebar-foreground outline-none hover:bg-sidebar-accent focus-visible:bg-sidebar-accent data-[status=active]:bg-sidebar-accent data-[status=active]:text-foreground [&_svg]:size-3.5"
     >
       {icon}
@@ -35,12 +45,27 @@ function NavItem({
   )
 }
 
-export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string | null; onOpenPalette: () => void }) {
+export function Sidebar({
+  activeSource,
+  onOpenPalette,
+  onOpenShortcuts,
+}: {
+  activeSource: string | null
+  onOpenPalette: () => void
+  onOpenShortcuts?: () => void
+}) {
   const health = useHealth().data
+  // Server unreachable: rates would be stale, so they read "—" (design 08.7).
+  const down = useConnection().down
   const sources = useSources().data
   const rates = useRates(sources)
   // Hidden sources stay under Sources and in search, not here (unless open now).
   const listed = sources?.filter((s) => !s.hidden || s.name === activeSource)
+  const groups = groupSources(listed ?? [], listed ?? [])
+  // Grouping off, or a single group (say, only Ingest): no headers, just the list.
+  const flat = groups.length <= 1
+  const { isCollapsed, toggle, toggleAll, allCollapsed } = useCollapsedGroups()
+  const keys = groups.map((g) => g.key)
   const onStream = useRouterState({ select: (s) => s.location.pathname === '/' })
 
   return (
@@ -48,7 +73,7 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
       <div className="flex h-14 items-center justify-between px-4">
         <Logo />
         <span className="border border-sidebar-border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-          v{health?.version ?? '…'}
+          v{health ? health.version.split('.').slice(0, 2).join('.') : '…'}
         </span>
       </div>
 
@@ -80,11 +105,27 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
         <NavItem to="/settings" icon={<SettingsIcon />}>
           Settings
         </NavItem>
+        <NavItem to="/guide" icon={<BookOpenIcon />}>
+          Guide
+        </NavItem>
       </nav>
 
       <div className="mt-6 flex items-center justify-between px-4 pb-1.5 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
         <span>Sources</span>
-        <span>{listed?.length ?? ''}</span>
+        <span className="flex items-center gap-1">
+          {listed?.length ?? ''}
+          {!flat && (
+            <button
+              type="button"
+              aria-label={allCollapsed(keys) ? 'Expand all groups' : 'Collapse all groups'}
+              title={allCollapsed(keys) ? 'Expand all groups' : 'Collapse all groups'}
+              onClick={() => toggleAll(keys)}
+              className="flex size-4 items-center justify-center hover:text-foreground [&_svg]:size-3"
+            >
+              <ChevronsDownUpIcon />
+            </button>
+          )}
+        </span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3">
         {sources?.length === 0 && (
@@ -93,14 +134,27 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
             <span className="text-muted-foreground text-xs">Sources appear here as soon as they send a line.</span>
           </div>
         )}
-        {listed?.map((s) => (
-          <SourceItem
-            key={s.name}
-            source={s}
-            active={onStream && s.name === activeSource}
-            rate={rates[s.name] ?? null}
-          />
-        ))}
+        {(groups.length ? groups : [{ key: 'all', name: 'Sources', rows: listed ?? [] }]).map((g) => {
+          // The open source stays visible even in a collapsed group.
+          const collapsed = !flat && isCollapsed(g.key)
+          const rows = collapsed ? g.rows.filter((s) => onStream && s.name === activeSource) : g.rows
+          return (
+            <section key={g.key} aria-label={g.name}>
+              {!flat && 'kind' in g && (
+                <SourceGroupHeader group={g} collapsed={collapsed} onToggle={() => toggle(g.key)} compact />
+              )}
+              {rows.map((s) => (
+                <SourceItem
+                  key={s.name}
+                  source={s}
+                  active={onStream && s.name === activeSource}
+                  rate={down ? null : (rates[s.name] ?? null)}
+                  nested={!flat}
+                />
+              ))}
+            </section>
+          )
+        })}
         <Link
           to="/connect"
           className="mt-3 flex h-8 items-center justify-center gap-1.5 border border-sidebar-border border-dashed text-muted-foreground text-xs outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:bg-sidebar-accent [&_svg]:size-3.5"
@@ -109,15 +163,20 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
         </Link>
       </div>
 
-      <div
-        className={cn(
-          'flex h-11 items-center justify-between border-sidebar-border border-t px-4 font-mono text-[11px] text-muted-foreground',
+      <div className="relative">
+        <UserMenu />
+        {onOpenShortcuts && (
+          <button
+            type="button"
+            aria-label="Keyboard shortcuts (?)"
+            title="Keyboard shortcuts (?)"
+            onClick={onOpenShortcuts}
+            className="absolute top-1/2 right-3 flex size-7 -translate-y-1/2 items-center justify-center text-muted-foreground hover:text-foreground [&_svg]:size-4"
+          >
+            <KeyboardIcon />
+          </button>
         )}
-      >
-        <ReceiverBadge health={health} />
-        <span>{health ? `${health.store} store` : ''}</span>
       </div>
-      <UserMenu />
     </aside>
   )
 }

@@ -1,6 +1,7 @@
 import { Link, Outlet } from '@tanstack/react-router'
 import {
   DatabaseIcon,
+  InfoIcon,
   KeyRoundIcon,
   MoonIcon,
   NetworkIcon,
@@ -11,6 +12,7 @@ import {
   UsersIcon,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { About } from '@/components/settings/about'
 import { Account } from '@/components/settings/account'
 import { General } from '@/components/settings/general'
 import { FlowIdOrder } from '@/components/settings/id-order'
@@ -46,6 +48,7 @@ function NavLink({
     | '/settings/flow-id-order'
     | '/settings/storage'
     | '/settings/appearance'
+    | '/settings/about'
   icon: ReactNode
   children: ReactNode
 }) {
@@ -90,6 +93,9 @@ export function SettingsLayout() {
         <NavLink to="/settings/appearance" icon={<PaletteIcon />}>
           Appearance
         </NavLink>
+        <NavLink to="/settings/about" icon={<InfoIcon />}>
+          About
+        </NavLink>
       </nav>
       <div className="min-w-0 flex-1 px-8 py-8">
         <Outlet />
@@ -110,7 +116,7 @@ export function SettingsFlowIds() {
   return <FlowIdOrder />
 }
 
-/** Appearance (this browser) + about. */
+/** Appearance (this browser). */
 export function SettingsAppearance() {
   const { theme, setTheme } = useTheme()
   const health = useHealth().data
@@ -157,4 +163,8 @@ export function SettingsAccount() {
 
 export function SettingsMembers() {
   return <Members />
+}
+
+export function SettingsAbout() {
+  return <About />
 }

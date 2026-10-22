@@ -1,11 +1,13 @@
 import { z } from 'zod'
 import type {
   Bucket,
+  BuiltinIdKey,
   ChildStep,
   CloseMatch,
   CorrId,
   CreatedIngestToken,
   DockerStatus,
+  ExportJob,
   ExportTokenResponse,
   Flow,
   FlowEdge,
@@ -15,6 +17,7 @@ import type {
   FlowSummariesResponse,
   FlowSummary,
   Health,
+  IdKey,
   IngestInfo,
   IngestToken,
   IngestTokensResponse,
@@ -35,8 +38,19 @@ import type {
  */
 export const level = z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']) satisfies z.ZodType<Level>
 
+/** Built-in correlation-id keys, in the default order. */
+export const BUILTIN_ID_KEYS = [
+  'request_id',
+  'job_id',
+  'trace_id',
+  'correlation_id',
+] as const satisfies readonly BuiltinIdKey[]
+
+/** A built-in key or a custom field name (Settings → Flow id order). */
+export const idKey = z.string().min(1) satisfies z.ZodType<IdKey>
+
 export const corrId = z.object({
-  key: z.enum(['request_id', 'job_id', 'trace_id', 'correlation_id']),
+  key: idKey,
   value: z.string(),
 }) satisfies z.ZodType<CorrId>
 
@@ -87,6 +101,7 @@ export const sourceInfo = z.object({
   kind: z.enum(['docker', 'http', 'vector', 'fluentbit', 'otlp']),
   containers: z.array(z.string()),
   group: z.string().nullable(),
+  group_kind: z.enum(['compose', 'stack', 'custom', 'standalone', 'ingest']).nullable().catch(null),
   lines: z.number(),
   last_ts: z.number().nullable(),
   display_name: z.string().nullable(),
@@ -99,6 +114,8 @@ export const sourcesResponse = z.object({ sources: z.array(sourceInfo) }) satisf
 export const bucket = z.object({
   start: z.number(),
   count: z.number(),
+  debug: z.number(),
+  info: z.number(),
   warn: z.number(),
   error: z.number(),
 }) satisfies z.ZodType<Bucket>
@@ -114,6 +131,21 @@ export const searchResponse = z.object({
   since: z.number(),
   until: z.number(),
 }) satisfies z.ZodType<SearchResponse>
+
+export const exportJob = z.object({
+  id: z.string(),
+  state: z.enum(['preparing', 'ready', 'failed', 'cancelled']),
+  done: z.number(),
+  total: z.number(),
+  bytes: z.number(),
+  file_name: z.string(),
+  started: z.number(),
+  finished: z.number().nullable(),
+  eta_ms: z.number().nullable(),
+  expires_at: z.number().nullable(),
+  masked: z.boolean(),
+  error: z.string().nullable(),
+}) satisfies z.ZodType<ExportJob>
 
 export const exportTokenResponse = z.object({
   token: z.string().startsWith('qx_'),

@@ -49,12 +49,16 @@ pub struct SearchParams {
     /// Minimum level.
     #[ts(optional)]
     pub level: Option<String>,
+    /// Exactly these level chips, comma-separated (`info,warn`).
+    #[ts(optional)]
+    pub levels: Option<String>,
     /// Event time bounds, unix ms, inclusive.
     #[ts(optional)]
     pub since: Option<i64>,
     #[ts(optional)]
     pub until: Option<i64>,
-    /// A correlation id (any key).
+    /// Correlation ids (any key), comma-separated; a line matches when it
+    /// carries any of them (a stitched flow exports as `id=req_1,job_9`).
     #[ts(optional)]
     pub id: Option<String>,
     #[ts(optional)]
@@ -82,8 +86,19 @@ impl SearchParams {
         if let Some(l) = self.level.as_deref().filter(|l| !l.is_empty()) {
             q.min_level = Some(Level::parse_name(l).ok_or_else(|| format!("unknown level `{l}`"))?);
         }
-        if let Some(id) = self.id.as_deref().filter(|i| !i.is_empty()) {
-            q.ids.push(id.to_string());
+        if let Some(ls) = self.levels.as_deref().filter(|l| !l.is_empty()) {
+            let ls = crate::search::parse_levels(ls)?;
+            if ls.len() < 4 {
+                q.levels = ls;
+            }
+        }
+        if let Some(ids) = self.id.as_deref() {
+            q.ids.extend(
+                ids.split(',')
+                    .map(str::trim)
+                    .filter(|i| !i.is_empty())
+                    .map(String::from),
+            );
         }
         q.since = self.since;
         q.until = self.until;
@@ -191,27 +206,88 @@ fn on(v: &Option<String>) -> bool {
     )
 }
 
-/// What to name the file: one source's name, else `search`.
+fn slug(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// What to name the file: a flow's first id (`quiet-flow-req_1`), else one
+/// source's name and the day, else `search` and the day.
 fn file_name(p: &SearchQuery, fmt: ExportFormat, gzip: bool) -> String {
+    let ext = format!("{}{}", fmt.ext(), if gzip { ".gz" } else { "" });
+    if let Some(first) = p.ids.first() {
+        return format!("quiet-flow-{}.{ext}", slug(first));
+    }
     let label = match p.sources.as_slice() {
-        [one] => one
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect(),
+        [one] => slug(one),
         _ => "search".to_string(),
     };
     let day = chrono::Utc::now().format("%Y-%m-%d");
-    format!(
-        "quiet-{label}-{day}.{}{}",
-        fmt.ext(),
-        if gzip { ".gz" } else { "" }
-    )
+    format!("quiet-{label}-{day}.{ext}")
+}
+
+/// A resolved export: the query (oldest first, whole pages, bounded to the
+/// window), the formatter and the file name. Shared by the streamed export
+/// and the server-side preparing job (`export_jobs.rs`).
+pub(crate) struct Plan {
+    pub q: SearchQuery,
+    pub fmt: Formatter,
+    pub name: String,
+    pub gzip: bool,
+    pub format: ExportFormat,
+}
+
+/// `member` forces PII masking whatever the query says.
+pub(crate) fn plan(
+    s: &AppState,
+    p: SearchParams,
+    e: &ExportParams,
+    member: bool,
+) -> Result<Plan, String> {
+    let mut q = p.to_query(Order::Oldest)?;
+    bound(s, &mut q);
+    q.limit = MAX_PAGE;
+    q.histogram = None;
+    let format = e.format.unwrap_or_default();
+    let gzip = on(&e.gzip);
+    let fmt = Formatter {
+        format,
+        mask: on(&e.mask) || member,
+        raw: on(&e.raw),
+        columns: e
+            .columns
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(String::from)
+            .collect(),
+        rules: Some(s.pipeline.settings().clone()),
+    };
+    let name = file_name(&q, format, gzip);
+    Ok(Plan {
+        q,
+        fmt,
+        name,
+        gzip,
+        format,
+    })
+}
+
+pub(crate) fn content_type(format: ExportFormat, gzip: bool) -> &'static str {
+    if gzip {
+        "application/gzip"
+    } else {
+        format.content_type()
+    }
 }
 
 async fn export(
@@ -250,34 +326,19 @@ async fn export(
         }
     }
 
-    let mut q = match p.to_query(Order::Oldest) {
-        Ok(q) => q,
-        Err(e) => return bad(e),
-    };
-    bound(&s, &mut q);
-    q.limit = MAX_PAGE;
-    q.histogram = None;
-    let format = e.format.unwrap_or_default();
-    let gzip = on(&e.gzip);
     // Members see PII masked (a qx_ token request has no viewer: its query,
     // mask included, was checked when the token was issued).
     let member = viewer.is_some_and(|v| !v.is_owner());
-    let fmt = Formatter {
+    let Plan {
+        mut q,
+        fmt,
+        name,
+        gzip,
         format,
-        mask: on(&e.mask) || member,
-        raw: on(&e.raw),
-        columns: e
-            .columns
-            .as_deref()
-            .unwrap_or("")
-            .split(',')
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(String::from)
-            .collect(),
-        rules: Some(s.pipeline.settings().clone()),
+    } = match plan(&s, p, &e, member) {
+        Ok(p) => p,
+        Err(e) => return bad(e),
     };
-    let name = file_name(&q, format, gzip);
     // Lines appended a moment ago should be in the file.
     if let Err(e) = s.pipeline.store().flush().await {
         return unavailable(e);
@@ -319,11 +380,7 @@ async fn export(
     let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|item| (item, rx))
     }));
-    let content_type = if gzip {
-        "application/gzip"
-    } else {
-        format.content_type()
-    };
+    let content_type = content_type(format, gzip);
     let mut res = Response::new(body);
     let h = res.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
@@ -478,6 +535,19 @@ mod tests {
             parts.headers,
             body.collect().await.unwrap().to_bytes().to_vec(),
         )
+    }
+
+    #[tokio::test]
+    async fn flow_export_takes_every_id_and_names_the_file_after_the_flow() {
+        let (_, app) = app().await;
+        let (st, headers, body) =
+            get(&app, "/api/export?id=req_2,payout:88&format=ndjson", None).await;
+        assert_eq!(st, StatusCode::OK);
+        let text = String::from_utf8(body).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(text.contains("req_2") && text.contains("payout:88"));
+        let cd = headers[header::CONTENT_DISPOSITION].to_str().unwrap();
+        assert!(cd.contains("quiet-flow-req_2.ndjson"), "{cd}");
     }
 
     #[tokio::test]

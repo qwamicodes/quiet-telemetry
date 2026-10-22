@@ -4,7 +4,7 @@
 //! Regenerate: `QUIET_UPDATE_TS=1 cargo test bindings` (or `bun run gen:types` in web/).
 
 use crate::accounts::{Invite, Member, Role, SessionInfo, User};
-use crate::api::{Frame, Health, LinesResponse, SourcesResponse};
+use crate::api::{About, Frame, GroupingPreview, Health, LinesResponse, SourcesResponse};
 use crate::auth_api::{
     AcceptInvite, AuthState, ChangePassword, CompleteReset, CreateInvite, CreatedInvite,
     InviteProblem, LoginRequest, MembersResponse, PasswordChanged, ResetInfo, ResetLink,
@@ -20,7 +20,10 @@ use crate::search_api::{
 use crate::settings::{
     FlowIdSettings, GeneralSettings, SettingsResponse, SourceSettings, UpdateStorage,
 };
-use crate::settings_api::{PurgeRequest, Purged, SourceActivity, StorageReport};
+use crate::settings_api::{
+    PurgeRequest, Purged, RemoveSource, RemovedSource, SourceActivity, StorageReport,
+};
+use crate::stream_api::{IdCoverageReport, SourceFields, StreamStats};
 use crate::system::SystemStatus;
 use crate::tokens::{CreateIngestToken, CreatedIngestToken, IngestToken, IngestTokensResponse};
 use std::collections::BTreeMap;
@@ -35,7 +38,14 @@ fn export_into(dir: &Path) {
     let cfg = Config::new().with_out_dir(dir).with_large_int("number");
     // Roots; their dependencies (LogLine, CorrId, Level, SourceInfo, …) follow.
     Frame::export_all(&cfg).unwrap();
+    StreamStats::export_all(&cfg).unwrap();
+    SourceFields::export_all(&cfg).unwrap();
+    IdCoverageReport::export_all(&cfg).unwrap();
+    crate::lint::LintReport::export_all(&cfg).unwrap();
     Health::export_all(&cfg).unwrap();
+    About::export_all(&cfg).unwrap();
+    GroupingPreview::export_all(&cfg).unwrap();
+    crate::settings::UpdateGrouping::export_all(&cfg).unwrap();
     SourcesResponse::export_all(&cfg).unwrap();
     LinesResponse::export_all(&cfg).unwrap();
     SearchParams::export_all(&cfg).unwrap();
@@ -43,6 +53,8 @@ fn export_into(dir: &Path) {
     ExportParams::export_all(&cfg).unwrap();
     ExportTokenRequest::export_all(&cfg).unwrap();
     ExportTokenResponse::export_all(&cfg).unwrap();
+    crate::export_jobs::ExportJobRequest::export_all(&cfg).unwrap();
+    crate::export_jobs::ExportJob::export_all(&cfg).unwrap();
     FlowParams::export_all(&cfg).unwrap();
     FlowResponse::export_all(&cfg).unwrap();
     FlowNotFound::export_all(&cfg).unwrap();
@@ -83,11 +95,14 @@ fn export_into(dir: &Path) {
     UpdateStorage::export_all(&cfg).unwrap();
     FlowIdSettings::export_all(&cfg).unwrap();
     SourceSettings::export_all(&cfg).unwrap();
+    RemoveSource::export_all(&cfg).unwrap();
+    RemovedSource::export_all(&cfg).unwrap();
     StorageReport::export_all(&cfg).unwrap();
     PurgeRequest::export_all(&cfg).unwrap();
     Purged::export_all(&cfg).unwrap();
     SourceActivity::export_all(&cfg).unwrap();
     SystemStatus::export_all(&cfg).unwrap();
+    crate::normalize::BuiltinIdKey::export_all(&cfg).unwrap();
 
     // A barrel so the UI imports from one place.
     let mut names: Vec<String> = std::fs::read_dir(dir)

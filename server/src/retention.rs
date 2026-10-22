@@ -11,6 +11,7 @@
 use crate::settings::Settings;
 use crate::store::Store;
 use crate::system::SystemState;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -19,6 +20,8 @@ use tokio_util::sync::CancellationToken;
 pub struct Retention {
     pub window: Duration,
     pub max_bytes: u64,
+    /// Skip window (and per-source window) expiry this pass; the cap still runs.
+    pub hold_window: bool,
 }
 
 impl Retention {
@@ -28,6 +31,7 @@ impl Retention {
         Retention {
             window: Duration::from_millis(st.retention_ms as u64),
             max_bytes: st.max_disk,
+            hold_window: false,
         }
     }
 }
@@ -48,10 +52,13 @@ pub async fn sweep(
     now: i64,
 ) -> anyhow::Result<Swept> {
     let cutoff = now - r.window.as_millis() as i64;
-    let expired = store.expire(cutoff).await?;
+    let mut expired = 0;
     let mut per_source = 0;
-    for (name, window) in sources {
-        per_source += store.expire_source(name, now - window).await?;
+    if !r.hold_window {
+        expired = store.expire(cutoff).await?;
+        for (name, window) in sources {
+            per_source += store.expire_source(name, now - window).await?;
+        }
     }
     let capped = store.enforce_cap(r.max_bytes).await?;
     Ok(Swept {
@@ -67,6 +74,7 @@ pub async fn run(
     store: Arc<dyn Store>,
     settings: Arc<Settings>,
     system: Arc<SystemState>,
+    hold: Arc<AtomicUsize>,
     shutdown: CancellationToken,
 ) {
     let mut tick = tokio::time::interval(EVERY);
@@ -78,7 +86,12 @@ pub async fn run(
             _ = shutdown.cancelled() => return,
         }
         let now = chrono::Utc::now().timestamp_millis();
-        let r = Retention::of(&settings);
+        let mut r = Retention::of(&settings);
+        // An export being prepared on the server (05.7) includes lines that
+        // expire meanwhile: the window waits, the disk cap does not.
+        if hold.load(Ordering::SeqCst) > 0 {
+            r.hold_window = true;
+        }
         match sweep(store.as_ref(), r, &settings.source_windows(), now).await {
             Ok(s) => {
                 system.swept(now, s.capped);
@@ -130,7 +143,18 @@ mod tests {
         let r = Retention {
             window: Duration::from_secs(24 * 3600),
             max_bytes: u64::MAX,
+            hold_window: false,
         };
+        // While an export is being prepared the window waits (05.7).
+        let held = Retention {
+            hold_window: true,
+            ..r
+        };
+        assert_eq!(
+            sweep(&store, held, &[], now).await.unwrap(),
+            Swept::default()
+        );
+        assert_eq!(store.usage().await.unwrap().lines, 30);
         // 24h back from half past lands mid-hour: hours 25…29 old are wholly
         // older (5 lines), the hour holding the 24h-old line survives.
         let s = sweep(&store, r, &[], now).await.unwrap();
@@ -196,6 +220,7 @@ mod tests {
             store.clone(),
             settings.clone(),
             system.clone(),
+            Arc::new(AtomicUsize::new(0)),
             shutdown.clone(),
         ));
         // First tick is immediate: the 30h-old line goes (default 24h).

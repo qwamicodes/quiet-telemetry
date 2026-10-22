@@ -19,6 +19,10 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && r
 COPY server/ ./
 # rust-embed reads ../web/dist at compile time.
 COPY --from=web /src/web/dist /src/web/dist
+# Shown in Settings → About (read at compile time; empty means unknown).
+ARG QUIET_GIT_SHA=""
+ARG QUIET_BUILD_DATE=""
+ENV QUIET_GIT_SHA=$QUIET_GIT_SHA QUIET_BUILD_DATE=$QUIET_BUILD_DATE
 RUN touch src/main.rs src/web.rs && cargo build --release && strip target/release/quiet
 
 FROM scratch

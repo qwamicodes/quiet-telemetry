@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { LEVEL_FILTERS } from '@/lib/format'
+import { normalizeLevelParam } from '@/lib/levels'
 
 /**
  * URL search params for every route, as zod schemas (Standard Schema, so
@@ -8,11 +8,12 @@ import { LEVEL_FILTERS } from '@/lib/format'
  * of throwing, and the page still opens.
  */
 const text = z.string().trim().min(1).optional().catch(undefined)
-/** The stream's level: `all` overrides a source's default level filter. */
-const streamLevel = z
-  .enum([...LEVEL_FILTERS, 'all'])
-  .optional()
-  .catch(undefined)
+/**
+ * The stream's level chips: a comma list (`level=warn,error`), or `all` to
+ * override a source's default level. Kept as a string so the URL stays
+ * readable; `levelsFromParam` turns it into chips.
+ */
+const streamLevel = z.string().transform(normalizeLevelParam).optional().catch(undefined)
 
 /** `/` — the live stream of one source. */
 export const streamSearch = z.object({
@@ -78,7 +79,23 @@ export const sourceParams = z.object({
     .refine((v) => !/[\u0000-\u001f\u007f]/.test(v)),
 })
 
+/** `/sources?group=compose:apps&kind=stack`: the Sources page filtered to one group (⌘K Groups). */
+export const sourcesSearch = z.object({
+  group: z.string().max(300).optional().catch(undefined),
+  kind: z.enum(['all', 'standalone', 'stack']).optional().catch(undefined),
+})
+export type SourcesSearch = z.infer<typeof sourcesSearch>
+
 /** `/sources/$name?tab=` */
 export const sourceSearch = z.object({
-  tab: z.enum(['rejected', 'settings']).optional().catch(undefined),
+  tab: z.enum(['rejected', 'malformed', 'settings']).optional().catch(undefined),
 })
+
+/** `/guide?tab=&source=` (boards v0.1-11.x). */
+export const guideTab = z.enum(['overview', 'agent', 'canonical', 'ids', 'check'])
+export type GuideTab = z.infer<typeof guideTab>
+export const guideSearch = z.object({
+  tab: guideTab.optional().catch(undefined),
+  source: z.string().max(300).optional().catch(undefined),
+})
+export type GuideSearch = z.infer<typeof guideSearch>

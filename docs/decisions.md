@@ -4,6 +4,92 @@ Technical choices made while building quiet, newest slice first. Each one
 stands unless Kwaame pushes back. The product-level log lives with the
 project notes; this file records what the code does and why.
 
+## v0.1 design parity (2026-10-22, PR #11)
+
+Choices made while matching the v0.1 boards (`docs/v01-parity.md` has the
+per-board status). Source grouping has its own section further down.
+
+- **Large exports are prepared on the server** (05.7, replaces the earlier
+  "prepared in the browser" choice; asked for in the follow-up). Over ~100k
+  lines (the dialog's estimate) Download starts `POST /api/export/jobs` with
+  the same query string as `/api/export`; the dialog polls
+  `GET /api/export/jobs/:id` once a second ("Preparing N lines · % · done /
+  total · ~Ns left", where time left is the pace so far), Cancel is
+  `DELETE`, and the dialog can be closed. Ready → the "Export ready · file ·
+  size" toast (05.8) and the dialog's Download fetch
+  `GET /api/export/jobs/:id/download`. Rules: session only (a `qx_` token
+  stays read-only on `GET /api/export` for its one query; a curl of a huge
+  export simply streams); members always masked; a job is visible only to the
+  user who started it (others get 404); at most 4 preparing at once, 2 per
+  user (429). Files go to `<data dir>/exports` (temp dir without one), are
+  deleted on cancel, on failure, an hour after they are ready and at startup.
+  The range is fixed when the job starts and the **retention window waits
+  while any job is preparing** (the disk cap does not), which is how "lines
+  that expire meanwhile are still included" holds. Jobs live in memory: a
+  restart drops them (and their files).
+- **Stream histogram = the last hour in one-minute bars, stacked by level**
+  (`/api/stream/stats`). The board shows ~96 bars over a longer span; an hour
+  matches what the live stream is about and keeps the stats query cheap.
+- **Remove source = pause ingest + hide + purge its lines, and revoke its
+  tokens, in one step** (06.4; `POST /api/sources/:name/remove`). There is no
+  source table to delete from; a Docker container that logs again comes back.
+  The dialog shows "Also revoke its token qi_••••…" (on by default) only when
+  tokens are **bound** to the source; any-source tokens are shared, so they
+  are never revoked here (the dialog points at Ingest tokens instead). Undo
+  follows token revoke: the toast offers it for 15 s, the server allows token
+  restore for 60 s; Undo restores the revoked tokens and puts the source's
+  previous settings back (un-pause, un-hide). Deleted lines stay deleted and
+  the toast says so.
+- **Muted lines** (06.3) are per-source rules in the source's settings
+  (`SourceSettings.muted`, ≤ 32): `field:value` compares the field's value
+  (dot path, as text) case-insensitively with `*` wildcards; plain text
+  matches anywhere in the raw line. They are matched **in the browser**, on
+  the lines the stream and search already have, so "Show muted" is instant
+  and lines stay stored, counted (histogram, level counts, totals) and
+  searchable, as the board says. Stream and Search show "N muted · Show muted ·
+  Edit rules" when any line in view is muted. Cost: a stream backlog that is
+  mostly muted lines shows fewer rows (the server does not top it up), and a
+  search page can look short until the next page loads.
+- **Flow minimap** (04.3) is drawn on long flows (the same ones that get the
+  All steps / Problems only toolbar): one tick per step, a folded run drawing
+  a tick per step it holds, errors red and warnings amber, positions measured
+  from the laid-out canvas; click or drag moves the canvas, arrow / Page /
+  Home / End when focused.
+- **"Stopped sending" banner** (06.1): a source that had lines earlier in the
+  hour and none in the last three one-minute buckets, so it shows after about
+  2–3 minutes of silence.
+- **Similar values** (05.3) are computed in the browser: on zero results the
+  page runs a wider search for stems of the query words (`payout_reversed` →
+  `payout`, `rever`) and offers the `key:value` pairs it finds. No server
+  endpoint yet.
+- **Timezone** (07.10) is a searchable input over the browser's IANA zone list
+  (`Intl.supportedValuesOf`) plus `local`, not a plain select: the list has
+  400+ entries. A zone the browser doesn't know can't be saved.
+- **Grouping: env wins and locks the UI**; **auto order is `quiet.group` →
+  Compose project → Swarm stack** (details in *Source grouping*).
+- **Custom flow id keys** (07.8) are stored in the existing `key` column of the
+  id index: 0–3 for the built-ins, the field name as text for a custom key
+  (SQLite keeps a non-numeric string in an INTEGER column). No migration. At
+  most 8 custom keys; a key matches an exact top-level field first, then the
+  dotted path, at its place in the order.
+- **Check my logs** (Guide 11.x) is a heuristic scorecard over the newest lines
+  of one source (`GET /api/sources/:name/lint`, sample 1000): JSON, timestamp,
+  level, service, msg, canonical line, request_id, job_id, job ↔ request_id,
+  error object, outbound calls, PII. Each check passes or warns by share of
+  lines at per-check thresholds (e.g. JSON pass ≥ 95 %, warn ≥ 50 %), is `na`
+  when nothing applies, and carries a one-line fix. PII is pattern matching
+  (email / phone shapes in values), so it can miss or over-flag.
+- **Undo on token revoke** (08.3): revoke takes effect at once; for 60 s
+  (`UNDO_REVOKE_MS`) an owner can `POST /api/ingest-tokens/:id/restore` and the
+  same secret works again. After that it is 409 and the token stays revoked.
+  The toast offers Undo for 15 s.
+
+**Open questions**
+- Should muting move to the server (so backlogs and pages are topped up past
+  muted lines), at the cost of a reconnect when "Show muted" toggles?
+- Should similar values move to a server endpoint (one pass over the window
+  instead of a second search from the browser)?
+
 ## Slice 6 · Settings, storage, per-source settings, system states (2026-10-22)
 
 Scope agreed beforehand: retention / disk cap / purge in the UI over the slice 2
@@ -261,3 +347,58 @@ session, `qi_`/`qx_` tokens keep working without one.
   everywhere else.
 - New `components/ui/dropdown-menu.tsx` on Base UI Menu with no GroupLabel
   export (the legivent #162 crash); a jsdom test opens it.
+
+## Source grouping (2026-10-22, PR #11)
+
+Asked by Kwaame (modelled on a container manager's Containers view), then made
+configurable because it ships as an update. Boards v0.1-06.7, 06.8, 03.8,
+03.9, 07.11.
+
+- **Labels, not names.** Docker sources keep the first container's labels
+  (server memory only, never sent to the browser). The group is worked out on
+  every `/api/sources` read, so changing the setting regroups live with no
+  restart and no change to stored lines.
+- **Modes** (Settings → General → Source grouping): **auto** (default):
+  `quiet.group` label → `com.docker.compose.project` → `com.docker.stack.namespace`
+  → Standalone. Compose comes before stack because Kwaame listed it that way
+  (the first cut had stack first; a container rarely has both). The
+  `quiet.group` override in auto was asked for "if trivial": it is one lookup.
+  **label**: one Docker label key the owner names (default suggestion
+  `quiet.group`); containers without it are Standalone. **off**: no groups;
+  `group`/`group_kind` are `null` and every list is flat.
+- **Pushed sources** (HTTP, Vector, Fluent Bit, OTLP) are one **Ingest** group
+  in auto and label mode: they have no Docker labels.
+- **Precedence: env wins and locks.** `QUIET_GROUP_BY` / `QUIET_GROUP_LABEL`
+  (or `--group-by` / `--group-label`), when set, override the saved value and
+  the control becomes read-only ("set by env"); `PUT /api/settings/grouping`
+  answers 400. This is the opposite of storage (UI wins over flags). Kwaame
+  first asked for UI > env, then the 07.11 board and his follow-up said env
+  wins and locks; the later instruction is what is built.
+- **Preview** (`GET /api/sources/grouping-preview?mode=&label=`) groups the
+  current sources with a draft mode/label on the server, plus "found on N of
+  M" for the label, so the Settings preview updates as the owner types without
+  exposing labels (they can hold secrets, e.g. proxy auth).
+- **UI**: Sources page (group rows with kind tag compose / stack / label /
+  docker / push, `N/M sending · K shown`, aggregate lines/s, Search this group
+  · 24h, ⋯ menu: search these N sources, collapse group, collapse all, copy
+  project name, ignore all N; member dots on collapsed headers; "all stopped"
+  tag + explanation row; indent guide on nested 36px rows), sidebar (compact
+  headers, single-line 28px items, collapse/expand all), stream top-bar source
+  picker (group / name; ↑↓ move, ← → fold, ↵ streams), ⌘K (sources under their
+  group, a Groups section that opens `/sources?group=…`, "Search <group> ·
+  24h"), and the All · Standalone · Compose / Stack filter (custom-label groups
+  count as Compose / Stack). "Sending" = a line in the last 60 s.
+- **Collapse state** is one list in localStorage (`quiet.source-groups.collapsed`),
+  shared live by the Sources page, sidebar and picker. The open source stays
+  visible in a collapsed sidebar group. Collapsed rows on the Sources page stay
+  mounted (hidden) so the Erroring count and stopped banner still see them.
+- **Ignore all N** = pause ingest + hide each source (the per-source settings
+  already have both), after a confirm dialog; reversible per source. Stored
+  lines stay until they expire.
+- **Decided out for v0.1**: streaming a whole group. The stream stays one
+  source at a time; a group in ⌘K opens Sources, never the stream.
+- Docker grouping could not be checked on screen with real containers in the
+  build sandbox (no Docker there); it is covered by server tests on label
+  sets and by UI tests.
+- The Sources page keeps the 06.1 stat cards above the filters (06.7 omits
+  them; both are v0.1 boards).

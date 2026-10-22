@@ -1,6 +1,7 @@
 import { infiniteQueryOptions, useInfiniteQuery } from '@tanstack/react-query'
 import type { ExportFormat, ExportParams, SearchParams } from '@/gen'
 import { fetchJson } from '@/lib/api'
+import { publicOrigin } from '@/lib/format'
 import { exportTokenResponse, searchResponse } from '@/lib/schemas'
 
 /** Lines per search page; the first page also brings the histogram. */
@@ -64,7 +65,7 @@ export function exportFileName(p: SearchParams, o: ExportOptions, now = new Date
 }
 
 /** Mint a read-only `qx_` token for exactly this export and build the curl. */
-export async function copyCurl(query: string, file: string, origin = window.location.origin) {
+export async function copyCurl(query: string, file: string, origin = publicOrigin()) {
   const t = await fetchJson('/api/export/token', exportTokenResponse, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

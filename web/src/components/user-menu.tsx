@@ -29,7 +29,7 @@ export function UserMenu() {
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={`Account menu for ${user.name}`}
-        className="flex h-11 w-full items-center gap-2.5 border-sidebar-border border-t px-4 text-left outline-none hover:bg-sidebar-accent focus-visible:bg-sidebar-accent data-popup-open:bg-sidebar-accent"
+        className="flex h-11 w-full items-center gap-2.5 border-sidebar-border border-t pr-12 pl-4 text-left outline-none hover:bg-sidebar-accent focus-visible:bg-sidebar-accent data-popup-open:bg-sidebar-accent"
       >
         <span
           aria-hidden

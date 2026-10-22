@@ -21,9 +21,8 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 const SWARM_SERVICE: &str = "com.docker.swarm.service.name";
-const SWARM_STACK: &str = "com.docker.stack.namespace";
+use crate::grouping::SWARM_STACK;
 const COMPOSE_SERVICE: &str = "com.docker.compose.service";
-const COMPOSE_PROJECT: &str = "com.docker.compose.project";
 /// Opt a container out: `quiet.ignore=true`. Rename: `quiet.source=name`.
 const QUIET_IGNORE: &str = "quiet.ignore";
 const QUIET_SOURCE: &str = "quiet.source";
@@ -31,7 +30,6 @@ const QUIET_SOURCE: &str = "quiet.source";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Naming {
     pub source: String,
-    pub group: Option<String>,
 }
 
 pub fn name_for(container_name: &str, labels: &HashMap<String, String>) -> Option<Naming> {
@@ -42,37 +40,25 @@ pub fn name_for(container_name: &str, labels: &HashMap<String, String>) -> Optio
     {
         return None;
     }
+    let naming = |source: String| Naming { source };
     if let Some(s) = labels.get(QUIET_SOURCE) {
-        return Some(Naming {
-            source: s.clone(),
-            group: None,
-        });
+        return Some(naming(s.clone()));
     }
     if let Some(svc) = labels.get(SWARM_SERVICE) {
-        let stack = labels.get(SWARM_STACK).cloned();
         // Swarm names services "<stack>_<svc>"; show the short one.
-        let short = match &stack {
+        let short = match labels.get(SWARM_STACK) {
             Some(st) => svc
                 .strip_prefix(&format!("{st}_"))
                 .unwrap_or(svc)
                 .to_string(),
             None => svc.clone(),
         };
-        return Some(Naming {
-            source: short,
-            group: stack,
-        });
+        return Some(naming(short));
     }
     if let Some(svc) = labels.get(COMPOSE_SERVICE) {
-        return Some(Naming {
-            source: svc.clone(),
-            group: labels.get(COMPOSE_PROJECT).cloned(),
-        });
+        return Some(naming(svc.clone()));
     }
-    Some(Naming {
-        source: container_name.trim_start_matches('/').to_string(),
-        group: None,
-    })
+    Some(naming(container_name.trim_start_matches('/').to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -302,8 +288,9 @@ impl DockerReceiver {
             if !m.containers.contains(&short) {
                 m.containers.push(short.clone());
             }
-            if m.group.is_none() {
-                m.group = naming.group.clone();
+            // The first container's labels decide the group (replicas share them).
+            if m.labels.is_empty() {
+                m.labels = labels.clone();
             }
         });
 
@@ -408,6 +395,7 @@ impl LineSplitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grouping::COMPOSE_PROJECT;
 
     #[cfg(not(windows))]
     #[test]
@@ -443,7 +431,6 @@ mod tests {
             n,
             Naming {
                 source: "api".into(),
-                group: Some("shop".into())
             }
         );
 
@@ -453,8 +440,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(n.source, "worker");
-        assert_eq!(n.group.as_deref(), Some("proj"));
-
         assert_eq!(name_for("/redis", &labels(&[])).unwrap().source, "redis");
         assert_eq!(
             name_for("/x", &labels(&[(QUIET_SOURCE, "payments")]))

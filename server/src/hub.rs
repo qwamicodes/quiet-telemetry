@@ -4,6 +4,7 @@
 //! is stored; UI streams call [`Source::subscribe`]. Lines themselves live in
 //! the [`Store`](crate::store::Store), not here.
 
+use crate::grouping::GroupKind;
 use crate::normalize::LogLine;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -60,8 +61,15 @@ impl SourceKind {
 pub struct SourceMeta {
     /// Containers feeding this source (docker only).
     pub containers: Vec<String>,
-    /// e.g. compose project or swarm stack.
+    /// Labels of the first container seen (docker only); groups are read
+    /// from them (see `grouping.rs`).
+    #[serde(skip)]
+    #[ts(skip)]
+    pub labels: HashMap<String, String>,
+    /// Its group under the current Settings → Source grouping (`null` when
+    /// grouping is off). Filled in by [`Source::info`].
     pub group: Option<String>,
+    pub group_kind: Option<GroupKind>,
     pub lines: u64,
     pub last_ts: Option<i64>,
 }
@@ -93,10 +101,15 @@ impl Source {
     }
 
     pub fn info(&self) -> SourceInfo {
+        let kind = self.kind();
+        let mut meta = self.meta();
+        let g = crate::grouping::current().group_of(kind, &meta.labels);
+        meta.group = g.as_ref().map(|(name, _)| name.clone());
+        meta.group_kind = g.map(|(_, k)| k);
         SourceInfo {
             name: self.name.clone(),
-            kind: self.kind(),
-            meta: self.meta(),
+            kind,
+            meta,
             display_name: None,
             hidden: false,
             paused: false,
@@ -150,6 +163,22 @@ impl Hub {
             .clone()
     }
 
+    /// `(name, kind, container labels)` of every source, for the grouping preview.
+    pub fn labels(&self) -> Vec<(String, SourceKind, HashMap<String, String>)> {
+        self.sources
+            .read()
+            .unwrap()
+            .values()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.kind(),
+                    s.meta.lock().unwrap().labels.clone(),
+                )
+            })
+            .collect()
+    }
+
     pub fn list(&self) -> Vec<SourceInfo> {
         let mut v: Vec<_> = self
             .sources
@@ -180,6 +209,25 @@ impl Hub {
 mod tests {
     use super::*;
     use crate::normalize::normalize;
+
+    #[test]
+    fn info_groups_from_container_labels() {
+        let hub = Hub::new();
+        hub.ensure_source("api", SourceKind::Docker)
+            .update_meta(|m| {
+                m.labels
+                    .insert(crate::grouping::COMPOSE_PROJECT.into(), "shop".into());
+            });
+        hub.ensure_source("redis", SourceKind::Docker);
+        hub.ensure_source("payments", SourceKind::Otlp);
+        let by = |n: &str| {
+            let i = hub.source(n).unwrap().info();
+            (i.meta.group.unwrap(), i.meta.group_kind.unwrap())
+        };
+        assert_eq!(by("api"), ("shop".into(), GroupKind::Compose));
+        assert_eq!(by("redis"), ("Standalone".into(), GroupKind::Standalone));
+        assert_eq!(by("payments"), ("Ingest".into(), GroupKind::Ingest));
+    }
 
     #[tokio::test]
     async fn subscribers_get_new_lines_and_meta_counts() {

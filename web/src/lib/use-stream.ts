@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Frame, LogLine } from '@/gen'
+import { setConnection } from '@/lib/connection'
 import { markSessionLost } from '@/lib/session'
 
 export type ConnState = 'connecting' | 'live' | 'reconnecting'
@@ -7,6 +8,8 @@ export type ConnState = 'connecting' | 'live' | 'reconnecting'
 export interface StreamOptions {
   source: string | null
   level?: string
+  /** Level chips, comma-separated (`warn,error`); empty = every level. */
+  levels?: string
   q?: string
   /** Client-side cap; the oldest lines fall off. */
   max?: number
@@ -30,6 +33,7 @@ export function applyFrame(prev: LogLine[], frame: Frame, max: number): LogLine[
 export function streamUrl(o: StreamOptions, base: Pick<Location, 'protocol' | 'host'> = location): string {
   const p = new URLSearchParams({ source: o.source ?? '', backlog: '1000' })
   if (o.level) p.set('level', o.level)
+  if (o.levels) p.set('levels', o.levels)
   if (o.q) p.set('q', o.q)
   const proto = base.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${base.host}/api/stream?${p}`
@@ -65,7 +69,9 @@ export function useStream(o: StreamOptions) {
   const [retryAt, setRetryAt] = useState<number | null>(null)
   const retryRef = useRef<() => void>(() => {})
 
-  const { source, level, q } = o
+  const [everConnected, setEverConnected] = useState(false)
+  const [closedAt, setClosedAt] = useState<number | null>(null)
+  const { source, level, levels, q } = o
   useEffect(() => {
     setLines([])
     setDropped(0)
@@ -78,6 +84,7 @@ export function useStream(o: StreamOptions) {
     let timer: ReturnType<typeof setTimeout> | undefined
     let raf = 0
     let pending: Frame[] = []
+    let lastClose: number | null = null
 
     // Coalesce frames into one render per animation frame.
     const drain = () => {
@@ -92,12 +99,16 @@ export function useStream(o: StreamOptions) {
       timer = undefined
       setRetryAt(null)
       setState(tries === 0 ? 'connecting' : 'reconnecting')
-      const sock = new WebSocket(streamUrl({ source, level, q }))
+      const sock = new WebSocket(streamUrl({ source, level, levels, q }))
       ws = sock
       sock.onopen = () => {
         tries = 0
         setAttempt(0)
         setState('live')
+        setEverConnected(true)
+        setClosedAt(null)
+        setConnection(null)
+        lastClose = null
       }
       sock.onmessage = (ev) => {
         const f = parseFrame(ev.data)
@@ -117,7 +128,13 @@ export function useStream(o: StreamOptions) {
         setAttempt(tries)
         setState('reconnecting')
         const wait = backoff(tries)
-        setRetryAt(Date.now() + wait)
+        const closed = Date.now()
+        setClosedAt((c) => c ?? closed)
+        setRetryAt(closed + wait)
+        // Two failed tries in a row: the server itself is unreachable (08.7).
+        lastClose = lastClose ?? closed
+        if (tries >= 2)
+          setConnection({ down: true, since: lastClose, attempt: tries, retryAt: closed + wait, retry: retryNow })
         timer = setTimeout(connect, wait)
       }
     }
@@ -143,9 +160,10 @@ export function useStream(o: StreamOptions) {
       document.removeEventListener('visibilitychange', onVisible)
       retryRef.current = () => {}
       ws?.close()
+      setConnection(null)
     }
-  }, [source, level, q, max])
+  }, [source, level, levels, q, max])
 
   const retryNow = useCallback(() => retryRef.current(), [])
-  return { lines, state, dropped, attempt, retryAt, retryNow }
+  return { lines, state, dropped, attempt, retryAt, retryNow, everConnected, closedAt }
 }

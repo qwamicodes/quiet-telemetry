@@ -35,5 +35,14 @@ export function useRevokeToken() {
   })
 }
 
+/** Undo a revoke (the server allows it for a minute; 409 after). */
+export function useRestoreToken() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => fetchJson(`/api/ingest-tokens/${id}/restore`, ingestToken, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['ingest-tokens'] }),
+  })
+}
+
 /** `qi_8d1f…1a77` → `qi_••••••••••••1a77`, for showing a secret without showing it. */
 export const maskSecret = (secret: string) => `${secret.slice(0, 3)}${'•'.repeat(12)}${secret.slice(-4)}`

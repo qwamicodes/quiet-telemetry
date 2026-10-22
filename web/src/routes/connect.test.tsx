@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CreatedIngestToken, Health, IngestToken, SourceInfo } from '@/gen'
 import { firstArrival, maskToken, snippets } from '@/lib/connect'
+import { toast } from '@/lib/toast'
 import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
 import { seedAuth } from '@/test/auth'
@@ -66,6 +67,12 @@ beforeEach(() => {
         posts.push({ url, body: null, method })
         tokens = tokens.map((t) => (t.id === Number(del[1]) ? { ...t, revoked: Date.now() } : t))
         return json(tokens.find((t) => t.id === Number(del[1])))
+      }
+      const restore = url.match(/^\/api\/ingest-tokens\/(\d+)\/restore$/)
+      if (restore && method === 'POST') {
+        posts.push({ url, body: null, method })
+        tokens = tokens.map((t) => (t.id === Number(restore[1]) ? { ...t, revoked: null } : t))
+        return json(tokens.find((t) => t.id === Number(restore[1])))
       }
       return json({ error: 'nope' }, 404)
     }),
@@ -132,6 +139,7 @@ describe('connect a source', () => {
         kind: 'vector',
         containers: [],
         group: null,
+        group_kind: null,
         lines: 41,
         last_ts: Date.now(),
         display_name: null,
@@ -163,6 +171,7 @@ describe('connect a source', () => {
         kind: 'http',
         containers: [],
         group: null,
+        group_kind: null,
         lines: 5,
         last_ts: Date.now(),
         display_name: null,
@@ -179,6 +188,7 @@ describe('connect a source', () => {
         kind: 'http',
         containers: [],
         group: null,
+        group_kind: null,
         lines: 1,
         last_ts: Date.now(),
         display_name: null,
@@ -229,6 +239,32 @@ describe('ingest tokens settings', () => {
     await waitFor(() => expect(posts.some((p) => p.method === 'DELETE' && p.url === '/api/ingest-tokens/9')).toBe(true))
     expect(await within(section).findByText('revoked')).toBeInTheDocument()
   })
+
+  it('revoke raises "Token revoked" with Undo, which restores the token', async () => {
+    const user = userEvent.setup()
+    const err = vi.spyOn(toast, 'error')
+    const ok = vi.spyOn(toast, 'success')
+    tokens = [token({ id: 4, name: 'payments-svc otlp' })]
+    renderAt('/settings/ingest-tokens')
+    const section = await screen.findByRole('region', { name: 'Ingest tokens' })
+    await user.click(await within(section).findByRole('button', { name: 'Revoke payments-svc otlp' }))
+    const confirm = await screen.findByRole('dialog')
+    expect(confirm).toHaveTextContent('undo it for a minute')
+    await user.click(within(confirm).getByRole('button', { name: 'Revoke token' }))
+    await waitFor(() => expect(err).toHaveBeenCalled())
+    const [title, opts] = err.mock.calls[0]
+    expect(title).toBe('Token revoked')
+    expect(opts?.description).toBe('payments-svc otlp can no longer send lines.')
+    expect(opts?.button?.title).toBe('Undo')
+    expect(await within(section).findByText('revoked')).toBeInTheDocument()
+
+    act(() => opts?.button?.onClick())
+    await waitFor(() =>
+      expect(posts.some((p) => p.method === 'POST' && p.url === '/api/ingest-tokens/4/restore')).toBe(true),
+    )
+    await waitFor(() => expect(ok).toHaveBeenCalledWith('Token restored', expect.anything()))
+    await waitFor(() => expect(within(section).queryByText('revoked')).not.toBeInTheDocument())
+  })
 })
 
 describe('sources page', () => {
@@ -239,6 +275,7 @@ describe('sources page', () => {
         kind: 'docker',
         containers: ['api.1'],
         group: 'legivent',
+        group_kind: null,
         lines: 1200,
         last_ts: Date.now(),
         display_name: null,
@@ -250,6 +287,7 @@ describe('sources page', () => {
         kind: 'fluentbit',
         containers: [],
         group: null,
+        group_kind: null,
         lines: 288,
         last_ts: Date.now() - 3 * 3_600_000,
         display_name: null,
@@ -261,6 +299,7 @@ describe('sources page', () => {
         kind: 'otlp',
         containers: [],
         group: null,
+        group_kind: null,
         lines: 5,
         last_ts: Date.now(),
         display_name: null,
@@ -320,6 +359,7 @@ describe('snippets', () => {
       kind,
       containers: [],
       group: null,
+      group_kind: null,
       lines,
       last_ts: 1,
       display_name: null,

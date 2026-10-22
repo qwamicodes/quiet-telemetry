@@ -3,11 +3,13 @@
 //! GET    /api/settings                    → everything (any signed-in user)
 //! PUT    /api/settings/general            GeneralSettings          (owner)
 //! PUT    /api/settings/storage            UpdateStorage            (owner)
+//! PUT    /api/settings/grouping           UpdateGrouping | null    (owner; null = auto; 400 when env-locked)
 //! PUT    /api/settings/flow-ids           FlowIdSettings           (owner)
 //! PUT    /api/settings/sources/:name      SourceSettings           (owner)
 //! DELETE /api/settings/sources/:name      back to instance defaults (owner)
 //! GET    /api/storage                     usage, partitions, volume, projection
 //! POST   /api/storage/purge               { source?, confirm }     (owner)
+//! POST   /api/sources/:name/remove        { confirm, revoke_tokens } (owner; 06.4)
 //! GET    /api/sources/:name/activity      rejected requests, paused drops
 //! GET    /api/system                      issues for the banners
 //!
@@ -17,7 +19,8 @@
 use crate::api::AppState;
 use crate::auth::{require_owner, Viewer};
 use crate::settings::{
-    FlowIdSettings, GeneralSettings, SettingsError, SourceSettings, StorageSettings, UpdateStorage,
+    FlowIdSettings, GeneralSettings, SettingsError, SourceSettings, StorageSettings,
+    UpdateGrouping, UpdateStorage,
 };
 use crate::store::{HourUsage, SourceUsage};
 use crate::system::{self, Readings, Rejection};
@@ -35,6 +38,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/settings", get(all))
         .route("/api/settings/general", put(put_general))
         .route("/api/settings/storage", put(put_storage))
+        .route("/api/settings/grouping", put(put_grouping))
         .route("/api/settings/flow-ids", put(put_flow_ids))
         .route(
             "/api/settings/sources/:name",
@@ -42,6 +46,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/storage", get(storage))
         .route("/api/storage/purge", post(purge))
+        .route("/api/sources/:name/remove", post(remove_source))
         .route("/api/sources/:name/activity", get(activity))
         .route("/api/system", get(system_status))
 }
@@ -111,6 +116,31 @@ async fn put_general(
     match write(&s, move |st| st.put_general(g, by)).await {
         Ok(g) => {
             tracing::info!(by = v.user.id, instance = %g.instance_name, "general settings changed");
+            Json(g).into_response()
+        }
+        Err(r) => r,
+    }
+}
+
+async fn put_grouping(
+    State(s): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    body: Option<Json<Option<UpdateGrouping>>>,
+) -> Response {
+    if let Err(r) = require_owner(&v) {
+        return r;
+    }
+    let Some(Json(u)) = body else {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "expected { mode: auto | label | off, label } or null",
+        );
+    };
+    let by = Some(v.user.id);
+    match write(&s, move |st| st.put_grouping(u, by)).await {
+        Ok(g) => {
+            tracing::info!(by = v.user.id, mode = ?g.mode, label = %g.label, "source grouping changed");
             Json(g).into_response()
         }
         Err(r) => r,
@@ -386,6 +416,104 @@ pub struct Purged {
     pub source: Option<String>,
 }
 
+/// `POST /api/sources/:name/remove` (board 06.4): `confirm` repeats the name.
+#[derive(Debug, Clone, Deserialize, TS)]
+pub struct RemoveSource {
+    pub confirm: String,
+    /// Also revoke the ingest tokens bound to this source (not "any source" ones).
+    #[serde(default)]
+    pub revoke_tokens: bool,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RemovedSource {
+    /// Stored lines deleted.
+    #[ts(type = "number")]
+    pub lines: u64,
+    /// Tokens revoked in this step (Undo restores them within a minute).
+    pub revoked: Vec<crate::tokens::IngestToken>,
+    /// The source's settings before (Undo puts them back).
+    pub previous: SourceSettings,
+}
+
+/// Remove a source in one step: pause ingest and hide it (so new lines are
+/// dropped), delete its stored lines, and revoke the tokens bound to it.
+async fn remove_source(
+    State(s): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    Path(name): Path<String>,
+    body: Option<Json<RemoveSource>>,
+) -> Response {
+    if let Err(r) = require_owner(&v) {
+        return r;
+    }
+    let Some(Json(req)) = body else {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "expected { confirm, revoke_tokens }",
+        );
+    };
+    if !crate::tokens_api::valid_source(&name) {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "source: 1–128 characters",
+        );
+    }
+    if req.confirm.trim() != name {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "confirm",
+            &format!("type `{name}` to confirm"),
+        );
+    }
+    let previous = s.pipeline.settings().source(&name);
+    let by = Some(v.user.id);
+    let (n, mut next) = (name.clone(), previous.clone());
+    next.paused = true;
+    next.hidden = true;
+    if let Err(r) = write(&s, move |st| st.put_source(&n, next, by)).await {
+        return r;
+    }
+    let store = s.pipeline.store();
+    if let Err(e) = store.flush().await {
+        return unavailable(e);
+    }
+    let lines = match store.purge(Some(&name)).await {
+        Ok(n) => n,
+        Err(e) => return unavailable(e),
+    };
+    if let Some(src) = s.pipeline.hub().source(&name) {
+        src.update_meta(|m| m.lines = 0);
+    }
+    let mut revoked = Vec::new();
+    if req.revoke_tokens {
+        let now = chrono::Utc::now().timestamp_millis();
+        let tokens = match s.ingest_tokens.list() {
+            Ok(t) => t,
+            Err(e) => return unavailable(e),
+        };
+        for t in tokens
+            .into_iter()
+            .filter(|t| t.revoked.is_none() && t.source.as_deref() == Some(name.as_str()))
+        {
+            match s.ingest_tokens.revoke(t.id, now) {
+                Ok(Some(t)) => revoked.push(t),
+                Ok(None) => {}
+                Err(e) => return unavailable(e),
+            }
+        }
+    }
+    tracing::warn!(by = v.user.id, source = %name, lines, revoked = revoked.len(), "source removed");
+    Json(RemovedSource {
+        lines,
+        revoked,
+        previous,
+    })
+    .into_response()
+}
+
 async fn purge(
     State(s): State<AppState>,
     Extension(v): Extension<Viewer>,
@@ -578,6 +706,35 @@ mod tests {
         assert_eq!(v["general"]["instance_name"], "quiet");
         assert_eq!(v["storage"]["retention_ms"], 24 * HOUR);
         assert_eq!(v["storage"]["retention_origin"], "default");
+        assert_eq!(v["grouping"]["mode"], "auto");
+        assert_eq!(v["grouping"]["origin"], "default");
+
+        let (s, v) = call(
+            &st,
+            Method::PUT,
+            "/api/settings/grouping",
+            Some(json!({"mode": "label", "label": "team"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["origin"], "setting");
+        let (s, _) = call(
+            &st,
+            Method::PUT,
+            "/api/settings/grouping",
+            Some(json!({"mode": "label", "label": "a b"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, v) = call(
+            &st,
+            Method::PUT,
+            "/api/settings/grouping",
+            Some(json!(null)),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["mode"], "auto");
 
         let (s, v) = call(
             &st,
@@ -633,6 +790,99 @@ mod tests {
             st.pipeline.settings().source("web"),
             SourceSettings::default()
         );
+    }
+
+    #[tokio::test]
+    async fn remove_source_pauses_purges_and_revokes_its_tokens_in_one_step() {
+        let st = state();
+        st.pipeline
+            .ingest(
+                SourceKind::Http,
+                [
+                    RawLine::new("x", "payments", 1),
+                    RawLine::new("y", "payments", 2),
+                    RawLine::new("z", "web", 1),
+                ],
+            )
+            .await
+            .unwrap();
+        let tokens = &st.ingest_tokens;
+        let bound = tokens.create("payments otlp", Some("payments"), 1).unwrap();
+        let any = tokens.create("shared", None, 1).unwrap();
+        let other = tokens.create("web", Some("web"), 1).unwrap();
+        st.pipeline
+            .settings()
+            .put_source(
+                "payments",
+                SourceSettings {
+                    display_name: Some("Payments".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+
+        let (s, v) = call(
+            &st,
+            Method::POST,
+            "/api/sources/payments/remove",
+            Some(json!({"confirm":"payment","revoke_tokens":true})),
+        )
+        .await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("confirm"))
+        );
+
+        let (s, v) = call(
+            &st,
+            Method::POST,
+            "/api/sources/payments/remove",
+            Some(json!({"confirm":"payments","revoke_tokens":true})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["lines"], 2);
+        assert_eq!(v["revoked"].as_array().unwrap().len(), 1);
+        assert_eq!(v["revoked"][0]["id"], bound.token.id);
+        assert_eq!(v["previous"]["display_name"], "Payments");
+        assert_eq!(v["previous"]["paused"], false);
+        let now_settings = st.pipeline.settings().source("payments");
+        assert!(now_settings.paused && now_settings.hidden);
+        assert_eq!(now_settings.display_name.as_deref(), Some("Payments"));
+        let list = tokens.list().unwrap();
+        let by_id = |id: i64| list.iter().find(|t| t.id == id).unwrap().revoked.is_some();
+        assert!(by_id(bound.token.id));
+        assert!(!by_id(any.token.id), "any-source tokens are shared: kept");
+        assert!(!by_id(other.token.id));
+        assert!(st
+            .pipeline
+            .store()
+            .tail("payments", 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(st.pipeline.store().tail("web", 10).await.unwrap().len(), 1);
+
+        // Without the switch the tokens stay.
+        let t2 = tokens.create("web 2", Some("web"), 1).unwrap();
+        let (s, v) = call(
+            &st,
+            Method::POST,
+            "/api/sources/web/remove",
+            Some(json!({"confirm":"web"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(v["revoked"].as_array().unwrap().is_empty());
+        assert!(tokens
+            .list()
+            .unwrap()
+            .iter()
+            .find(|t| t.id == t2.token.id)
+            .unwrap()
+            .revoked
+            .is_none());
     }
 
     #[tokio::test]

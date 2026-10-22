@@ -17,10 +17,12 @@ import { connectSearch } from '@/lib/connect'
 import {
   flowParams,
   flowSearch,
+  guideSearch,
   lineParams,
   searchSearch,
   sourceParams,
   sourceSearch,
+  sourcesSearch,
   streamSearch,
 } from '@/lib/search-params'
 import { makeQueryClient } from '@/providers'
@@ -28,6 +30,7 @@ import { BrokenAuthLink, InvitePage, ResetPage, SetupPage, SignInPage } from '@/
 import { ConnectPage } from '@/routes/connect'
 import { FlowPage, LineFlowPage } from '@/routes/flow'
 import {
+  SettingsAbout,
   SettingsAccount,
   SettingsAppearance,
   SettingsFlowIds,
@@ -141,9 +144,17 @@ export const connectRoute = createRoute({
   component: ConnectPage,
 })
 
+export const guideRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/guide',
+  validateSearch: guideSearch,
+  component: lazyRouteComponent(() => import('@/routes/guide'), 'GuidePage'),
+})
+
 const sourcesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sources',
+  validateSearch: sourcesSearch,
   component: SourcesPage,
 })
 
@@ -191,6 +202,11 @@ const settingsFlowIdsRoute = createRoute({
   path: '/flow-id-order',
   component: SettingsFlowIds,
 })
+const settingsAboutRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/about',
+  component: SettingsAbout,
+})
 const settingsAppearanceRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/appearance',
@@ -207,6 +223,7 @@ export const routeTree = rootRoute.addChildren([
   flowRoute,
   lineRoute,
   connectRoute,
+  guideRoute,
   sourcesRoute,
   sourceDetailRoute,
   settingsRoute.addChildren([
@@ -217,6 +234,7 @@ export const routeTree = rootRoute.addChildren([
     settingsFlowIdsRoute,
     settingsStorageRoute,
     settingsAppearanceRoute,
+    settingsAboutRoute,
   ]),
 ])
 

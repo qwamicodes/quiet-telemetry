@@ -2,6 +2,7 @@
 //! env-only setup (`QUIET_ADDR=… quiet`) keeps working.
 
 use crate::auth::{AuthMode, CookieSecure};
+use crate::grouping::GroupMode;
 use crate::receiver::IngestAuth;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
@@ -126,6 +127,17 @@ pub struct ServerArgs {
     /// Disk cap for the database; the oldest hour goes first (e.g. `5GB`, `500MB`).
     #[arg(long, env = "QUIET_MAX_DISK", default_value = "5GB", value_parser = parse_bytes)]
     pub max_disk: u64,
+
+    /// How sources are grouped in the UI: `auto` (quiet.group label, then
+    /// Compose project, then Swarm stack), `label` (see --group-label) or `off`.
+    /// When set it wins over Settings → General and locks that control.
+    #[arg(long, env = "QUIET_GROUP_BY", value_enum)]
+    pub group_by: Option<GroupMode>,
+
+    /// The Docker label `--group-by label` reads (default `quiet.group`).
+    /// When set it also locks the control.
+    #[arg(long, env = "QUIET_GROUP_LABEL")]
+    pub group_label: Option<String>,
 
     /// Serve the UI from this directory instead of the copy built into the binary.
     #[arg(long, env = "QUIET_WEB_DIR")]
@@ -293,6 +305,8 @@ mod tests {
         assert_eq!(cli.server.store, StoreKind::Sqlite);
         assert_eq!(cli.server.retention, Duration::from_secs(86_400));
         assert_eq!(cli.server.max_disk, 5_000_000_000);
+        assert_eq!(cli.server.group_by, None::<GroupMode>);
+        assert_eq!(cli.server.group_label, None);
         assert_eq!(cli.server.ring_memory, 64_000_000);
         assert_eq!(parse_ring_memory("128MB"), Ok(128_000_000));
         assert!(parse_ring_memory("10KB").is_err());

@@ -151,7 +151,7 @@ impl Formatter {
                 o.insert("level".into(), json!(l.level));
                 for id in &l.ids {
                     o.insert(
-                        serde_json::to_value(id.key)
+                        serde_json::to_value(&id.key)
                             .unwrap()
                             .as_str()
                             .unwrap()

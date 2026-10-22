@@ -69,15 +69,92 @@ impl Level {
     }
 }
 
-/// Canonical correlation-id key. Order is display priority.
+/// A built-in correlation-id key (the TypeScript side's `BuiltinIdKey`).
+/// Only exported to TypeScript; Rust code uses [`IdKey`] directly.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)] // they mirror the wire keys
+pub enum BuiltinIdKey {
+    RequestId,
+    JobId,
+    TraceId,
+    CorrelationId,
+}
+
+/// Canonical correlation-id key. Order is display priority.
+///
+/// The four built-ins match their usual spellings anywhere in the line (a few
+/// levels deep); a `Custom` key is a field name the user added in Settings →
+/// Flow id order (e.g. `x-request-id`, `ctx.trace`): it matches an exact
+/// top-level key first, then the dotted path. On the wire every key is its
+/// name, so the TypeScript type is `BuiltinIdKey | (string & {})`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, TS)]
+#[ts(type = "\"request_id\" | \"job_id\" | \"trace_id\" | \"correlation_id\" | (string & {})")]
 #[allow(clippy::enum_variant_names)] // they mirror the wire keys
 pub enum IdKey {
     RequestId,
     JobId,
     TraceId,
     CorrelationId,
+    Custom(String),
+}
+
+impl IdKey {
+    pub fn as_str(&self) -> &str {
+        match self {
+            IdKey::RequestId => "request_id",
+            IdKey::JobId => "job_id",
+            IdKey::TraceId => "trace_id",
+            IdKey::CorrelationId => "correlation_id",
+            IdKey::Custom(s) => s,
+        }
+    }
+
+    /// A built-in name maps to the built-in; anything else is a custom field.
+    pub fn from_name(s: &str) -> IdKey {
+        match s {
+            "request_id" => IdKey::RequestId,
+            "job_id" => IdKey::JobId,
+            "trace_id" => IdKey::TraceId,
+            "correlation_id" => IdKey::CorrelationId,
+            other => IdKey::Custom(other.to_string()),
+        }
+    }
+
+    pub fn is_custom(&self) -> bool {
+        matches!(self, IdKey::Custom(_))
+    }
+
+    /// The id index's `key` column: 0–3 for built-ins, the name for custom keys.
+    pub fn builtin_rank(&self) -> Option<u8> {
+        match self {
+            IdKey::RequestId => Some(0),
+            IdKey::JobId => Some(1),
+            IdKey::TraceId => Some(2),
+            IdKey::CorrelationId => Some(3),
+            IdKey::Custom(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for IdKey {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for IdKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for IdKey {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(IdKey::from_name(&s))
+    }
 }
 
 /// One correlation id found on a line, with its canonical key.
@@ -215,6 +292,16 @@ pub fn normalize(raw: &str, source: &str, collector_ts: Option<i64>, received: i
     // Which keys count for this source, and in what order (Settings → Flow id
     // order, per-source override). The default keeps every key, request_id first.
     let order = crate::idpolicy::order_for(source);
+    for key in order.iter().filter(|k| k.is_custom()) {
+        if let Some(value) = custom_id(&map, key.as_str()) {
+            if !ids.iter().any(|i| i.key == *key && i.value == value) {
+                ids.push(CorrId {
+                    key: key.clone(),
+                    value,
+                });
+            }
+        }
+    }
     ids.retain(|i| order.contains(&i.key));
     let display_id = order
         .iter()
@@ -247,7 +334,10 @@ fn collect_ids(map: &Map<String, Value>, depth: usize, out: &mut Vec<CorrId>) {
                     _ => continue,
                 };
                 if !out.iter().any(|i| i.key == *canon && i.value == value) {
-                    out.push(CorrId { key: *canon, value });
+                    out.push(CorrId {
+                        key: canon.clone(),
+                        value,
+                    });
                 }
             }
         }
@@ -259,6 +349,39 @@ fn collect_ids(map: &Map<String, Value>, depth: usize, out: &mut Vec<CorrId>) {
         if let Value::Object(child) = v {
             collect_ids(child, depth + 1, out);
         }
+    }
+}
+
+/// The value `key` would pick up from a parsed line, whatever the id policy
+/// says: built-ins by their spellings (a few levels deep), custom keys by
+/// exact key then dotted path. Settings → Flow id order shows this coverage.
+pub fn id_value(map: &Map<String, Value>, key: &IdKey) -> Option<String> {
+    if key.is_custom() {
+        return custom_id(map, key.as_str());
+    }
+    let mut ids = Vec::new();
+    collect_ids(map, 0, &mut ids);
+    ids.into_iter().find(|i| i.key == *key).map(|i| i.value)
+}
+
+/// A custom id field: the exact top-level key first (`x-request-id`,
+/// `ctx.trace` written flat), then the dotted path (`ctx` → `trace`).
+pub fn custom_id(map: &Map<String, Value>, name: &str) -> Option<String> {
+    let v = map.get(name).or_else(|| {
+        if !name.contains('.') {
+            return None;
+        }
+        let mut parts = name.split('.');
+        let mut cur = map.get(parts.next()?)?;
+        for p in parts {
+            cur = cur.as_object()?.get(p)?;
+        }
+        Some(cur)
+    })?;
+    match v {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
     }
 }
 
@@ -449,7 +572,11 @@ mod tests {
             None,
             NOW,
         );
-        let keys: Vec<_> = l.ids.iter().map(|i| (i.key, i.value.as_str())).collect();
+        let keys: Vec<_> = l
+            .ids
+            .iter()
+            .map(|i| (i.key.clone(), i.value.as_str()))
+            .collect();
         assert!(keys.contains(&(IdKey::JobId, "42")));
         assert!(keys.contains(&(IdKey::RequestId, "req_1")));
         assert!(keys.contains(&(IdKey::TraceId, "t1")));

@@ -15,6 +15,7 @@
 //! the pipeline reads `paused` per batch, and the correlation-id policy is
 //! re-installed for `normalize` (see `idpolicy.rs`).
 
+use crate::grouping::{self, GroupMode, Grouping, DEFAULT_GROUP_LABEL};
 use crate::idpolicy::{self, IdPolicy};
 use crate::normalize::{IdKey, Level};
 use rusqlite::{params, Connection};
@@ -46,8 +47,26 @@ pub enum StreamDirection {
     Top,
 }
 
+/// How rows show their time (Settings → General → Timestamps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TimestampFormat {
+    /// `14:07:35`
+    Seconds,
+    /// `14:07:35.412` (the default).
+    #[default]
+    Millis,
+    /// `2s ago`
+    Relative,
+}
+
+pub const DEFAULT_MAX_LINE_BYTES: u32 = 64 * 1024;
+pub const MIN_MAX_LINE_BYTES: u32 = 1024;
+pub const MAX_MAX_LINE_BYTES: u32 = 4 * 1024 * 1024;
+
 /// Settings → General.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
 pub struct GeneralSettings {
     /// Browser tab, user menu and "Join <name>" on invite links.
     pub instance_name: String,
@@ -55,6 +74,16 @@ pub struct GeneralSettings {
     pub stream_direction: StreamDirection,
     /// `local` (each viewer's browser zone), `UTC`, or an IANA zone like `Africa/Accra`.
     pub timezone: String,
+    /// Where people reach quiet (`https://quiet.example.com`), used in invite
+    /// links and Connect snippets. `null` uses the browser's address.
+    pub public_url: Option<String>,
+    pub timestamps: TimestampFormat,
+    /// Longer lines are cut to this many bytes and flagged `truncated:<bytes>`.
+    pub max_line_bytes: u32,
+    /// Off drops plain-text (non-JSON) lines at ingest.
+    pub keep_non_json: bool,
+    /// Settings → About checks GitHub releases from the browser when on.
+    pub check_updates: bool,
 }
 
 impl Default for GeneralSettings {
@@ -63,6 +92,11 @@ impl Default for GeneralSettings {
             instance_name: "quiet".into(),
             stream_direction: StreamDirection::Bottom,
             timezone: "local".into(),
+            public_url: None,
+            timestamps: TimestampFormat::Millis,
+            max_line_bytes: DEFAULT_MAX_LINE_BYTES,
+            keep_non_json: true,
+            check_updates: false,
         }
     }
 }
@@ -108,6 +142,21 @@ pub struct UpdateStorage {
 }
 
 /// Absent → `None` (leave as is); `null` → `Some(None)` (clear).
+fn valid_public_url(u: &str) -> bool {
+    let rest = u
+        .strip_prefix("https://")
+        .or_else(|| u.strip_prefix("http://"));
+    match rest {
+        Some(r) => {
+            let host = r.split('/').next().unwrap_or("");
+            u.len() <= 200
+                && !host.is_empty()
+                && !u.chars().any(|c| c.is_whitespace() || c.is_control())
+        }
+        None => false,
+    }
+}
+
 fn nullable<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<Option<T>>, D::Error> {
@@ -176,13 +225,31 @@ pub struct SourceSettings {
     pub mask_fields: Vec<String>,
     /// Built-in PII groups NOT masked for this source.
     pub unmasked: Vec<PiiKind>,
+    /// Muted lines (board 06.3): lines matching any rule are hidden from the
+    /// stream and search by default ("N muted · show"); still stored,
+    /// counted and searchable. Matching happens in the browser.
+    pub muted: Vec<MuteRule>,
 }
+
+/// One muted-lines rule. With `field`, the field's value (dot path, compared
+/// as text) equals `value`, where `*` matches any run of characters
+/// (`/api/v1/health*`). Without, `value` appears anywhere in the raw line
+/// (case-insensitive).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MuteRule {
+    pub field: Option<String>,
+    pub value: String,
+}
+
+/// At most this many muted-lines rules per source.
+pub const MAX_MUTE_RULES: usize = 32;
 
 /// `GET /api/settings`: everything at once (any signed-in user).
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct SettingsResponse {
     pub general: GeneralSettings,
     pub storage: StorageSettings,
+    pub grouping: GroupingSettings,
     pub flow_ids: FlowIdSettings,
     pub sources: BTreeMap<String, SourceSettings>,
 }
@@ -190,10 +257,15 @@ pub struct SettingsResponse {
 // ---- store ---------------------------------------------------------------------------
 
 /// The flag/env values, the layer under saved settings.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Defaults {
     pub retention_ms: i64,
     pub max_disk: u64,
+    /// `--group-by` / `QUIET_GROUP_BY`. When set it wins over the UI and
+    /// locks the Source grouping control (unlike storage, where the UI wins).
+    pub group_by: Option<GroupMode>,
+    /// `--group-label` / `QUIET_GROUP_LABEL` (also locks the control).
+    pub group_label: Option<String>,
 }
 
 impl Default for Defaults {
@@ -201,8 +273,29 @@ impl Default for Defaults {
         Defaults {
             retention_ms: DEFAULT_RETENTION_MS,
             max_disk: DEFAULT_MAX_DISK,
+            group_by: None,
+            group_label: None,
         }
     }
+}
+
+/// Settings → General → Source grouping, as saved (`PUT /api/settings/grouping`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct UpdateGrouping {
+    pub mode: GroupMode,
+    /// The Docker label read in `label` mode (kept, unused, in the others).
+    pub label: String,
+}
+
+/// The source grouping in effect and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct GroupingSettings {
+    pub mode: GroupMode,
+    pub label: String,
+    /// `flag` when QUIET_GROUP_BY / QUIET_GROUP_LABEL is set (then `locked`).
+    pub origin: Origin,
+    /// Set in the server's environment: the UI shows it read-only.
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -215,6 +308,7 @@ struct StorageOverride {
 struct State {
     general: GeneralSettings,
     storage: StorageOverride,
+    grouping: Option<UpdateGrouping>,
     flow_ids: FlowIdSettings,
     sources: BTreeMap<String, SourceSettings>,
 }
@@ -290,6 +384,7 @@ impl Settings {
                 let ok = match k.as_str() {
                     "general" => serde_json::from_str(&v).map(|x| state.general = x),
                     "storage" => serde_json::from_str(&v).map(|x| state.storage = x),
+                    "grouping" => serde_json::from_str(&v).map(|x| state.grouping = Some(x)),
                     "flow_ids" => serde_json::from_str(&v).map(|x| state.flow_ids = x),
                     k => match k.strip_prefix("source:") {
                         Some(name) => serde_json::from_str(&v).map(|x| {
@@ -337,6 +432,11 @@ impl Settings {
         if !self.publish {
             return;
         }
+        let g = self.grouping();
+        grouping::install(Grouping {
+            mode: g.mode,
+            label: g.label,
+        });
         let st = self.state.read().unwrap();
         idpolicy::install(IdPolicy {
             global: st.flow_ids.order.clone(),
@@ -355,7 +455,7 @@ impl Settings {
     }
 
     pub fn storage(&self) -> StorageSettings {
-        let d = *self.defaults.read().unwrap();
+        let d = self.defaults.read().unwrap().clone();
         let o = self.state.read().unwrap().storage.clone();
         let flag_origin = |is_default: bool| {
             if is_default {
@@ -432,9 +532,16 @@ impl Settings {
         SettingsResponse {
             general: self.general(),
             storage: self.storage(),
+            grouping: self.grouping(),
             flow_ids: self.flow_ids(),
             sources: self.sources(),
         }
+    }
+
+    /// The line-size cap and the non-JSON switch, read per ingest batch.
+    pub fn ingest_rules(&self) -> (usize, bool) {
+        let g = &self.state.read().unwrap().general;
+        (g.max_line_bytes as usize, g.keep_non_json)
     }
 
     // ---- writes (callers check the owner role) ----
@@ -454,6 +561,18 @@ impl Settings {
         g.timezone = g.timezone.trim().to_string();
         if !valid_timezone(&g.timezone) {
             return invalid("timezone: `local`, `UTC` or an IANA zone like Africa/Accra");
+        }
+        g.public_url = g
+            .public_url
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty());
+        if let Some(u) = &g.public_url {
+            if !valid_public_url(u) {
+                return invalid("public_url: an http(s) address like https://quiet.example.com");
+            }
+        }
+        if !(MIN_MAX_LINE_BYTES..=MAX_MAX_LINE_BYTES).contains(&g.max_line_bytes) {
+            return invalid("max_line_bytes: between 1 KB and 4 MB");
         }
         self.save("general", Some(serde_json::to_string(&g)?), by)?;
         self.state.write().unwrap().general = g.clone();
@@ -489,6 +608,70 @@ impl Settings {
         self.state.write().unwrap().storage = o;
         self.changed.notify_one();
         Ok(self.storage())
+    }
+
+    pub fn grouping(&self) -> GroupingSettings {
+        let d = self.defaults.read().unwrap().clone();
+        let saved = self.state.read().unwrap().grouping.clone();
+        let locked = d.group_by.is_some() || d.group_label.is_some();
+        let (mode, label, origin) = match (locked, saved) {
+            (false, Some(u)) => (u.mode, u.label, Origin::Setting),
+            (false, None) => (
+                GroupMode::Auto,
+                DEFAULT_GROUP_LABEL.to_string(),
+                Origin::Default,
+            ),
+            (true, saved) => {
+                let base = saved.unwrap_or(UpdateGrouping {
+                    mode: GroupMode::Auto,
+                    label: DEFAULT_GROUP_LABEL.into(),
+                });
+                (
+                    d.group_by.unwrap_or(base.mode),
+                    d.group_label.unwrap_or(base.label),
+                    Origin::Flag,
+                )
+            }
+        };
+        GroupingSettings {
+            mode,
+            label,
+            origin,
+            locked,
+        }
+    }
+
+    /// Save the source grouping, or `None` for the default (auto).
+    /// Applies at once: `/api/sources` regroups on its next read. Refused
+    /// while QUIET_GROUP_BY / QUIET_GROUP_LABEL is set.
+    pub fn put_grouping(
+        &self,
+        u: Option<UpdateGrouping>,
+        by: Option<i64>,
+    ) -> Result<GroupingSettings, SettingsError> {
+        if self.grouping().locked {
+            return invalid("grouping: set by QUIET_GROUP_BY / QUIET_GROUP_LABEL on the server");
+        }
+        let u = match u {
+            Some(mut u) => {
+                u.label = u.label.trim().to_string();
+                if u.label.is_empty() && u.mode != GroupMode::Label {
+                    u.label = DEFAULT_GROUP_LABEL.into();
+                }
+                if !grouping::valid_label(&u.label) {
+                    return invalid(
+                        "label: a Docker label key (letters, digits, . - _ /), up to 128 characters",
+                    );
+                }
+                Some(u)
+            }
+            None => None,
+        };
+        let value = u.as_ref().map(serde_json::to_string).transpose()?;
+        self.save("grouping", value, by)?;
+        self.state.write().unwrap().grouping = u;
+        self.install_policy();
+        Ok(self.grouping())
     }
 
     pub fn put_flow_ids(
@@ -548,6 +731,36 @@ impl Settings {
             return invalid("mask_fields: at most 64 keys");
         }
         s.mask_fields = fields;
+        let mut muted: Vec<MuteRule> = Vec::new();
+        for r in &s.muted {
+            let field = r
+                .field
+                .as_deref()
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .map(String::from);
+            let value = r.value.trim().to_string();
+            if value.is_empty() {
+                continue;
+            }
+            if value.chars().count() > 256
+                || value.chars().any(char::is_control)
+                || field.as_ref().is_some_and(|f| {
+                    f.chars().count() > 128
+                        || f.chars().any(|c| c.is_control() || c.is_whitespace())
+                })
+            {
+                return invalid("muted: field up to 128 characters (no spaces), value up to 256");
+            }
+            let rule = MuteRule { field, value };
+            if !muted.contains(&rule) {
+                muted.push(rule);
+            }
+        }
+        if muted.len() > MAX_MUTE_RULES {
+            return invalid(format!("muted: at most {MAX_MUTE_RULES} rules"));
+        }
+        s.muted = muted;
         s.unmasked.sort_by_key(|k| *k as u8);
         s.unmasked.dedup();
 
@@ -598,18 +811,42 @@ pub struct Masker {
     pub unmasked: Vec<PiiKind>,
 }
 
+/// At most this many custom id fields in one order.
+pub const MAX_CUSTOM_ID_KEYS: usize = 8;
+
 fn check_order(o: &[IdKey]) -> Result<(), SettingsError> {
     if o.is_empty() {
         return invalid("order: keep at least one id key");
     }
-    let mut seen = Vec::new();
+    let mut seen: Vec<&IdKey> = Vec::new();
     for k in o {
-        if seen.contains(k) {
+        if seen.contains(&k) {
             return invalid("order: each key once");
         }
-        seen.push(*k);
+        if let IdKey::Custom(name) = k {
+            if !valid_custom_key(name) {
+                return invalid(
+                    "order: a custom id field is 1–64 characters of letters, digits and . _ - : @, with no empty path segment",
+                );
+            }
+        }
+        seen.push(k);
+    }
+    if o.iter().filter(|k| k.is_custom()).count() > MAX_CUSTOM_ID_KEYS {
+        return invalid("order: at most 8 custom id fields");
     }
     Ok(())
+}
+
+/// A field name or dotted path a custom id key can match: `x-request-id`,
+/// `ctx.trace`, `meta.correlation`. No spaces, no empty segments.
+pub fn valid_custom_key(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '@'))
+        && name.split('.').all(|seg| !seg.is_empty())
 }
 
 /// `local`, `UTC`, or something shaped like an IANA zone. The browser checks
@@ -639,13 +876,62 @@ mod tests {
     }
 
     #[test]
+    fn grouping_saves_and_env_wins_and_locks() {
+        let path = tmp();
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        let g = s.grouping();
+        assert_eq!(
+            (g.mode, g.label.as_str(), g.origin, g.locked),
+            (GroupMode::Auto, "quiet.group", Origin::Default, false)
+        );
+        let bad = |label: &str| UpdateGrouping {
+            mode: GroupMode::Label,
+            label: label.into(),
+        };
+        assert!(s.put_grouping(Some(bad("a b")), None).is_err());
+        assert!(s.put_grouping(Some(bad(" ")), None).is_err());
+        let g = s
+            .put_grouping(
+                Some(UpdateGrouping {
+                    mode: GroupMode::Off,
+                    label: String::new(),
+                }),
+                Some(1),
+            )
+            .unwrap();
+        assert_eq!(
+            (g.mode, g.label.as_str(), g.origin),
+            (GroupMode::Off, "quiet.group", Origin::Setting)
+        );
+        drop(s);
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        assert_eq!(s.grouping().mode, GroupMode::Off, "survives a restart");
+        assert_eq!(s.put_grouping(None, None).unwrap().mode, GroupMode::Auto);
+        drop(s);
+
+        // Env set: it wins over the saved value and the control is locked.
+        let env = Defaults {
+            group_by: Some(GroupMode::Label),
+            group_label: Some("team".into()),
+            ..Default::default()
+        };
+        let s = Settings::open(Some(&path), env, false).unwrap();
+        let g = s.grouping();
+        assert_eq!(
+            (g.mode, g.label.as_str(), g.origin, g.locked),
+            (GroupMode::Label, "team", Origin::Flag, true)
+        );
+        assert!(s.put_grouping(None, None).is_err());
+    }
+
+    #[test]
     fn saved_storage_beats_flags_which_beat_defaults_and_survives_restart() {
         let path = tmp();
         let flags = Defaults {
             retention_ms: 3 * 24 * HOUR_MS,
-            max_disk: DEFAULT_MAX_DISK,
+            ..Default::default()
         };
-        let s = Settings::open(Some(&path), flags, false).unwrap();
+        let s = Settings::open(Some(&path), flags.clone(), false).unwrap();
         let st = s.storage();
         assert_eq!(st.retention_ms, 3 * 24 * HOUR_MS);
         assert_eq!(st.retention_origin, Origin::Flag);
@@ -716,6 +1002,7 @@ mod tests {
             instance_name: name.into(),
             stream_direction: StreamDirection::Top,
             timezone: tz.into(),
+            ..Default::default()
         };
         assert!(s.put_general(g("", "local"), None).is_err());
         assert!(s.put_general(g("legivent", "Mars/../x"), None).is_err());
@@ -725,6 +1012,96 @@ mod tests {
         assert_eq!(saved.instance_name, "legivent");
         assert_eq!(s.general().stream_direction, StreamDirection::Top);
         assert!(valid_timezone("America/Argentina/Buenos_Aires") && valid_timezone("UTC"));
+
+        // Public URL: trimmed, trailing slash dropped, empty clears; caps checked.
+        let with = |u: &str, max: u32| GeneralSettings {
+            public_url: Some(u.into()),
+            max_line_bytes: max,
+            ..Default::default()
+        };
+        assert!(s
+            .put_general(with("quiet.legivent.com", 65_536), None)
+            .is_err());
+        assert!(s.put_general(with("https://a b", 65_536), None).is_err());
+        assert!(s.put_general(with("https://q.x", 10), None).is_err());
+        let saved = s
+            .put_general(with(" https://quiet.legivent.com/ ", 131_072), None)
+            .unwrap();
+        assert_eq!(
+            saved.public_url.as_deref(),
+            Some("https://quiet.legivent.com")
+        );
+        assert_eq!(s.ingest_rules(), (131_072, true));
+        let cleared = s.put_general(with("  ", 65_536), None).unwrap();
+        assert_eq!(cleared.public_url, None);
+        // An old saved value without the new keys still reads.
+        let old: GeneralSettings = serde_json::from_str(
+            r#"{"instance_name":"x","stream_direction":"top","timezone":"UTC"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.max_line_bytes, DEFAULT_MAX_LINE_BYTES);
+        assert!(old.keep_non_json && !old.check_updates);
+    }
+
+    #[test]
+    fn muted_rules_are_trimmed_deduped_and_bounded() {
+        let s = Settings::memory();
+        let rule = |f: Option<&str>, v: &str| MuteRule {
+            field: f.map(String::from),
+            value: v.into(),
+        };
+        let saved = s
+            .put_source(
+                "api",
+                SourceSettings {
+                    muted: vec![
+                        rule(Some(" path "), " /api/v1/health "),
+                        rule(Some("path"), "/api/v1/health"),
+                        rule(Some(""), "kube-probe"),
+                        rule(None, "  "),
+                    ],
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            saved.muted,
+            vec![
+                rule(Some("path"), "/api/v1/health"),
+                rule(None, "kube-probe")
+            ]
+        );
+        assert_eq!(s.source("api").muted.len(), 2);
+        let bad = |r: MuteRule| {
+            s.put_source(
+                "api",
+                SourceSettings {
+                    muted: vec![r],
+                    ..Default::default()
+                },
+                None,
+            )
+            .is_err()
+        };
+        assert!(bad(rule(Some("a b"), "x")));
+        assert!(bad(rule(None, &"x".repeat(257))));
+        let many = (0..=MAX_MUTE_RULES)
+            .map(|i| rule(None, &format!("r{i}")))
+            .collect();
+        assert!(s
+            .put_source(
+                "api",
+                SourceSettings {
+                    muted: many,
+                    ..Default::default()
+                },
+                None
+            )
+            .is_err());
+        // Old saved settings (no `muted` key) still read.
+        let old: SourceSettings = serde_json::from_str(r#"{"hidden":true}"#).unwrap();
+        assert!(old.muted.is_empty() && old.hidden);
     }
 
     #[test]

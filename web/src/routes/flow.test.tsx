@@ -14,6 +14,7 @@ const sources: SourceInfo[] = [
     kind: 'docker',
     containers: [],
     group: null,
+    group_kind: null,
     lines: 3,
     last_ts: T,
     display_name: null,
@@ -25,6 +26,7 @@ const sources: SourceInfo[] = [
     kind: 'docker',
     containers: [],
     group: null,
+    group_kind: null,
     lines: 3,
     last_ts: T,
     display_name: null,
@@ -223,7 +225,10 @@ class FakeSocket {
   constructor(public url: string) {
     queueMicrotask(() => {
       this.onopen?.()
-      this.onmessage?.({ data: JSON.stringify({ type: 'backlog', lines: [reqLine, failed] }) })
+      // Fresh timestamps: the stream hides a backlog older than 5 min as "quiet" (08.5).
+      const now = Date.now()
+      const lines = [reqLine, failed].map((l, i) => ({ ...l, ts: now - 1_000 + i, received: now - 1_000 + i }))
+      this.onmessage?.({ data: JSON.stringify({ type: 'backlog', lines }) })
     })
   }
   close() {}
@@ -250,6 +255,7 @@ beforeEach(() => {
         if (p.get('id') === 'req_1' || p.get('id') === 'payout:1' || p.get('line') === '3') return json(ok(multi))
         if (p.get('id') === 'req_9' || p.get('line') === '7') return json(ok(one))
         if (p.get('id') === 'trace_1') return json(ok(traced))
+        if (p.get('id') === 'req_gone') return json({ ...notFound, id: 'req_gone', close: [] }, 404)
         return json(notFound, 404)
       }
       if (url.startsWith('/api/search')) {
@@ -364,6 +370,68 @@ describe('flow route', () => {
       'href',
       expect.stringContaining('/search?'),
     )
+    expect(screen.getByRole('link', { name: 'Settings → Storage' })).toHaveAttribute('href', '/settings/storage')
+  })
+
+  it('Export flow (05.6) exports every id of the flow over its whole span, gzip off', async () => {
+    const user = userEvent.setup()
+    renderAt('/flow/req_1')
+    await screen.findByRole('heading', { name: 'POST /api/v1/payouts' })
+    const header = screen.getAllByRole('banner')[0]
+    const buttons = within(header)
+      .getAllByRole('button')
+      .map((b) => b.textContent)
+    expect(buttons.slice(-3)).toEqual(['Export flow', 'Copy flow JSON', 'Open in stream'])
+    await user.click(screen.getByRole('button', { name: 'Export flow' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(
+      within(dialog).getByText('Every line stitched into this flow, from both sources, in time order.'),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText(/whole flow/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/3 lines · 4 steps/)).toBeInTheDocument()
+    expect(within(dialog).getByText('quiet-flow-req_1.ndjson')).toBeInTheDocument()
+    const href = decodeURIComponent(within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? '')
+    expect(href).toContain('id=req_1,payout:1')
+    expect(href).toContain(`since=${T}`)
+    expect(href).toContain(`until=${T + 1_100}`)
+    expect(href).not.toContain('gzip')
+  })
+
+  it('o opens the flow in the stream; esc goes back to the stream', async () => {
+    const user = userEvent.setup()
+    const router = renderAt('/flow/req_1')
+    await screen.findByRole('heading', { name: 'POST /api/v1/payouts' })
+    await user.keyboard('o')
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    expect(router.state.location.search).toMatchObject({ source: 'api', q: 'req_1' })
+
+    await router.navigate({ to: '/flow/$id', params: { id: 'req_1' } })
+    await screen.findByRole('heading', { name: 'POST /api/v1/payouts' })
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+  })
+
+  it('a one-node flow card can open its line in the stream', async () => {
+    const user = userEvent.setup()
+    const router = renderAt('/flow/req_9')
+    await screen.findByText('A one-node flow is just the card')
+    const card = screen.getByRole('region', { name: 'Line details' })
+    await user.click(within(card).getByRole('button', { name: /Open in stream/ }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+  })
+
+  it('an id with no close matches gets the 404 page (08.6)', async () => {
+    renderAt('/flow/req_gone')
+    expect(await screen.findByText('This flow is no longer in the window.')).toBeInTheDocument()
+    expect(screen.getByText('Searchable window')).toBeInTheDocument()
+    expect(screen.getByText('request_id, job_id, trace_id, correlation_id')).toBeInTheDocument()
+    expect(screen.getByText(/all 2 · none paused/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Back to stream' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('button', { name: /Search 24h for req_gone/ })).toHaveAttribute(
+      'href',
+      expect.stringContaining('/search?'),
+    )
+    expect(screen.getByRole('button', { name: 'Storage settings' })).toHaveAttribute('href', '/settings/storage')
   })
 
   it('/line/$lineId opens a line as its flow; a non-numeric line id is a broken link', async () => {
@@ -385,7 +453,7 @@ describe('stream → flow', () => {
   it('shows each row’s flow steps and opens the selected line as a flow with Enter', async () => {
     const user = userEvent.setup()
     const router = renderAt('/?source=api')
-    const row = await screen.findByText('create_payout → 201')
+    const row = await screen.findByText('create_payout', {}, { timeout: 5000 })
     // Steps column: one square per step, once the batched summaries land.
     await waitFor(() => expect(screen.getAllByTitle('4 steps · 3 lines').length).toBeGreaterThan(0), {
       timeout: 3000,

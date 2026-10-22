@@ -7,7 +7,11 @@ export type Bucket = {
 /**
  * Bucket start, unix ms.
  */
-start: number, count: number, warn: number, 
+start: number, count: number, 
+/**
+ * trace + debug
+ */
+debug: number, info: number, warn: number, 
 /**
  * error + fatal
  */

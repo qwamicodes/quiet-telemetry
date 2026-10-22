@@ -10,12 +10,15 @@
 //! - bare words and quoted phrases: full text over the raw line (FTS5 in SQLite,
 //!   every word is a prefix, so `dealer` finds `dealers`)
 //! - `-word`: lines without it
-//! - `level:warn` (or `>=warn`, `≥warn`): minimum level
+//! - `level:warn` (or `>=warn`, `≥warn`): minimum level; `level:info,warn`:
+//!   exactly those levels (debug includes trace, error includes fatal)
 //! - `source:name`: one or more sources (repeat for several)
 //! - `id:value`, `request_id:value`, `job_id:…`, `trace_id:…`, `correlation_id:…`:
 //!   any line carrying that correlation id (the side index)
-//! - any other `key:value`: a field equals value (`err.code:X` walks dots)
-//! - `-key:value`: the field is not that value
+//! - any other `key:value`: a field equals value (`err.code:X` walks dots);
+//!   `status:>=400` (`>`, `<`, `<=`, `≥`, `≤`) compares numbers and
+//!   `path:/api/v1/orders*` matches a prefix
+//! - `-key:value`: the field is not that value (or fails the comparison)
 
 use crate::hub::Line;
 use crate::normalize::Level;
@@ -31,12 +34,101 @@ pub enum Order {
     Oldest,
 }
 
+/// How a field filter compares.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Op {
+    #[default]
+    Eq,
+    Gt,
+    Ge,
+    Lt,
+    Le,
+    /// `value*`: the field's text starts with `value`.
+    Prefix,
+}
+
+impl Op {
+    /// Split an operator off a filter value: `>=400` → (Ge, "400"), `/a*` → (Prefix, "/a").
+    pub fn split(v: &str) -> (Op, &str) {
+        for (p, op) in [
+            (">=", Op::Ge),
+            ("≥", Op::Ge),
+            ("<=", Op::Le),
+            ("≤", Op::Le),
+            (">", Op::Gt),
+            ("<", Op::Lt),
+        ] {
+            if let Some(rest) = v.strip_prefix(p) {
+                if rest.trim().parse::<f64>().is_ok() {
+                    return (op, rest.trim());
+                }
+            }
+        }
+        match v.strip_suffix('*') {
+            Some(rest) if !rest.is_empty() => (Op::Prefix, rest),
+            _ => (Op::Eq, v),
+        }
+    }
+
+    /// Does `got` (a field's text) pass `op value`?
+    pub fn test(self, got: &str, value: &str) -> bool {
+        let num = |s: &str| s.trim().parse::<f64>().ok();
+        match self {
+            Op::Eq => got == value,
+            Op::Prefix => got.starts_with(value),
+            _ => match (num(got), num(value)) {
+                (Some(g), Some(v)) => match self {
+                    Op::Gt => g > v,
+                    Op::Ge => g >= v,
+                    Op::Lt => g < v,
+                    Op::Le => g <= v,
+                    _ => unreachable!(),
+                },
+                _ => false,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldFilter {
     /// Dot path into the parsed fields (`err.code`).
     pub key: String,
     pub value: String,
     pub negate: bool,
+    pub op: Op,
+}
+
+/// The four level chips. `debug` covers trace, `error` covers fatal.
+pub fn level_chip(l: Level) -> Level {
+    match l {
+        Level::Trace | Level::Debug => Level::Debug,
+        Level::Fatal | Level::Error => Level::Error,
+        other => other,
+    }
+}
+
+/// Stored level ranks a chip stands for (SQL `level IN (…)`).
+pub fn chip_ranks(l: Level) -> &'static [i64] {
+    match level_chip(l) {
+        Level::Debug => &[0, 1],
+        Level::Info => &[2],
+        Level::Warn => &[3],
+        _ => &[4, 5],
+    }
+}
+
+/// `info,warn` → the chips, deduplicated; unknown names are an error.
+pub fn parse_levels(s: &str) -> Result<Vec<Level>, String> {
+    let mut out: Vec<Level> = Vec::new();
+    for name in s.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let l =
+            level_chip(Level::parse_name(name).ok_or_else(|| format!("unknown level `{name}`"))?);
+        if !out.contains(&l) {
+            out.push(l);
+        }
+    }
+    Ok(out)
 }
 
 /// Position after the last line of a page: `(ts, id)` in the page's order.
@@ -88,6 +180,8 @@ pub struct SearchQuery {
     /// Empty = every source.
     pub sources: Vec<String>,
     pub min_level: Option<Level>,
+    /// Exactly these level chips (empty = any). Lines without a level fail.
+    pub levels: Vec<Level>,
     /// Correlation ids; a line matches when it carries any of them.
     pub ids: Vec<String>,
     /// Event time bounds, unix ms, inclusive.
@@ -132,6 +226,11 @@ impl SearchQuery {
     fn add_filter(&mut self, key: &str, value: &str, negate: bool) {
         let v = value.trim_matches('"').to_string();
         match key {
+            "level" | "lvl" if !negate && v.contains(',') => {
+                if let Ok(ls) = parse_levels(&v) {
+                    self.levels = ls;
+                }
+            }
             "level" | "lvl" if !negate => {
                 let name = v.trim_start_matches(['>', '=', '≥']);
                 if let Some(l) = Level::parse_name(name) {
@@ -140,11 +239,15 @@ impl SearchQuery {
             }
             "source" if !negate => self.sources.push(v),
             k if ID_FIELDS.contains(&k) && !negate => self.ids.push(v),
-            _ => self.fields.push(FieldFilter {
-                key: key.to_string(),
-                value: v,
-                negate,
-            }),
+            _ => {
+                let (op, value) = Op::split(&v);
+                self.fields.push(FieldFilter {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                    negate,
+                    op,
+                })
+            }
         }
     }
 
@@ -162,6 +265,13 @@ impl SearchQuery {
                 _ => return false,
             }
         }
+        if !self.levels.is_empty()
+            && !line
+                .level
+                .is_some_and(|l| self.levels.contains(&level_chip(l)))
+        {
+            return false;
+        }
         if !self.ids.is_empty() && !line.ids.iter().any(|i| self.ids.contains(&i.value)) {
             return false;
         }
@@ -178,8 +288,8 @@ impl SearchQuery {
         }
         self.fields.iter().all(|f| {
             let got = line.fields.as_ref().and_then(|v| field_at(v, &f.key));
-            let eq = got.is_some_and(|g| scalar_eq(g, &f.value));
-            eq != f.negate
+            let ok = got.is_some_and(|g| f.op.test(&scalar_text(g), &f.value));
+            ok != f.negate
         })
     }
 
@@ -208,16 +318,15 @@ pub fn scalar_text(v: &Value) -> String {
     }
 }
 
-fn scalar_eq(v: &Value, want: &str) -> bool {
-    scalar_text(v) == want
-}
-
 /// One histogram bar.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, TS)]
 pub struct Bucket {
     /// Bucket start, unix ms.
     pub start: i64,
     pub count: u64,
+    /// trace + debug
+    pub debug: u64,
+    pub info: u64,
     pub warn: u64,
     /// error + fatal
     pub error: u64,
@@ -250,9 +359,11 @@ pub fn add_to_histogram(h: &mut [Bucket], since: i64, width: i64, ts: i64, level
     let b = &mut h[i];
     b.count += 1;
     match level {
+        Some(Level::Trace | Level::Debug) => b.debug += 1,
+        Some(Level::Info) => b.info += 1,
         Some(Level::Warn) => b.warn += 1,
         Some(Level::Error | Level::Fatal) => b.error += 1,
-        _ => {}
+        None => {}
     }
 }
 
@@ -336,12 +447,14 @@ mod tests {
                 FieldFilter {
                     key: "path".into(),
                     value: "/health".into(),
-                    negate: true
+                    negate: true,
+                    op: Op::Eq,
                 },
                 FieldFilter {
                     key: "status".into(),
                     value: "500".into(),
-                    negate: false
+                    negate: false,
+                    op: Op::Eq,
                 },
             ]
         );
@@ -367,6 +480,32 @@ mod tests {
         assert!(!q("-path:/a").matches(&line));
         assert!(q("-path:/b").matches(&line));
         assert!(!q("source:worker").matches(&line));
+    }
+
+    #[test]
+    fn level_sets_comparisons_and_prefixes() {
+        let line = Arc::new(normalize(
+            r#"{"level":60,"msg":"x","status":502,"path":"/api/v1/orders/9"}"#,
+            "api",
+            None,
+            5,
+        ));
+        let s = q("level:info,error status:>=400 path:/api/v1/orders*");
+        assert_eq!(s.levels, vec![Level::Info, Level::Error]);
+        assert_eq!(s.fields[0].op, Op::Ge);
+        assert_eq!(s.fields[1].op, Op::Prefix);
+        assert!(s.matches(&line)); // fatal counts as the error chip
+        assert!(!q("level:debug,warn").matches(&line));
+        assert!(!q("status:<500").matches(&line));
+        assert!(q("status:≥500 -path:/health*").matches(&line));
+        assert!(!q("-status:>400").matches(&line));
+        // `>x` that isn't a number is a plain value.
+        assert_eq!(Op::split(">abc"), (Op::Eq, ">abc"));
+        assert_eq!(
+            parse_levels("warn, fatal,trace").unwrap(),
+            vec![Level::Warn, Level::Error, Level::Debug]
+        );
+        assert!(parse_levels("nope").is_err());
     }
 
     #[test]

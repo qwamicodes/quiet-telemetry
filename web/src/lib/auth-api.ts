@@ -26,6 +26,7 @@ import type {
   User,
 } from '@/gen'
 import { ApiError, fetchJson, sendJson } from '@/lib/api'
+import { publicOrigin } from '@/lib/format'
 import { dockerStatus } from '@/lib/schemas'
 import { apiFetch, clearSessionLost, setCsrf } from '@/lib/session'
 
@@ -350,4 +351,4 @@ export function useResetLink() {
 }
 
 /** A link on this origin, for the copy buttons. */
-export const absolute = (path: string) => `${window.location.origin}${path}`
+export const absolute = (path: string) => `${publicOrigin()}${path}`

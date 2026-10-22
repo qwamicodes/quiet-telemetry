@@ -25,6 +25,18 @@ use ts_rs::TS;
 pub const PREFIX: &str = "qi_";
 /// How often `last_used` reaches the disk, per token.
 const PERSIST_EVERY_MS: i64 = 60_000;
+/// How long after a revoke the UI's Undo can bring a token back.
+pub const UNDO_REVOKE_MS: i64 = 60_000;
+
+/// What [`IngestTokens::restore`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Restore {
+    /// Working again (or it was never revoked).
+    Restored(IngestToken),
+    /// Revoked longer ago than [`UNDO_REVOKE_MS`]: it stays revoked.
+    TooLate,
+    NotFound,
+}
 
 /// One ingest token as the UI lists it. Never carries the secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -321,6 +333,37 @@ impl IngestTokens {
         Ok(t)
     }
 
+    /// Undo a revoke made in the last [`UNDO_REVOKE_MS`]. The token works
+    /// again from the next request, with the same secret.
+    pub fn restore(&self, id: i64, now: i64) -> anyhow::Result<Restore> {
+        let Some(t) = self.get(id)? else {
+            return Ok(Restore::NotFound);
+        };
+        let Some(revoked) = t.revoked else {
+            return Ok(Restore::Restored(t));
+        };
+        if now - revoked > UNDO_REVOKE_MS {
+            return Ok(Restore::TooLate);
+        }
+        self.db.lock().unwrap().execute(
+            "UPDATE ingest_tokens SET revoked = NULL WHERE id = ?1 AND revoked = ?2",
+            params![id, revoked],
+        )?;
+        for e in self.by_hash.read().unwrap().values() {
+            if e.id == id {
+                e.revoked.store(0, Ordering::Relaxed);
+            }
+        }
+        let mut t = self.get(id)?.expect("still there");
+        if let Some(e) = self.by_hash.read().unwrap().values().find(|e| e.id == id) {
+            let lu = e.last_used.load(Ordering::Relaxed);
+            if lu > 0 && t.last_used.is_none_or(|d| lu > d) {
+                t.last_used = Some(lu);
+            }
+        }
+        Ok(Restore::Restored(t))
+    }
+
     /// Check an `Authorization` header value (`Bearer qi_…`) and mark the
     /// token used.
     pub fn check(
@@ -474,6 +517,41 @@ mod tests {
         assert!(t.check(Some(&auth), 100_000).is_ok());
         assert_eq!(t.list().unwrap()[0].last_used, Some(90_000));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn restore_undoes_a_recent_revoke_only() {
+        let t = IngestTokens::memory();
+        let c = t.create("edge", None, 1_000).unwrap();
+        let header = format!("Bearer {}", c.secret);
+        let id = c.token.id;
+        // Never revoked: restore is a no-op that returns the token.
+        assert!(
+            matches!(t.restore(id, 2_000).unwrap(), Restore::Restored(r) if r.revoked.is_none())
+        );
+
+        t.revoke(id, 10_000).unwrap();
+        assert_eq!(
+            t.check(Some(&header), 10_001).unwrap_err(),
+            AuthError::Revoked
+        );
+        let Restore::Restored(r) = t.restore(id, 10_000 + UNDO_REVOKE_MS).unwrap() else {
+            panic!("inside the window");
+        };
+        assert_eq!(r.revoked, None);
+        assert!(t.check(Some(&header), 80_000).is_ok());
+        assert_eq!(t.active(), 1);
+
+        t.revoke(id, 100_000).unwrap();
+        assert_eq!(
+            t.restore(id, 100_001 + UNDO_REVOKE_MS).unwrap(),
+            Restore::TooLate
+        );
+        assert_eq!(
+            t.check(Some(&header), 200_000).unwrap_err(),
+            AuthError::Revoked
+        );
+        assert_eq!(t.restore(999, 0).unwrap(), Restore::NotFound);
     }
 
     #[test]

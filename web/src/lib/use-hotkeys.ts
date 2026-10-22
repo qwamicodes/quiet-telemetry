@@ -6,7 +6,7 @@ const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
 
 /**
- * Single-key shortcuts (`/`, `j`, `space`, `mod+k`). Ignored while typing,
+ * Single-key shortcuts (`/`, `j`, `space`, `mod+k`, `mod+shift+c`). Ignored while typing,
  * except `mod+…` combos and `escape`.
  */
 export function useHotkeys(keys: Hotkeys) {
@@ -19,11 +19,42 @@ export function useHotkeys(keys: Hotkeys) {
       const combo = mod ? `mod+${key}` : key
       if (!mod && key !== 'escape' && isTyping(e.target)) return
       if (e.altKey) return
-      const fn = ref.current[combo]
+      // `mod+shift+c` when one is registered; otherwise shift is ignored.
+      const fn = (mod && e.shiftKey ? ref.current[`mod+shift+${key}`] : undefined) ?? ref.current[combo]
       if (fn) {
         e.preventDefault()
         fn(e)
       }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+}
+
+/**
+ * Two-key sequences (`g h`, `g l`): the second key within a second of the
+ * first. Ignored while typing or with a modifier held. The first key still
+ * reaches single-key shortcuts (on the stream `G` also jumps to newest).
+ */
+export function useKeySequences(seqs: Record<string, () => void>) {
+  const ref = useRef(seqs)
+  ref.current = seqs
+  useEffect(() => {
+    let prev = ''
+    let at = 0
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return
+      const key = e.key.toLowerCase()
+      const now = Date.now()
+      const fn = prev && now - at < 1000 ? ref.current[`${prev} ${key}`] : undefined
+      if (fn) {
+        e.preventDefault()
+        prev = ''
+        fn()
+        return
+      }
+      prev = key
+      at = now
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

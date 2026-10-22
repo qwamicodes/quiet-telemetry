@@ -13,6 +13,7 @@ const sources: SourceInfo[] = [
     kind: 'http',
     containers: [],
     group: null,
+    group_kind: null,
     lines: 2,
     last_ts: Date.now(),
     display_name: null,
@@ -24,6 +25,7 @@ const sources: SourceInfo[] = [
     kind: 'docker',
     containers: ['proj-worker-1'],
     group: 'proj',
+    group_kind: null,
     lines: 0,
     last_ts: null,
     display_name: null,
@@ -44,11 +46,13 @@ const health: Health = {
   ingest: { auth: 'token', loopback: true, max_body: 16_000_000, rate: 20_000, tokens: 0 },
 }
 
+// Fresh timestamps: the stream hides a backlog older than 5 min as "quiet" (08.5).
+const NOW = Date.now()
 const lines: LogLine[] = [
   {
     id: 1,
-    ts: 1_760_000_000_000,
-    received: 1_760_000_000_004,
+    ts: NOW - 2_000,
+    received: NOW - 1_996,
     source: 'api',
     level: 'warn',
     display_id: { key: 'request_id', value: 'req_1' },
@@ -59,8 +63,8 @@ const lines: LogLine[] = [
   },
   {
     id: 2,
-    ts: 1_760_000_000_100,
-    received: 1_760_000_000_101,
+    ts: NOW - 1_900,
+    received: NOW - 1_899,
     source: 'api',
     level: null,
     display_id: null,
@@ -118,35 +122,36 @@ function renderApp(path = '/?source=api') {
 }
 
 describe('stream page', () => {
-  it('streams the source and opens the field card on click', async () => {
+  it('streams the source and expands a row inline on click (03.5)', async () => {
     const user = userEvent.setup()
     renderApp()
-    const row = await screen.findByText('slow query')
+    const row = await screen.findByText('slow query', {}, { timeout: 5000 })
     expect(FakeSocket.all[0].url).toContain('source=api')
     expect(await screen.findByRole('status', { name: '' })).toHaveTextContent('Live')
 
     await user.click(row)
-    const card = await screen.findByRole('region', { name: 'Line details' })
-    expect(within(card).getByText('db.ms')).toBeInTheDocument()
-    expect(within(card).getByText('812')).toBeInTheDocument()
+    const preview = await screen.findByTestId('row-preview')
+    expect(within(preview).getByText('request_id')).toBeInTheDocument()
+    expect(within(preview).getByText('db')).toBeInTheDocument()
+    expect(within(preview).getByRole('button', { name: /Open flow/ })).toBeInTheDocument()
 
-    await user.click(within(card).getByRole('tab', { name: 'Raw' }))
-    expect(within(card).getByText(lines[0].raw)).toBeInTheDocument()
-
-    // j moves to the next line; a text line has no Fields tab content.
+    // j moves the open preview to the next line; a text line previews its raw text.
     await user.keyboard('j')
-    expect(within(card).getAllByText('plain text line').length).toBeGreaterThan(0)
+    await waitFor(() =>
+      expect(within(screen.getByTestId('row-preview')).getByText('plain text line')).toBeInTheDocument(),
+    )
     await user.keyboard('{Escape}')
-    await waitFor(() => expect(screen.queryByRole('region', { name: 'Line details' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByTestId('row-preview')).not.toBeInTheDocument())
   })
 
-  it('level toggle and text filter reconnect with server-side filters', async () => {
+  it('level chips and text filter reconnect with server-side filters', async () => {
     const user = userEvent.setup()
     const router = renderApp()
-    await screen.findByText('slow query')
-    await user.click(screen.getByRole('button', { name: 'warn and above' }))
-    await waitFor(() => expect(FakeSocket.all.at(-1)?.url).toContain('level=warn'))
-    expect(router.state.location.search).toMatchObject({ source: 'api', level: 'warn' })
+    await screen.findByText('slow query', {}, { timeout: 5000 })
+    // Every chip is on (no filter); turning info off leaves debug, warn and error.
+    await user.click(screen.getByRole('button', { name: 'info lines' }))
+    await waitFor(() => expect(FakeSocket.all.at(-1)?.url).toContain('levels=debug%2Cwarn%2Cerror'))
+    expect(router.state.location.search).toMatchObject({ source: 'api', level: 'debug,warn,error' })
 
     await user.type(screen.getByRole('textbox', { name: 'Filter text' }), 'slow')
     await waitFor(() => expect(FakeSocket.all.at(-1)?.url).toContain('q=slow'))
@@ -157,7 +162,7 @@ describe('popups (every Base UI popup the app uses opens without crashing)', () 
   it('command palette (Dialog + cmdk) opens from ⌘K and from the sidebar, and jumps to a source', async () => {
     const user = userEvent.setup()
     const router = renderApp()
-    await screen.findByText('slow query')
+    await screen.findByText('slow query', {}, { timeout: 5000 })
 
     await user.keyboard('{Control>}k{/Control}')
     const dialog = await screen.findByRole('dialog')
@@ -174,27 +179,25 @@ describe('popups (every Base UI popup the app uses opens without crashing)', () 
     await user.type(await screen.findByRole('combobox'), 'req_123')
     await user.click(await screen.findByText('open flow'))
     await waitFor(() => expect(router.state.location.pathname).toBe('/flow/req_123'))
-    // No line carries req_123 here (the mock 404s): the not-found flow page.
-    expect(await screen.findByText('No lines with this id')).toBeInTheDocument()
+    // No line carries req_123 here (the mock 404s): the 404 flow page (08.6, no close matches).
+    expect(await screen.findByText('This flow is no longer in the window.')).toBeInTheDocument()
   })
 
   it('tooltips open on hover', async () => {
     const user = userEvent.setup()
     renderApp()
-    await screen.findByText('slow query')
-    await user.hover(screen.getByRole('button', { name: 'error and above' }))
-    expect(await screen.findByText('Errors only')).toBeInTheDocument()
-
-    await user.click(screen.getByText('slow query'))
-    await user.unhover(screen.getByRole('button', { name: 'error and above' }))
-    await user.hover(screen.getByRole('button', { name: 'Copy raw line' }))
-    expect(await screen.findByText('Copy raw line')).toBeInTheDocument()
+    await screen.findByText('slow query', {}, { timeout: 5000 })
+    await user.hover(screen.getByRole('button', { name: 'error lines' }))
+    expect(await screen.findByText('Hide error lines · 4')).toBeInTheDocument()
+    await user.unhover(screen.getByRole('button', { name: 'error lines' }))
+    await user.hover(screen.getByRole('button', { name: 'Export these lines' }))
+    expect(await screen.findAllByText('Export these lines')).not.toHaveLength(0)
   })
 
   it('stream export (Dialog + RadioGroup + Switch) opens from the top bar for this source', async () => {
     const user = userEvent.setup()
     renderApp()
-    await screen.findByText('slow query')
+    await screen.findByText('slow query', {}, { timeout: 5000 })
     await user.click(screen.getByRole('button', { name: 'Export these lines' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Export lines')).toBeInTheDocument()

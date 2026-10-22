@@ -5,8 +5,9 @@
 //! GET  /api/health                  version, uptime, receiver status (UI footer)
 //! GET  /api/sources
 //! GET  /api/sources/:name/lines?limit=500
-//! GET  /api/stream?source=api&backlog=500&level=warn&q=text   (WebSocket)
+//! GET  /api/stream?source=api&backlog=500&levels=warn,error&q=text%20status:>=400   (WebSocket)
 //! GET  /api/search, /api/export, POST /api/export/token       (see `search_api.rs`)
+//! /api/export/jobs*  server-side preparing of large exports   (see `export_jobs.rs`)
 //! GET  /api/flow, POST /api/flow-summaries                     (see `flow_api.rs`)
 //! GET/POST /api/ingest-tokens, DELETE /api/ingest-tokens/:id   (see `tokens_api.rs`)
 //! /api/auth/*, /api/account*, /api/members*, /api/invites*       (see `auth_api.rs`)
@@ -18,6 +19,7 @@
 use crate::accounts::Accounts;
 use crate::auth::{AuthConfig, LoginLimiter, Viewer};
 use crate::export::ExportTokens;
+use crate::grouping::{GroupKind, GroupMode, Grouping};
 use crate::hub::{Line, SourceInfo, SourceKind};
 use crate::normalize::LogLine;
 use crate::pipeline::Pipeline;
@@ -33,7 +35,7 @@ use axum::{middleware, Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
@@ -63,6 +65,10 @@ pub struct AppState {
     pub limiter: Arc<LoginLimiter>,
     /// What the first-run page says about this host.
     pub host: HostInfo,
+    /// Open live-stream websockets (Settings → About).
+    pub live_clients: Arc<AtomicUsize>,
+    /// Server-side preparing jobs for very large exports (05.7).
+    pub exports: Arc<crate::export_jobs::ExportJobs>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -85,6 +91,8 @@ impl AppState {
             auth: Arc::new(AuthConfig::default()),
             limiter: Arc::new(LoginLimiter::default()),
             host: HostInfo::default(),
+            live_clients: Arc::new(AtomicUsize::new(0)),
+            exports: Arc::new(crate::export_jobs::ExportJobs::temp()),
         }
     }
 
@@ -106,6 +114,11 @@ impl AppState {
         self
     }
 
+    pub fn with_exports(mut self, exports: Arc<crate::export_jobs::ExportJobs>) -> Self {
+        self.exports = exports;
+        self
+    }
+
     pub fn with_ingest(mut self, tokens: Arc<IngestTokens>, config: IngestConfig) -> Self {
         self.ingest_tokens = tokens;
         self.ingest = config;
@@ -122,10 +135,15 @@ pub fn router(state: AppState) -> Router {
     // Everything here needs a session (or a qx_ token on /api/export).
     let protected = Router::new()
         .route("/api/health", get(health))
+        .route("/api/about", get(about))
         .route("/api/sources", get(sources))
+        .route("/api/sources/grouping-preview", get(grouping_preview))
         .route("/api/sources/:name/lines", get(lines))
         .route("/api/stream", get(stream))
         .merge(crate::search_api::routes())
+        .merge(crate::export_jobs::routes())
+        .merge(crate::stream_api::routes())
+        .merge(crate::lint::routes())
         .merge(crate::flow_api::routes())
         .merge(crate::tokens_api::routes())
         .merge(crate::settings_api::routes())
@@ -220,6 +238,97 @@ async fn sources(State(s): State<AppState>) -> Json<SourcesResponse> {
 }
 
 #[derive(Deserialize)]
+struct PreviewQuery {
+    mode: Option<GroupMode>,
+    label: Option<String>,
+}
+
+/// One group in the Settings → Source grouping preview.
+#[derive(Debug, Serialize, TS)]
+pub struct PreviewGroup {
+    pub name: String,
+    pub kind: GroupKind,
+    pub sources: Vec<String>,
+}
+
+/// `GET /api/sources/grouping-preview?mode=&label=`: how sources would group
+/// (Settings → General, live as the owner types). Labels stay on the server.
+#[derive(Debug, Serialize, TS)]
+pub struct GroupingPreview {
+    pub groups: Vec<PreviewGroup>,
+    /// Docker sources carrying `label` (the "found on N of M" hint).
+    #[ts(type = "number")]
+    pub found: u64,
+    #[ts(type = "number")]
+    pub docker: u64,
+    #[ts(type = "number")]
+    pub total: u64,
+}
+
+async fn grouping_preview(
+    State(s): State<AppState>,
+    Query(q): Query<PreviewQuery>,
+) -> Json<GroupingPreview> {
+    let current = crate::grouping::current();
+    let g = Grouping {
+        mode: q.mode.unwrap_or(current.mode),
+        label: q
+            .label
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .unwrap_or(current.label),
+    };
+    Json(preview(&s.pipeline.hub().labels(), &g))
+}
+
+pub fn preview(
+    sources: &[(
+        String,
+        SourceKind,
+        std::collections::HashMap<String, String>,
+    )],
+    g: &Grouping,
+) -> GroupingPreview {
+    let mut sorted: Vec<_> = sources.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut groups: Vec<PreviewGroup> = Vec::new();
+    for (name, kind, labels) in &sorted {
+        if let Some((gname, gkind)) = g.group_of(*kind, labels) {
+            match groups
+                .iter_mut()
+                .find(|x| x.name == gname && x.kind == gkind)
+            {
+                Some(x) => x.sources.push(name.clone()),
+                None => groups.push(PreviewGroup {
+                    name: gname,
+                    kind: gkind,
+                    sources: vec![name.clone()],
+                }),
+            }
+        }
+    }
+    let rank = |k: GroupKind| match k {
+        GroupKind::Standalone => 1,
+        GroupKind::Ingest => 2,
+        _ => 0,
+    };
+    groups.sort_by(|a, b| rank(a.kind).cmp(&rank(b.kind)).then(a.name.cmp(&b.name)));
+    let docker: Vec<_> = sorted
+        .iter()
+        .filter(|s| s.1 == SourceKind::Docker)
+        .collect();
+    GroupingPreview {
+        groups,
+        found: docker
+            .iter()
+            .filter(|s| s.2.get(&g.label).is_some_and(|v| !v.trim().is_empty()))
+            .count() as u64,
+        docker: docker.len() as u64,
+        total: sorted.len() as u64,
+    }
+}
+
+#[derive(Deserialize)]
 struct LinesQuery {
     limit: Option<usize>,
 }
@@ -263,13 +372,19 @@ pub struct Filter {
     pub backlog: Option<usize>,
     /// Minimum level; lines without a level are kept unless `level` is set.
     pub level: Option<String>,
-    /// Case-insensitive substring over the raw line.
+    /// Exactly these level chips, comma-separated (`info,warn`).
+    pub levels: Option<String>,
+    /// Words, phrases and `key:value` filters (the search language).
     pub q: Option<String>,
 }
 
 impl Filter {
     fn line_filter(&self) -> LineFilter {
-        LineFilter::new(self.level.as_deref(), self.q.as_deref())
+        LineFilter::with_levels(
+            self.level.as_deref(),
+            self.levels.as_deref(),
+            self.q.as_deref(),
+        )
     }
 
     #[cfg(test)]
@@ -309,7 +424,86 @@ async fn stream(
     Query(f): Query<Filter>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.on_upgrade(move |socket| run_stream(socket, s, f, v.session_id))
+    ws.on_upgrade(move |socket| async move {
+        let clients = s.live_clients.clone();
+        clients.fetch_add(1, Ordering::Relaxed);
+        run_stream(socket, s, f, v.session_id).await;
+        clients.fetch_sub(1, Ordering::Relaxed);
+    })
+}
+
+/// `GET /api/about` (Settings → About, board 07.6).
+#[derive(Debug, Serialize, TS)]
+pub struct About {
+    pub version: String,
+    /// Git commit the binary was built from (`QUIET_GIT_SHA` at build time).
+    pub commit: Option<String>,
+    /// Build date (`QUIET_BUILD_DATE` at build time, `YYYY-MM-DD`).
+    pub built: Option<String>,
+    /// Process start, unix ms.
+    pub started: i64,
+    pub now: i64,
+    /// `sqlite` or `memory`.
+    pub store: String,
+    /// The bundled SQLite library version.
+    pub sqlite_version: String,
+    /// Database size on disk, bytes.
+    #[ts(type = "number")]
+    pub db_bytes: u64,
+    pub data_dir: Option<String>,
+    /// Open live-stream connections.
+    #[ts(type = "number")]
+    pub live_clients: u64,
+    /// People with an account.
+    #[ts(type = "number")]
+    pub members: u64,
+    pub docker: DockerStatus,
+}
+
+async fn about(State(s): State<AppState>) -> Json<About> {
+    let usage = s.pipeline.store().usage().await.unwrap_or_default();
+    let members = s.accounts.members().map(|m| m.len() as u64).unwrap_or(0);
+    Json(About {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        commit: option_env!("QUIET_GIT_SHA")
+            .filter(|c| !c.is_empty())
+            .map(|c| c.chars().take(7).collect()),
+        built: option_env!("QUIET_BUILD_DATE")
+            .filter(|d| !d.is_empty())
+            .map(String::from),
+        started: s.started,
+        now: chrono::Utc::now().timestamp_millis(),
+        store: s.pipeline.store().kind().to_string(),
+        sqlite_version: rusqlite::version().to_string(),
+        db_bytes: usage.bytes,
+        data_dir: s.host.data_dir.as_ref().map(|d| d.display().to_string()),
+        live_clients: s.live_clients.load(Ordering::Relaxed) as u64,
+        members,
+        docker: s.docker.lock().unwrap().clone(),
+    })
+}
+
+/// The newest `limit` lines of `source` matching `filter` in the window, oldest first.
+async fn filtered_backlog(
+    s: &AppState,
+    source: &str,
+    filter: &LineFilter,
+    limit: usize,
+) -> anyhow::Result<Vec<Line>> {
+    let store = s.pipeline.store();
+    store.flush().await?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut q = filter.query.clone().unwrap_or_default();
+    q.sources = vec![source.to_string()];
+    if filter.min_level.is_some() {
+        q.min_level = filter.min_level;
+    }
+    q.since = Some(now - s.retention_ms());
+    q.until = None;
+    q.limit = limit.min(crate::search::MAX_PAGE);
+    let mut lines = store.search(&q).await?.lines;
+    lines.reverse();
+    Ok(lines)
 }
 
 /// Batch window: lines arriving within it go out in one frame.
@@ -330,20 +524,26 @@ async fn run_stream(mut ws: WebSocket, s: AppState, f: Filter, session: Option<i
     // Subscribe before reading the backlog so nothing slips between the two.
     let mut rx = source.subscribe();
 
-    let backlog = s
-        .pipeline
-        .store()
-        .query(&StoreQuery {
-            source: f.source.clone(),
-            filter: filter.clone(),
-            limit: f.backlog.unwrap_or(500).min(10_000),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "backlog read failed");
-            Vec::new()
-        });
+    let limit = f.backlog.unwrap_or(500).min(10_000);
+    let backlog = if filter.is_empty() {
+        s.pipeline
+            .store()
+            .query(&StoreQuery {
+                source: f.source.clone(),
+                filter: filter.clone(),
+                limit,
+                ..Default::default()
+            })
+            .await
+    } else {
+        // Filtered: the newest matches in the whole window, not just the
+        // ring, so "98 of 1,284 lines match" shows all 98.
+        filtered_backlog(&s, &f.source, &filter, limit).await
+    }
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "backlog read failed");
+        Vec::new()
+    });
     let last_sent = backlog.last().map(|l| l.id).unwrap_or(0);
     if send(
         &mut ws,
@@ -502,6 +702,68 @@ mod tests {
         assert_eq!(lines[0]["display_id"]["key"], "request_id");
         assert_eq!(lines[0]["display_id"]["value"], "r1");
         assert_eq!(lines[3]["msg"], "b");
+    }
+
+    #[test]
+    fn grouping_preview_groups_by_the_draft_label() {
+        use crate::grouping::GroupMode;
+        let l = |p: &[(&str, &str)]| {
+            p.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        let src = vec![
+            (
+                "api".to_string(),
+                SourceKind::Docker,
+                l(&[
+                    ("quiet.group", "platform"),
+                    (crate::grouping::COMPOSE_PROJECT, "apps"),
+                ]),
+            ),
+            (
+                "worker".to_string(),
+                SourceKind::Docker,
+                l(&[(crate::grouping::COMPOSE_PROJECT, "apps")]),
+            ),
+            ("redis".to_string(), SourceKind::Docker, l(&[])),
+            ("cron".to_string(), SourceKind::Fluentbit, l(&[])),
+        ];
+        let g = Grouping {
+            mode: GroupMode::Label,
+            label: "quiet.group".into(),
+        };
+        let p = preview(&src, &g);
+        let names: Vec<_> = p
+            .groups
+            .iter()
+            .map(|g| (g.name.as_str(), g.sources.len()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("platform", 1), ("Standalone", 2), ("Ingest", 1)]
+        );
+        assert_eq!((p.found, p.docker, p.total), (1, 3, 4));
+        let off = Grouping {
+            mode: GroupMode::Off,
+            ..Default::default()
+        };
+        assert!(preview(&src, &off).groups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn about_reports_version_store_and_clients() {
+        let st = state();
+        let res = app(&st)
+            .oneshot(Request::get("/api/about").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_of(res).await;
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["store"], "memory");
+        assert_eq!(v["live_clients"], 0);
+        assert!(v["sqlite_version"].as_str().unwrap().starts_with('3'));
     }
 
     #[tokio::test]

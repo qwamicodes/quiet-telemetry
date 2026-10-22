@@ -6,7 +6,7 @@ import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
 import type { FlowSummary, LogLine } from '@/gen'
 import { fmtDuration } from '@/lib/flow'
-import { fmtTime } from '@/lib/format'
+import { fmtRowTime, fmtTime } from '@/lib/format'
 import { type FlowGroup, groupByFlow, highlight, notableFields } from '@/lib/query'
 import { cn } from '@/lib/utils'
 
@@ -66,7 +66,7 @@ function LineRow({
 }) {
   return (
     <div className="flex h-full items-center gap-3 px-9 font-mono text-[13px]" data-line-id={line.id}>
-      <span className="w-24 shrink-0 text-muted-foreground tabular-nums">{fmtTime(line.ts).slice(0, 8)}</span>
+      <span className="w-24 shrink-0 text-muted-foreground tabular-nums">{fmtRowTime(line.ts, 'seconds')}</span>
       <span className="w-12 shrink-0">
         <LevelBadge level={line.level} />
       </span>
