@@ -1,3 +1,5 @@
+#[allow(dead_code)] // wired up in the next commit
+mod accounts;
 mod api;
 mod cli;
 mod export;
