@@ -260,7 +260,7 @@ Owners change these in the UI; members see them read-only. Writes need a session
 
 | Page | What |
 |---|---|
-| General | Instance name (browser tab, user menu, “Join <name>” on invite links, also shown signed out); timezone for every timestamp (`local` = each viewer's browser, `UTC`, or an IANA zone); default stream direction (newest at bottom; each browser can flip it from the stream's view button). |
+| General | Instance name (browser tab, user menu, “Join <name>” on invite links, also shown signed out); timezone for every timestamp (`local` = each viewer's browser, `UTC`, or an IANA zone); default stream direction (newest at bottom; each browser can flip it from the stream's view button); whether search includes muted lines (dimmed, tagged `muted`) for sources that don't decide for themselves. |
 | Flow id order | Which correlation-id keys count (`request_id`, `job_id`, `trace_id`, `correlation_id`) and in what order (the first found is shown on the row); **match ids by value** (default: an id links lines whatever key carries it) or **by key** (only the same key links, so a numeric `job_id` 42 and a `request_id` 42 never merge). |
 | Storage | Disk used vs the cap, hourly partitions, volume per source, the projected time to the cap; searchable window (1h / 24h / 3d / 7d); disk cap; at the cap the oldest hour goes; **Purge now** (owner, type `purge` to confirm) deletes every stored line. |
 | Appearance | Theme (per browser). |
