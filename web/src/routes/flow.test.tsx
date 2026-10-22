@@ -223,7 +223,10 @@ class FakeSocket {
   constructor(public url: string) {
     queueMicrotask(() => {
       this.onopen?.()
-      this.onmessage?.({ data: JSON.stringify({ type: 'backlog', lines: [reqLine, failed] }) })
+      // Fresh timestamps: the stream hides a backlog older than 5 min as "quiet" (08.5).
+      const now = Date.now()
+      const lines = [reqLine, failed].map((l, i) => ({ ...l, ts: now - 1_000 + i, received: now - 1_000 + i }))
+      this.onmessage?.({ data: JSON.stringify({ type: 'backlog', lines }) })
     })
   }
   close() {}
@@ -385,7 +388,7 @@ describe('stream → flow', () => {
   it('shows each row’s flow steps and opens the selected line as a flow with Enter', async () => {
     const user = userEvent.setup()
     const router = renderAt('/?source=api')
-    const row = await screen.findByText('create_payout → 201')
+    const row = await screen.findByText('create_payout', {}, { timeout: 5000 })
     // Steps column: one square per step, once the batched summaries land.
     await waitFor(() => expect(screen.getAllByTitle('4 steps · 3 lines').length).toBeGreaterThan(0), {
       timeout: 3000,

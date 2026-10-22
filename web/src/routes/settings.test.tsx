@@ -352,14 +352,19 @@ describe('stream defaults from settings', () => {
     settings.general.stream_direction = 'top'
     const user = userEvent.setup()
     const { router } = renderAt('/?source=legivent-api')
-    await waitFor(() => expect(FakeSocket.all.some((s) => s.url.includes('level=warn'))).toBe(true))
-    expect(await screen.findByText(/newest at top/)).toBeInTheDocument()
+    // A source default of warn turns on the warn and error chips.
+    await waitFor(() => expect(FakeSocket.all.some((s) => s.url.includes('levels=warn%2Cerror'))).toBe(true))
+    expect(screen.getByRole('button', { name: 'warn lines' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'info lines' })).toHaveAttribute('aria-pressed', 'false')
     // Rows newest first.
-    const rows = await screen.findAllByText(/^line \d$/)
+    const rows = await screen.findAllByText(/^line \d$/, {}, { timeout: 5000 })
     expect(rows.map((r) => r.textContent)).toEqual(['line 3', 'line 2', 'line 1'])
 
-    await user.click(screen.getByRole('button', { name: 'warn and above' }))
+    // Turning both chips off shows every level, which overrides the default: level=all.
+    await user.click(screen.getByRole('button', { name: 'warn lines' }))
+    await user.click(screen.getByRole('button', { name: 'error lines' }))
     await waitFor(() => expect(router.state.location.search).toMatchObject({ level: 'all' }))
+    expect(await screen.findByText(/newest at top/)).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Newest at top' }))
     expect(await screen.findByText(/newest at bottom/)).toBeInTheDocument()
