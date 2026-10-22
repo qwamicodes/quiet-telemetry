@@ -19,29 +19,52 @@ pub use sqlite::{SqliteOptions, SqliteStore};
 
 use crate::hub::{Line, SourceKind};
 use crate::normalize::{CorrId, Level};
-use crate::search::{Order, SearchPage, SearchQuery};
+use crate::search::{Bucket, Order, SearchPage, SearchQuery};
 use async_trait::async_trait;
 use serde::Serialize;
 use ts_rs::TS;
 
-/// What a stream or a search asks for. Shared by every store so the live
-/// filter and the stored-window filter can never disagree.
+/// What a stream asks for. Shared by every store so the live filter and the
+/// stored-window filter can never disagree: `q` is the search language
+/// (`search.rs`), so stream chips (`status:>=400`, `-path:/health`) mean the
+/// same thing in the stream, in search and in an export.
 #[derive(Debug, Clone, Default)]
 pub struct LineFilter {
     /// Minimum level; lines without a level are dropped when this is set.
     pub min_level: Option<Level>,
-    /// Case-insensitive substring over the raw line (search uses FTS5).
-    pub text: Option<String>,
+    /// Words, phrases and `key:value` filters, plus the level chips.
+    pub query: Option<SearchQuery>,
 }
 
 impl LineFilter {
     pub fn new(level: Option<&str>, text: Option<&str>) -> Self {
+        Self::with_levels(level, None, text)
+    }
+
+    /// `levels`: exactly these chips (`info,warn`); ignored when empty.
+    pub fn with_levels(level: Option<&str>, levels: Option<&str>, text: Option<&str>) -> Self {
+        let mut q = SearchQuery::default().parse_q(text.unwrap_or(""));
+        if let Some(ls) = levels.and_then(|l| crate::search::parse_levels(l).ok()) {
+            if !ls.is_empty() && ls.len() < 4 {
+                q.levels = ls;
+            }
+        }
+        let trivial = q.text.is_empty()
+            && q.not_text.is_empty()
+            && q.fields.is_empty()
+            && q.ids.is_empty()
+            && q.levels.is_empty()
+            && q.min_level.is_none()
+            && q.sources.is_empty();
         LineFilter {
             min_level: level.and_then(Level::parse_name),
-            text: text
-                .map(|t| t.trim().to_lowercase())
-                .filter(|t| !t.is_empty()),
+            query: (!trivial).then_some(q),
         }
+    }
+
+    /// True when nothing is filtered (the backlog can come from the ring).
+    pub fn is_empty(&self) -> bool {
+        self.min_level.is_none() && self.query.is_none()
     }
 
     pub fn matches(&self, line: &Line) -> bool {
@@ -51,14 +74,29 @@ impl LineFilter {
                 _ => return false,
             }
         }
-        if let Some(q) = &self.text {
-            if !line.raw.to_lowercase().contains(q) {
-                return false;
-            }
-        }
-        true
+        self.query.as_ref().is_none_or(|q| q.matches(line))
     }
 }
+
+/// How many lines a query matches per stored level rank (0 trace … 5 fatal,
+/// 6 = no level), and optionally a histogram over `[since, since + n·width)`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LevelCounts {
+    pub by_rank: [u64; 7],
+    pub histogram: Vec<Bucket>,
+}
+
+impl LevelCounts {
+    pub fn add(&mut self, level: Option<Level>) {
+        self.by_rank[level.map_or(6, |l| l as usize)] += 1;
+    }
+    pub fn total(&self) -> u64 {
+        self.by_rank.iter().sum()
+    }
+}
+
+/// Histogram request for [`Store::level_counts`]: start, bucket width, bars.
+pub type HistSpec = (i64, i64, usize);
 
 /// A read over the stored window.
 #[derive(Debug, Clone, Default)]
@@ -89,6 +127,14 @@ pub trait Store: Send + Sync + 'static {
 
     /// One page of a search across the stored window.
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<SearchPage>;
+
+    /// Per-level counts of every line `q` matches (paging fields ignored),
+    /// for the stream's level chips and histogram.
+    async fn level_counts(
+        &self,
+        q: &SearchQuery,
+        hist: Option<HistSpec>,
+    ) -> anyhow::Result<LevelCounts>;
 
     /// Drop what is older than `cutoff` (unix ms). Partitioned stores drop
     /// whole hours, so a line may outlive the cutoff by up to an hour.

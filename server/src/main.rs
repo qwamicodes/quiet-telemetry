@@ -20,6 +20,7 @@ mod server;
 mod settings;
 mod settings_api;
 mod store;
+mod stream_api;
 mod system;
 mod tokens;
 mod tokens_api;

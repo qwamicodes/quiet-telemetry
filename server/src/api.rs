@@ -5,7 +5,7 @@
 //! GET  /api/health                  version, uptime, receiver status (UI footer)
 //! GET  /api/sources
 //! GET  /api/sources/:name/lines?limit=500
-//! GET  /api/stream?source=api&backlog=500&level=warn&q=text   (WebSocket)
+//! GET  /api/stream?source=api&backlog=500&levels=warn,error&q=text%20status:>=400   (WebSocket)
 //! GET  /api/search, /api/export, POST /api/export/token       (see `search_api.rs`)
 //! GET  /api/flow, POST /api/flow-summaries                     (see `flow_api.rs`)
 //! GET/POST /api/ingest-tokens, DELETE /api/ingest-tokens/:id   (see `tokens_api.rs`)
@@ -126,6 +126,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sources/:name/lines", get(lines))
         .route("/api/stream", get(stream))
         .merge(crate::search_api::routes())
+        .merge(crate::stream_api::routes())
         .merge(crate::flow_api::routes())
         .merge(crate::tokens_api::routes())
         .merge(crate::settings_api::routes())
@@ -263,13 +264,19 @@ pub struct Filter {
     pub backlog: Option<usize>,
     /// Minimum level; lines without a level are kept unless `level` is set.
     pub level: Option<String>,
-    /// Case-insensitive substring over the raw line.
+    /// Exactly these level chips, comma-separated (`info,warn`).
+    pub levels: Option<String>,
+    /// Words, phrases and `key:value` filters (the search language).
     pub q: Option<String>,
 }
 
 impl Filter {
     fn line_filter(&self) -> LineFilter {
-        LineFilter::new(self.level.as_deref(), self.q.as_deref())
+        LineFilter::with_levels(
+            self.level.as_deref(),
+            self.levels.as_deref(),
+            self.q.as_deref(),
+        )
     }
 
     #[cfg(test)]
@@ -312,6 +319,29 @@ async fn stream(
     ws.on_upgrade(move |socket| run_stream(socket, s, f, v.session_id))
 }
 
+/// The newest `limit` lines of `source` matching `filter` in the window, oldest first.
+async fn filtered_backlog(
+    s: &AppState,
+    source: &str,
+    filter: &LineFilter,
+    limit: usize,
+) -> anyhow::Result<Vec<Line>> {
+    let store = s.pipeline.store();
+    store.flush().await?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut q = filter.query.clone().unwrap_or_default();
+    q.sources = vec![source.to_string()];
+    if filter.min_level.is_some() {
+        q.min_level = filter.min_level;
+    }
+    q.since = Some(now - s.retention_ms());
+    q.until = None;
+    q.limit = limit.min(crate::search::MAX_PAGE);
+    let mut lines = store.search(&q).await?.lines;
+    lines.reverse();
+    Ok(lines)
+}
+
 /// Batch window: lines arriving within it go out in one frame.
 const BATCH: Duration = Duration::from_millis(75);
 const MAX_BATCH: usize = 2000;
@@ -330,20 +360,26 @@ async fn run_stream(mut ws: WebSocket, s: AppState, f: Filter, session: Option<i
     // Subscribe before reading the backlog so nothing slips between the two.
     let mut rx = source.subscribe();
 
-    let backlog = s
-        .pipeline
-        .store()
-        .query(&StoreQuery {
-            source: f.source.clone(),
-            filter: filter.clone(),
-            limit: f.backlog.unwrap_or(500).min(10_000),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "backlog read failed");
-            Vec::new()
-        });
+    let limit = f.backlog.unwrap_or(500).min(10_000);
+    let backlog = if filter.is_empty() {
+        s.pipeline
+            .store()
+            .query(&StoreQuery {
+                source: f.source.clone(),
+                filter: filter.clone(),
+                limit,
+                ..Default::default()
+            })
+            .await
+    } else {
+        // Filtered: the newest matches in the whole window, not just the
+        // ring, so "98 of 1,284 lines match" shows all 98.
+        filtered_backlog(&s, &f.source, &filter, limit).await
+    }
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "backlog read failed");
+        Vec::new()
+    });
     let last_sent = backlog.last().map(|l| l.id).unwrap_or(0);
     if send(
         &mut ws,

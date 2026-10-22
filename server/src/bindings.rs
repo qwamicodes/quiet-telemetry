@@ -21,6 +21,7 @@ use crate::settings::{
     FlowIdSettings, GeneralSettings, SettingsResponse, SourceSettings, UpdateStorage,
 };
 use crate::settings_api::{PurgeRequest, Purged, SourceActivity, StorageReport};
+use crate::stream_api::{SourceFields, StreamStats};
 use crate::system::SystemStatus;
 use crate::tokens::{CreateIngestToken, CreatedIngestToken, IngestToken, IngestTokensResponse};
 use std::collections::BTreeMap;
@@ -35,6 +36,8 @@ fn export_into(dir: &Path) {
     let cfg = Config::new().with_out_dir(dir).with_large_int("number");
     // Roots; their dependencies (LogLine, CorrId, Level, SourceInfo, …) follow.
     Frame::export_all(&cfg).unwrap();
+    StreamStats::export_all(&cfg).unwrap();
+    SourceFields::export_all(&cfg).unwrap();
     Health::export_all(&cfg).unwrap();
     SourcesResponse::export_all(&cfg).unwrap();
     LinesResponse::export_all(&cfg).unwrap();

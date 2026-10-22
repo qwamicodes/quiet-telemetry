@@ -18,6 +18,10 @@ source?: string,
  */
 level?: string, 
 /**
+ * Exactly these level chips, comma-separated (`info,warn`).
+ */
+levels?: string, 
+/**
  * Event time bounds, unix ms, inclusive.
  */
 since?: number, until?: number, 

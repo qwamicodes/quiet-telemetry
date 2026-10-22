@@ -6,7 +6,7 @@
 //! is over its share. Sizes are estimates ([`line_cost`]): the raw line, its
 //! parsed fields (roughly three times the raw text), the summary and ids.
 
-use super::{rank_similar, similar_prefix, Query, Store};
+use super::{rank_similar, similar_prefix, HistSpec, LevelCounts, Query, Store};
 use crate::hub::{Line, SourceKind};
 use crate::normalize::CorrId;
 use crate::search::{
@@ -249,6 +249,32 @@ impl Store for MemoryStore {
         }
         page.lines = lines;
         Ok(page)
+    }
+
+    async fn level_counts(
+        &self,
+        q: &SearchQuery,
+        hist: Option<HistSpec>,
+    ) -> anyhow::Result<LevelCounts> {
+        let rings = self.rings.read().unwrap();
+        let mut out = LevelCounts::default();
+        if let Some((since, w, n)) = hist {
+            out.histogram = empty_histogram(since, w, n);
+        }
+        for r in rings.values() {
+            for l in r.lock().unwrap().lines.iter() {
+                if !(q.in_time(l) && q.matches(l)) {
+                    continue;
+                }
+                out.add(l.level);
+                if let Some((since, w, n)) = hist {
+                    if l.ts >= since && l.ts < since + w * n as i64 {
+                        add_to_histogram(&mut out.histogram, since, w, l.ts, l.level);
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     async fn line(&self, id: u64) -> anyhow::Result<Option<Line>> {

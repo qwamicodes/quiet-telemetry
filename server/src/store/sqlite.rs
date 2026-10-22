@@ -22,8 +22,8 @@
 //! each search in one read transaction so a concurrent drop can't tear it.
 
 use super::{
-    rank_similar, similar_prefix, HourUsage, MemoryStore, Query, Restored, SourceUsage,
-    StorageUsage, Store, StoreHealth, StoredSource, Usage,
+    rank_similar, similar_prefix, HistSpec, HourUsage, LevelCounts, MemoryStore, Query, Restored,
+    SourceUsage, StorageUsage, Store, StoreHealth, StoredSource, Usage,
 };
 use crate::hub::{Line, SourceKind};
 use crate::normalize::{normalize, CorrId, IdKey, Level};
@@ -219,6 +219,15 @@ impl Store for SqliteStore {
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<SearchPage> {
         let q = q.clone();
         self.read(move |c| search_sync(c, &q)).await
+    }
+
+    async fn level_counts(
+        &self,
+        q: &SearchQuery,
+        hist: Option<HistSpec>,
+    ) -> anyhow::Result<LevelCounts> {
+        let q = q.clone();
+        self.read(move |c| level_counts_sync(c, &q, hist)).await
     }
 
     async fn with_ids(
@@ -830,6 +839,66 @@ fn partitions_for(c: &Connection, q: &SearchQuery) -> anyhow::Result<Vec<(i64, i
     Ok(v)
 }
 
+/// Per-level counts in SQL (`GROUP BY`), so a day of lines never leaves SQLite.
+fn level_counts_sync(
+    c: &mut Connection,
+    q: &SearchQuery,
+    hist: Option<HistSpec>,
+) -> anyhow::Result<LevelCounts> {
+    let tx = c.transaction()?;
+    let mut out = LevelCounts::default();
+    if let Some((since, w, n)) = hist {
+        out.histogram = empty_histogram(since, w, n);
+    }
+    for (hour, _) in partitions_for(&tx, q)? {
+        let mut sql = format!("SELECT level, count(*) FROM {} WHERE 1", t('l', hour));
+        let mut args = Vec::new();
+        filters(q, hour, &mut sql, &mut args);
+        sql.push_str(" GROUP BY level");
+        let mut st = tx.prepare(&sql)?;
+        let mut rows = st.query(params_from_iter(args))?;
+        while let Some(r) = rows.next()? {
+            let level: Option<i64> = r.get(0)?;
+            let n: i64 = r.get(1)?;
+            out.by_rank[level.and_then(Level::from_rank).map_or(6, |l| l as usize)] += n as u64;
+        }
+        if let Some((since, w, n)) = hist {
+            let (lo, hi) = (hour * HOUR - MAX_SKEW, (hour + 1) * HOUR + MAX_SKEW);
+            let end = since + w * n as i64;
+            if hi <= since || lo >= end {
+                continue;
+            }
+            let mut sql = format!(
+                "SELECT (ts - ?) / ?, level, count(*) FROM {} WHERE ts >= ? AND ts < ?",
+                t('l', hour)
+            );
+            let mut args: Vec<SqlValue> = vec![since.into(), w.into(), since.into(), end.into()];
+            filters(q, hour, &mut sql, &mut args);
+            sql.push_str(" GROUP BY 1, 2");
+            let mut st = tx.prepare(&sql)?;
+            let mut rows = st.query(params_from_iter(args))?;
+            while let Some(r) = rows.next()? {
+                let i: i64 = r.get(0)?;
+                let level: Option<i64> = r.get(1)?;
+                let k: i64 = r.get(2)?;
+                let Some(b) = out.histogram.get_mut(i.max(0) as usize) else {
+                    continue;
+                };
+                b.count += k as u64;
+                match level.and_then(Level::from_rank) {
+                    Some(Level::Trace | Level::Debug) => b.debug += k as u64,
+                    Some(Level::Info) => b.info += k as u64,
+                    Some(Level::Warn) => b.warn += k as u64,
+                    Some(Level::Error | Level::Fatal) => b.error += k as u64,
+                    None => {}
+                }
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(out)
+}
+
 /// The WHERE clause shared by the page and the histogram, minus the cursor.
 fn filters(q: &SearchQuery, hour: i64, sql: &mut String, args: &mut Vec<SqlValue>) {
     if let Some(s) = q.since {
@@ -850,6 +919,18 @@ fn filters(q: &SearchQuery, hour: i64, sql: &mut String, args: &mut Vec<SqlValue
     if let Some(l) = q.min_level {
         sql.push_str(" AND level >= ?");
         args.push((l as u8 as i64).into());
+    }
+    if !q.levels.is_empty() {
+        let ranks: Vec<i64> = q
+            .levels
+            .iter()
+            .flat_map(|l| crate::search::chip_ranks(*l).iter().copied())
+            .collect();
+        sql.push_str(&format!(
+            " AND level IN ({})",
+            vec!["?"; ranks.len()].join(",")
+        ));
+        args.extend(ranks.into_iter().map(SqlValue::from));
     }
     if !q.ids.is_empty() {
         sql.push_str(&format!(
@@ -914,12 +995,47 @@ fn filters(q: &SearchQuery, hour: i64, sql: &mut String, args: &mut Vec<SqlValue
         };
         // CASE, not AND: json_extract raises on a plain-text line, and only
         // CASE is guaranteed not to evaluate it.
+        use crate::search::Op;
+        let (cast, cmp, arg): (&str, &str, SqlValue) = match f.op {
+            Op::Eq => ("TEXT", "= ?", f.value.clone().into()),
+            Op::Prefix => (
+                "TEXT",
+                "LIKE ? ESCAPE '\\'",
+                format!(
+                    "{}%",
+                    f.value
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                )
+                .into(),
+            ),
+            op => {
+                let n: f64 = f.value.parse().unwrap_or(f64::NAN);
+                let c = match op {
+                    Op::Gt => "> ?",
+                    Op::Ge => ">= ?",
+                    Op::Lt => "< ?",
+                    _ => "<= ?",
+                };
+                ("REAL", c, n.into())
+            }
+        };
+        // Numbers only compare when the field holds one (a text "abc" is not 0).
+        let numeric = if cast == "REAL" {
+            format!(" AND typeof({value}) IN ('integer','real')")
+        } else {
+            String::new()
+        };
         sql.push_str(&format!(
-            " AND {}COALESCE(CASE WHEN json_valid(raw) THEN CAST({value} AS TEXT) END = ?, 0)",
+            " AND {}COALESCE(CASE WHEN json_valid(raw){numeric} THEN CAST({value} AS {cast}) {cmp} END, 0)",
             if f.negate { "NOT " } else { "" }
         ));
-        args.extend(paths.into_iter().map(SqlValue::from));
-        args.push(f.value.clone().into());
+        args.extend(paths.iter().cloned().map(SqlValue::from));
+        if cast == "REAL" {
+            args.extend(paths.into_iter().map(SqlValue::from));
+        }
+        args.push(arg);
     }
 }
 

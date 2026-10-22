@@ -49,6 +49,9 @@ pub struct SearchParams {
     /// Minimum level.
     #[ts(optional)]
     pub level: Option<String>,
+    /// Exactly these level chips, comma-separated (`info,warn`).
+    #[ts(optional)]
+    pub levels: Option<String>,
     /// Event time bounds, unix ms, inclusive.
     #[ts(optional)]
     pub since: Option<i64>,
@@ -81,6 +84,12 @@ impl SearchParams {
         }
         if let Some(l) = self.level.as_deref().filter(|l| !l.is_empty()) {
             q.min_level = Some(Level::parse_name(l).ok_or_else(|| format!("unknown level `{l}`"))?);
+        }
+        if let Some(ls) = self.levels.as_deref().filter(|l| !l.is_empty()) {
+            let ls = crate::search::parse_levels(ls)?;
+            if ls.len() < 4 {
+                q.levels = ls;
+            }
         }
         if let Some(id) = self.id.as_deref().filter(|i| !i.is_empty()) {
             q.ids.push(id.to_string());
