@@ -81,5 +81,5 @@ export const sourceParams = z.object({
 
 /** `/sources/$name?tab=` */
 export const sourceSearch = z.object({
-  tab: z.enum(['rejected', 'settings']).optional().catch(undefined),
+  tab: z.enum(['rejected', 'malformed', 'settings']).optional().catch(undefined),
 })

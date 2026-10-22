@@ -1,36 +1,61 @@
-import { getRouteApi, Link } from '@tanstack/react-router'
-import { ArrowLeftIcon, PauseIcon, PlayIcon, PlusIcon, RowsIcon, Trash2Icon, XIcon } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  PauseIcon,
+  PencilIcon,
+  PlayIcon,
+  PlusIcon,
+  RowsIcon,
+  Trash2Icon,
+  XIcon,
+} from 'lucide-react'
 import { type FormEvent, useState } from 'react'
 import { IdOrderEditor } from '@/components/settings/id-order'
 import { Caps, Panel } from '@/components/settings/kit'
 import { fmtSpan, PurgeDialog } from '@/components/settings/storage'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import type { Level, PiiKind, SourceInfo, SourceSettings } from '@/gen'
-import { useSources } from '@/lib/api'
+import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { kindLabel } from '@/lib/connect'
-import { fmtAgo, fmtClock, fmtCount, fmtTime, fmtWindow, isRecent } from '@/lib/format'
+import { fmtAgo, fmtBytes, fmtClock, fmtCount, fmtTime, fmtWindow, isRecent } from '@/lib/format'
+import { searchResponse } from '@/lib/schemas'
+import { toQuery } from '@/lib/search-api'
 import {
   DEFAULT_SOURCE_SETTINGS,
   HOUR,
   PII_KINDS,
   PII_LABEL,
   useActivity,
+  usePurge,
   useResetSource,
   useSaveSource,
   useSettings,
   WINDOWS,
 } from '@/lib/settings-api'
+import { useSourceFields, useStreamStats } from '@/lib/stream-api'
 import { toast } from '@/lib/toast'
+import { useRates } from '@/lib/use-rates'
 import { cn } from '@/lib/utils'
 
 const route = getRouteApi('/sources/$name')
 
-export type SourceTab = 'overview' | 'rejected' | 'settings'
+export type SourceTab = 'overview' | 'rejected' | 'malformed' | 'settings'
 
 /** `/sources/$name` (boards v0.1-06.2 / 06.5 / 06.6): overview, rejected requests, per-source settings. */
 export function SourceDetailPage() {
@@ -59,9 +84,11 @@ export function SourceDetailPage() {
     }
   }
 
+  const fields = useSourceFields(name).data
   const tabs: [SourceTab, string][] = [
     ['overview', 'Overview'],
     ['rejected', `Rejected ${activity ? fmtCount(activity.rejections.reduce((a, r) => a + r.count, 0)) : ''}`],
+    ['malformed', `Malformed ${fields ? fmtCount(fields.malformed_total) : ''}`],
     ['settings', 'Settings'],
   ]
 
@@ -89,6 +116,9 @@ export function SourceDetailPage() {
           <span className="border border-dashed px-1.5 py-0.5 font-mono text-muted-foreground text-xs">hidden</span>
         )}
         <span className="flex-1" />
+        <Button variant="outline" onClick={() => navigate({ search: { tab: 'settings' }, replace: true })}>
+          <PencilIcon /> Edit
+        </Button>
         {owner && (
           <Button variant="outline" onClick={togglePause} disabled={save.isPending}>
             {saved.paused ? <PlayIcon /> : <PauseIcon />} {saved.paused ? 'Resume ingest' : 'Pause ingest'}
@@ -122,8 +152,9 @@ export function SourceDetailPage() {
           they expire.
         </div>
       )}
-      {tab === 'overview' && <Overview info={info} name={name} saved={saved} />}
-      {tab === 'rejected' && <Rejected name={name} />}
+      {tab === 'overview' && <Overview info={info} name={name} saved={saved} owner={owner} />}
+      {tab === 'rejected' && <Rejected name={name} info={info} />}
+      {tab === 'malformed' && <MalformedPanel name={name} />}
       {tab === 'settings' && settings && (
         <SourceSettingsForm
           key={JSON.stringify(saved)}
@@ -147,98 +178,458 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   )
 }
 
-function Overview({ info, name, saved }: { info?: SourceInfo; name: string; saved: SourceSettings }) {
+const fmtPct = (v: number) => (v === 0 ? '0%' : v < 0.1 ? `${(v * 100).toFixed(1)}%` : `${Math.round(v * 100)}%`)
+const fmtRate = (r: number | undefined) =>
+  r == null ? '—' : `${r < 10 ? r.toFixed(1).replace(/\.0$/, '') : Math.round(r)}/s`
+
+/** Lines per 15 minutes over the window, stacked by level (design 06.2). */
+function useDayHistogram(name: string, windowMs: number) {
+  const until = Math.ceil(Date.now() / 60_000) * 60_000
+  const since = until - windowMs
+  const buckets = Math.min(240, Math.max(24, Math.round(windowMs / (15 * 60_000))))
+  return useQuery({
+    queryKey: ['source-histogram', name, until, windowMs],
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    queryFn: ({ signal }) =>
+      fetchJson(`/api/search?${toQuery({ source: name, since, until, limit: 1, buckets })}`, searchResponse, {
+        signal,
+      }),
+  })
+}
+
+export function DayHistogram({ name, windowMs }: { name: string; windowMs: number }) {
+  const r = useDayHistogram(name, windowMs).data
+  const h = r?.histogram ?? []
+  const max = Math.max(1, ...h.map((b) => b.count))
+  const span = r ? r.until - r.since : windowMs
+  const ticks = r ? [0.25, 0.5, 0.75].map((f) => r.since + span * f) : []
+  return (
+    <section className="flex flex-col gap-2 border bg-card px-4 py-3" aria-label="Lines per 15 minutes">
+      <div className="flex items-center justify-between">
+        <Caps>Lines per 15 min · {fmtWindow(windowMs)}</Caps>
+        <span className="flex gap-3 font-mono text-[11px] text-muted-foreground">
+          <span>info</span>
+          <span className="text-status-warn">warn</span>
+          <span className="text-status-err">error</span>
+        </span>
+      </div>
+      <div className="flex h-12 items-end gap-px">
+        {r
+          ? h.map((b, i) => {
+              const info = b.count - b.warn - b.error
+              return (
+                <span
+                  // biome-ignore lint/suspicious/noArrayIndexKey: fixed-position buckets
+                  key={i}
+                  data-testid="day-bar"
+                  title={`${fmtClock(b.start)} · ${fmtCount(b.count)} lines`}
+                  className="flex flex-1 flex-col-reverse"
+                  style={{ height: b.count ? `${Math.max(6, (b.count / max) * 100)}%` : 0 }}
+                >
+                  <span className="bg-chart-1" style={{ flexGrow: info }} />
+                  <span className="bg-chart-3" style={{ flexGrow: b.warn }} />
+                  <span className="bg-chart-2" style={{ flexGrow: b.error }} />
+                </span>
+              )
+            })
+          : null}
+      </div>
+      <div className="flex justify-between font-mono text-[11px] text-muted-foreground">
+        <span>{r ? `${span >= 86_400_000 ? 'yesterday ' : ''}${fmtClock(r.since)}` : ''}</span>
+        {ticks.map((t) => (
+          <span key={t}>{fmtClock(t)}</span>
+        ))}
+        <span>now</span>
+      </div>
+    </section>
+  )
+}
+
+function Overview({
+  info,
+  name,
+  saved,
+  owner,
+}: {
+  info?: SourceInfo
+  name: string
+  saved: SourceSettings
+  owner: boolean
+}) {
   const settings = useSettings().data
+  const health = useHealth().data
+  const sources = useSources().data
+  const rate = useRates(sources)[name]
+  const stats = useStreamStats(name, undefined).data
+  const fields = useSourceFields(name).data
+  const [removing, setRemoving] = useState(false)
   if (!info) return <p className="text-muted-foreground">No line from {name} yet.</p>
   const order = saved.id_keys ?? settings?.flow_ids.order ?? []
+  const windowMs = saved.retention_ms ?? settings?.storage.retention_ms ?? health?.retention_ms ?? 24 * HOUR
+  const total = stats?.total ?? info.lines
+  const coverage = new Map((fields?.ids ?? []).map((c) => [c.key, c.coverage]))
+  const shownId = order.find((k) => (coverage.get(k) ?? 0) > 0)
+  const second = order.find((k) => k !== shownId && (coverage.get(k) ?? 0) > 0)
+  const hourAvg = stats ? stats.histogram.reduce((n, b) => n + b.count, 0) / 3600 : null
+  const peak = stats ? Math.max(0, ...stats.histogram.map((b) => b.count)) / 60 : null
   return (
     <div className="flex flex-col gap-4">
       <div className="flex gap-3">
-        <Stat label="Lines stored" value={fmtCount(info.lines)} sub="in the searchable window" />
+        <Stat
+          label="Rate"
+          value={isRecent(info.last_ts) ? fmtRate(rate) : 'off'}
+          sub={hourAvg != null && peak != null ? `avg ${fmtRate(hourAvg)} · peak ${fmtRate(peak)} (1h)` : undefined}
+        />
         <Stat
           label="Last line"
           value={info.last_ts ? fmtAgo(info.last_ts) : '—'}
           sub={info.last_ts ? fmtTime(info.last_ts) : undefined}
         />
         <Stat
-          label="Window"
-          value={fmtWindow(saved.retention_ms ?? settings?.storage.retention_ms ?? 24 * HOUR)}
-          sub={saved.retention_ms ? 'shorter than the instance' : 'as the instance'}
+          label={`Lines ${fmtWindow(windowMs)}`}
+          value={fmtCount(total)}
+          sub={
+            stats && total
+              ? `${fmtPct(stats.levels.error / total)} errors · ${fmtPct(stats.levels.warn / total)} warn`
+              : undefined
+          }
         />
-        <Stat label="Flow id" value={order[0] ?? '—'} sub={saved.id_keys ? 'source order' : 'instance order'} />
+        <div className="flex flex-1 flex-col gap-1 border bg-card px-4 py-3.5">
+          <Caps>Flow id</Caps>
+          <span className={cn('font-mono text-2xl', shownId ? 'text-brand' : 'text-muted-foreground')}>
+            {shownId ?? (fields ? 'none found' : '…')}
+          </span>
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {shownId ? `on ${fmtPct(coverage.get(shownId) ?? 0)} of lines` : 'no id key on its lines'}
+          </span>
+        </div>
       </div>
-      <Panel title="Connection">
-        <dl className="grid grid-cols-[8rem_1fr] gap-y-2 px-4 py-3 font-mono text-xs">
-          <dt className="text-brand">via</dt>
-          <dd>{info.kind === 'docker' ? 'docker.sock · this host' : kindLabel(info.kind)}</dd>
-          {info.containers.length > 0 && (
-            <>
-              <dt className="text-brand">containers</dt>
-              <dd>{info.containers.join(', ')}</dd>
-            </>
+
+      <DayHistogram name={name} windowMs={windowMs} />
+
+      <div className="grid grid-cols-[1fr_360px] items-start gap-4">
+        <Panel
+          title="Fields detected"
+          aside={fields ? `${fields.fields.length} fields · from the last ${fmtCount(fields.sampled)} lines` : ''}
+        >
+          {!fields ? (
+            <p className="px-4 py-6 text-muted-foreground text-sm">Reading recent lines…</p>
+          ) : fields.fields.length === 0 ? (
+            <p className="px-4 py-6 text-muted-foreground text-sm">
+              No JSON fields in the last {fmtCount(fields.sampled)} lines: they are kept as raw text.
+            </p>
+          ) : (
+            <table className="w-full font-mono text-xs">
+              <tbody>
+                {fields.fields.map((f) => (
+                  <tr key={f.key} className="h-7 border-border/60 border-b last:border-b-0">
+                    <td className="max-w-48 truncate px-4 text-brand">{f.key}</td>
+                    <td className="w-14 text-muted-foreground">{f.kind}</td>
+                    <td className="w-32">
+                      <span className="flex items-center gap-2">
+                        <span className="h-1 w-12 bg-muted">
+                          <span className="block h-full bg-brand" style={{ width: `${f.coverage * 100}%` }} />
+                        </span>
+                        <span className="text-muted-foreground">{fmtPct(f.coverage)}</span>
+                      </span>
+                    </td>
+                    <td className="max-w-64 truncate pr-4">{f.sample}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
-          {info.group && (
-            <>
-              <dt className="text-brand">group</dt>
-              <dd>{info.group}</dd>
-            </>
+        </Panel>
+
+        <div className="flex flex-col gap-4">
+          <Panel title="Flow id detected" aside={saved.id_keys ? 'source order' : 'default order'}>
+            <p className="px-4 pt-3 text-muted-foreground text-xs">
+              {shownId
+                ? `${shownId} is on ${fmtPct(coverage.get(shownId) ?? 0)} of lines, so flows stitch by it.${second ? ` ${second} links other lines in.` : ''}`
+                : 'None of the id keys appear on its lines, so each line opens as a one-node flow.'}
+            </p>
+            <ol className="px-4 py-2 font-mono text-xs">
+              {order.map((k, i) => (
+                <li key={k} className="flex h-7 items-center gap-3 border-border/60 border-b last:border-b-0">
+                  <span className="w-3 text-muted-foreground">{i + 1}</span>
+                  <span className={cn('flex-1', (coverage.get(k) ?? 0) > 0 ? 'text-brand' : 'text-muted-foreground')}>
+                    {k}
+                  </span>
+                  <span className="text-muted-foreground">{fields ? fmtPct(coverage.get(k) ?? 0) : ''}</span>
+                  {k === shownId ? (
+                    <CheckIcon className="size-3.5 text-status-ok" aria-label="used" />
+                  ) : (
+                    <span className="size-3.5" />
+                  )}
+                </li>
+              ))}
+            </ol>
+          </Panel>
+
+          <Panel title="Connection">
+            <dl className="grid grid-cols-[6rem_1fr] gap-y-2 px-4 py-3 font-mono text-xs">
+              <dt className="text-brand">via</dt>
+              <dd>{info.kind === 'docker' ? 'docker.sock · this host' : kindLabel(info.kind)}</dd>
+              {info.containers.length > 0 && (
+                <>
+                  <dt className="text-brand">container</dt>
+                  <dd className="truncate">{info.containers.join(', ')}</dd>
+                </>
+              )}
+              {info.group && (
+                <>
+                  <dt className="text-brand">service</dt>
+                  <dd>{info.group}</dd>
+                </>
+              )}
+            </dl>
+          </Panel>
+
+          {owner && (
+            <section className="flex items-center gap-3 border border-status-err/40 px-4 py-3">
+              <div className="flex flex-1 flex-col">
+                <span className="font-medium text-sm">Remove source</span>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  stops ingest · deletes {fmtCount(total)} lines
+                </span>
+              </div>
+              <Button variant="destructive" size="sm" onClick={() => setRemoving(true)}>
+                <Trash2Icon /> Remove
+              </Button>
+            </section>
           )}
-        </dl>
+        </div>
+      </div>
+      {removing && <RemoveSourceDialog name={name} lines={total} saved={saved} onClose={() => setRemoving(false)} />}
+    </div>
+  )
+}
+
+/**
+ * Type-to-confirm remove (design 06.4): pauses ingest (new lines are dropped),
+ * hides it, and purges its stored lines. A token stays valid until revoked in
+ * Settings → Ingest tokens.
+ */
+export function RemoveSourceDialog({
+  name,
+  lines,
+  saved,
+  onClose,
+}: {
+  name: string
+  lines: number
+  saved: SourceSettings
+  onClose: () => void
+}) {
+  const [typed, setTyped] = useState('')
+  const save = useSaveSource(name)
+  const purge = usePurge()
+  const navigate = useNavigate()
+  const busy = save.isPending || purge.isPending
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (typed.trim() !== name) return
+    try {
+      await save.mutateAsync({ ...saved, paused: true, hidden: true })
+      const r = await purge.mutateAsync({ source: name, confirm: name })
+      toast.success(`Removed ${name}`, {
+        description: `${fmtCount(r.lines)} stored lines deleted; new lines are dropped.`,
+      })
+      onClose()
+      navigate({ to: '/sources' })
+    } catch (err) {
+      toast.error('Could not remove the source', { description: (err as Error).message })
+    }
+  }
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          <DialogHeader>
+            <DialogTitle>Remove {name}?</DialogTitle>
+            <DialogDescription>
+              quiet stops accepting lines from {name} and deletes its {fmtCount(lines)} stored lines. Flows that include
+              them will show as partial. A sender keeps running until you revoke its token in{' '}
+              <Link to="/settings/ingest-tokens" className="text-brand hover:underline">
+                Ingest tokens
+              </Link>
+              .
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-1.5 text-xs">
+            <label htmlFor="confirm-remove">
+              Type <code className="font-mono text-foreground">{name}</code> to confirm
+            </label>
+            <Input
+              id="confirm-remove"
+              aria-label="Confirm remove"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="destructive" disabled={typed.trim() !== name || busy}>
+              <Trash2Icon /> Remove source
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function MalformedRows({ name, max }: { name: string; max?: number }) {
+  const f = useSourceFields(name).data
+  if (!f) return <p className="px-4 py-6 text-muted-foreground text-sm">Loading…</p>
+  const rows = max ? f.malformed.slice(0, max) : f.malformed
+  if (rows.length === 0)
+    return <p className="px-4 py-6 text-center text-muted-foreground text-sm">No malformed lines from {name}.</p>
+  return (
+    <ul>
+      {rows.map((m) => (
+        <li key={m.id} className="border-border/60 border-b last:border-b-0">
+          <Link
+            to="/line/$lineId"
+            params={{ lineId: m.id }}
+            className="flex h-8 items-center gap-3 px-4 font-mono text-xs hover:bg-row-hover"
+          >
+            <span className="w-16 shrink-0 text-muted-foreground tabular-nums">{fmtClock(m.ts)}</span>
+            <span
+              className={cn(
+                'shrink-0 px-1.5',
+                m.reason.startsWith('duplicate')
+                  ? 'border text-muted-foreground'
+                  : 'bg-status-warn/15 text-status-warn',
+              )}
+            >
+              {m.reason}
+              {m.reason === 'truncated' ? ` · ${fmtBytes(m.raw.length)}` : ''}
+            </span>
+            <span className="min-w-0 flex-1 truncate">{m.raw}</span>
+            <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          </Link>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function MalformedPanel({ name }: { name: string }) {
+  const f = useSourceFields(name).data
+  return (
+    <Panel
+      title="Malformed lines"
+      aside={`kept as raw text, shown in the stream as raw rows${f ? ` · ${fmtCount(f.malformed_total)} in the window, newest ${f.malformed.length} here` : ''}`}
+    >
+      <MalformedRows name={name} />
+    </Panel>
+  )
+}
+
+function Rejected({ name, info }: { name: string; info?: SourceInfo }) {
+  const a = useActivity(name).data
+  const f = useSourceFields(name).data
+  const stats = useStreamStats(name, undefined).data
+  const sources = useSources().data
+  const rate = useRates(sources)[name]
+  const navigate = route.useNavigate()
+  if (!a) return <p className="text-muted-foreground">Loading…</p>
+  const total = stats?.total ?? info?.lines ?? 0
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex gap-3">
+        <Stat
+          label="Accepted"
+          value={isRecent(info?.last_ts ?? null) ? fmtRate(rate) : '0/s'}
+          sub={info?.last_ts ? `last good line ${fmtClock(info.last_ts)}` : 'no line yet'}
+        />
+        <Stat
+          label="Rejected 15 min"
+          value={fmtCount(a.rejected_15m)}
+          sub={`~${(a.rejected_15m / 900).toFixed(2)} req/s`}
+        />
+        <Stat
+          label={`Malformed ${fmtWindow(health24(stats))}`}
+          value={f ? fmtCount(f.malformed_total) : '…'}
+          sub={f && total ? `${fmtPct(f.malformed_total / total)} · kept as raw text` : 'kept as raw text'}
+        />
+        <Stat label={`Lines ${fmtWindow(health24(stats))}`} value={fmtCount(total)} sub="stored" />
+      </div>
+      <Panel title="Rejected requests" aside="grouped per minute · bodies are not stored · last 24h">
+        {a.rejections.length === 0 ? (
+          <p className="px-4 py-6 text-center text-muted-foreground text-sm">
+            Nothing refused for {name}. Requests that name this source (token or X-Quiet-Source) show up here.
+          </p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left">
+                {['Time', 'Status', 'Reason', 'Endpoint', 'Token', 'Count'].map((h) => (
+                  <th key={h} className="px-4 py-2 font-normal">
+                    <Caps>{h}</Caps>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {a.rejections.map((r) => (
+                <tr key={`${r.minute}-${r.status}-${r.reason}-${r.token}`} className="border-b last:border-b-0">
+                  <td className="px-4 py-2 font-mono">{fmtClock(r.minute)}</td>
+                  <td className="px-4 py-2">
+                    <span
+                      className={cn(
+                        'px-1.5 font-mono text-xs',
+                        r.status === 401 || r.status >= 500
+                          ? 'bg-status-err/15 text-status-err'
+                          : 'bg-status-warn/15 text-status-warn',
+                      )}
+                    >
+                      {r.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2">{r.reason}</td>
+                  <td className="px-4 py-2 font-mono text-muted-foreground text-xs">/{r.endpoint}</td>
+                  <td className="px-4 py-2 font-mono text-xs">
+                    {r.token ?? <span className="text-status-warn">missing</span>}
+                  </td>
+                  <td className="px-4 py-2 font-mono">{r.count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Panel>
+      <Panel
+        title="Malformed lines"
+        aside={
+          <span className="flex items-center gap-3">
+            kept as raw text, shown in the stream as raw rows
+            {f && f.malformed_total > 4 && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => navigate({ search: { tab: 'malformed' }, replace: true })}
+              >
+                View all {fmtCount(f.malformed_total)}
+                <ChevronRightIcon />
+              </Button>
+            )}
+          </span>
+        }
+      >
+        <MalformedRows name={name} max={4} />
       </Panel>
     </div>
   )
 }
 
-function Rejected({ name }: { name: string }) {
-  const a = useActivity(name).data
-  if (!a) return <p className="text-muted-foreground">Loading…</p>
-  return (
-    <Panel title="Rejected requests" aside="grouped per minute · bodies are not stored · last 24h">
-      {a.rejections.length === 0 ? (
-        <p className="px-4 py-6 text-center text-muted-foreground text-sm">
-          Nothing refused for {name}. Requests that name this source (token or X-Quiet-Source) show up here.
-        </p>
-      ) : (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b text-left">
-              {['Time', 'Status', 'Reason', 'Endpoint', 'Token', 'Count'].map((h) => (
-                <th key={h} className="px-4 py-2 font-normal">
-                  <Caps>{h}</Caps>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {a.rejections.map((r) => (
-              <tr key={`${r.minute}-${r.status}-${r.reason}-${r.token}`} className="border-b last:border-b-0">
-                <td className="px-4 py-2 font-mono">{fmtClock(r.minute)}</td>
-                <td className="px-4 py-2">
-                  <span
-                    className={cn(
-                      'px-1.5 font-mono text-xs',
-                      r.status === 401 || r.status >= 500
-                        ? 'bg-status-err/15 text-status-err'
-                        : 'bg-status-warn/15 text-status-warn',
-                    )}
-                  >
-                    {r.status}
-                  </span>
-                </td>
-                <td className="px-4 py-2">{r.reason}</td>
-                <td className="px-4 py-2 font-mono text-muted-foreground text-xs">/{r.endpoint}</td>
-                <td className="px-4 py-2 font-mono text-xs">
-                  {r.token ?? <span className="text-status-warn">missing</span>}
-                </td>
-                <td className="px-4 py-2 font-mono">{r.count}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Panel>
-  )
-}
+const health24 = (stats: { since: number; until: number } | undefined) =>
+  stats ? stats.until - stats.since : 24 * HOUR
 
 const LEVELS: (Level | 'all')[] = ['all', 'debug', 'info', 'warn', 'error']
 
