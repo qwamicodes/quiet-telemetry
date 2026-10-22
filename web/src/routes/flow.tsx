@@ -1,6 +1,20 @@
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { ArrowLeftIcon, ChevronRightIcon, ClockIcon, CopyIcon, GitForkIcon, ListIcon, SearchIcon } from 'lucide-react'
+import {
+  ArrowLeftIcon,
+  BoxesIcon,
+  ChevronRightIcon,
+  ClockIcon,
+  CopyIcon,
+  FileDownIcon,
+  GitForkIcon,
+  ListIcon,
+  SearchIcon,
+  SettingsIcon,
+  WorkflowIcon,
+} from 'lucide-react'
+import { useState } from 'react'
+import { ExportDialog } from '@/components/export-dialog'
 import { FieldCard } from '@/components/field-card'
 import { FlowGraph } from '@/components/flow/flow-graph'
 import { Timeline } from '@/components/flow/timeline'
@@ -11,7 +25,7 @@ import type { Flow, FlowNotFound, LogLine } from '@/gen'
 import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { flowTone, fmtDuration, statusLabel, stitchedBy } from '@/lib/flow'
 import { type FlowTarget, useFlow } from '@/lib/flow-api'
-import { fmtClock, fmtTime, fmtWindow } from '@/lib/format'
+import { fmtBytes, fmtClock, fmtDay, fmtTime, fmtWindow } from '@/lib/format'
 import { searchResponse } from '@/lib/schemas'
 import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
@@ -134,7 +148,17 @@ function FlowView({
     const next = flow.nodes[Math.min(flow.nodes.length - 1, Math.max(0, index + by))]
     select(next.line_id)
   }
-  useHotkeys({ j: () => move(1), k: () => move(-1) })
+  const [exporting, setExporting] = useState(false)
+  const streamSearch = { source: home.source, q: opened?.value }
+  const openInStream = () => navigate({ to: '/', search: streamSearch })
+  // Flow + card keys (design 08.2): J/K step, O open in stream, Esc back to the stream.
+  // The card itself owns C/F/1-3; a dialog on top owns Esc.
+  useHotkeys({
+    j: () => !exporting && move(1),
+    k: () => !exporting && move(-1),
+    o: () => !exporting && openInStream(),
+    escape: () => !exporting && navigate({ to: '/', search: { source: home.source } }),
+  })
 
   const one = flow.line_count === 1
   const tone = flowTone(flow)
@@ -157,6 +181,12 @@ function FlowView({
         value={opened?.value ?? `line ${first.id}`}
         actions={
           <>
+            {flow.ids.length > 0 && (
+              <Button variant="outline" size="sm" onClick={() => setExporting(true)}>
+                <FileDownIcon />
+                Export flow
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -174,12 +204,7 @@ function FlowView({
               <CopyIcon />
               Copy flow JSON
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              nativeButton={false}
-              render={<Link to="/" search={{ source: home.source, q: opened?.value }} />}
-            >
+            <Button variant="outline" size="sm" nativeButton={false} render={<Link to="/" search={streamSearch} />}>
               <ListIcon />
               Open in stream
             </Button>
@@ -207,7 +232,7 @@ function FlowView({
 
       {one ? (
         <div className="flex min-h-0 flex-1 gap-6">
-          <FieldCard line={line} className="w-auto max-w-3xl flex-1" />
+          <FieldCard line={line} className="w-auto max-w-3xl flex-1" onOpenInStream={openInStream} />
           <OneNodeAside line={line} since={since} until={until} />
         </div>
       ) : (
@@ -239,6 +264,44 @@ function FlowView({
             title={node.name}
           />
         </div>
+      )}
+      {exporting && (
+        <ExportDialog
+          open={exporting}
+          onOpenChange={setExporting}
+          title="Export flow"
+          description={`Every line stitched into this flow${flow.sources.length > 1 ? `, from ${flow.sources.length === 2 ? 'both' : `all ${flow.sources.length}`} sources` : ''}, in time order.`}
+          params={{ id: flow.ids.map((i) => i.value).join(',') || undefined, since: flow.started, until: flow.ended }}
+          fixedRange={`${fmtTime(flow.started)} - ${fmtTime(flow.ended)} · whole flow`}
+          fileName={`quiet-flow-${(opened?.value ?? `line-${first.id}`).replace(/[^A-Za-z0-9_-]/g, '-')}`}
+          defaultGzip={false}
+          summary={
+            <>
+              <div className="flex min-h-7 items-center gap-3 border-border/60 border-b py-1">
+                <span className="w-24 shrink-0 font-mono text-muted-foreground text-xs">flow</span>
+                <span className="truncate font-mono text-xs">
+                  {flow.ids.map((i, n) => (
+                    <span key={`${i.key}:${i.value}`}>
+                      {n > 0 && <span className="text-muted-foreground"> → </span>}
+                      <span className="text-muted-foreground">{i.key}</span> {i.value}
+                    </span>
+                  ))}
+                </span>
+              </div>
+              <div className="flex min-h-7 flex-wrap items-center gap-1.5 border-border/60 border-b py-1">
+                <span className="w-24 shrink-0 font-mono text-muted-foreground text-xs">sources</span>
+                {flow.sources.map((s) => (
+                  <span key={s} className="border px-1.5 font-mono text-xs">
+                    {s}
+                  </span>
+                ))}
+              </div>
+            </>
+          }
+          footnote={({ bytes }) =>
+            `${flow.line_count} ${flow.line_count === 1 ? 'line' : 'lines'} · ${flow.steps} ${flow.steps === 1 ? 'step' : 'steps'}${bytes != null ? ` · ${fmtBytes(bytes)}` : ''}`
+          }
+        />
       )}
     </div>
   )
@@ -306,10 +369,14 @@ function OneNodeAside({ line, since, until }: { line: LogLine; since: number; un
   )
 }
 
+const LOOKED_FOR = 'request_id, job_id, trace_id, correlation_id'
+
 function NotFound({ nf }: { nf: FlowNotFound }) {
-  const retention = useHealth().data?.retention_ms ?? nf.until - nf.since
-  const sources = useSources().data?.length
+  const health = useHealth().data
+  const retention = health?.retention_ms ?? nf.until - nf.since
+  const sources = useSources().data
   const window = fmtWindow(retention || 86_400_000)
+  if (nf.close.length === 0) return <Gone nf={nf} window={window} oldest={health?.oldest ?? null} sources={sources} />
   return (
     <div className="flex flex-1 flex-col px-6 pb-4">
       <Crumbs value={nf.id} />
@@ -318,7 +385,7 @@ function NotFound({ nf }: { nf: FlowNotFound }) {
         <span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">not found</span>
       </div>
       <p className="mt-1 font-mono text-muted-foreground text-xs">
-        searched request_id, job_id, trace_id, correlation_id · all {sources ?? ''} sources · last {window}
+        searched {LOOKED_FOR} · all {sources?.length ?? ''} sources · last {window}
       </p>
       <div className="mx-auto mt-24 flex w-full max-w-[460px] flex-col gap-4">
         <div className="flex flex-col items-center gap-3 border border-dashed p-8 text-center">
@@ -335,35 +402,120 @@ function NotFound({ nf }: { nf: FlowNotFound }) {
             Search all sources
           </Button>
         </div>
-        {nf.close.length > 0 && (
-          <div>
-            <h3 className="pb-2 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
-              Close matches
-            </h3>
-            <ul className="border">
-              {nf.close.map((c) => (
-                <li key={c.value} className="border-border/60 border-b last:border-b-0">
-                  <Link
-                    to="/flow/$id"
-                    params={{ id: c.value }}
-                    className="flex h-8 items-center gap-3 px-3 font-mono text-xs hover:bg-row-hover"
-                  >
-                    <span>{c.value}</span>
-                    <span className="flex-1" />
-                    <span className="truncate text-muted-foreground">
-                      {c.msg} · {fmtClock(c.ts)}
-                    </span>
-                    <ChevronRightIcon className="size-3.5 text-muted-foreground" />
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <div>
+          <h3 className="pb-2 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
+            Close matches
+          </h3>
+          <ul className="border">
+            {nf.close.map((c) => (
+              <li key={c.value} className="border-border/60 border-b last:border-b-0">
+                <Link
+                  to="/flow/$id"
+                  params={{ id: c.value }}
+                  className="flex h-8 items-center gap-3 px-3 font-mono text-xs hover:bg-row-hover"
+                >
+                  <span>{c.value}</span>
+                  <span className="flex-1" />
+                  <span className="truncate text-muted-foreground">
+                    {c.msg} · {fmtClock(c.ts)}
+                  </span>
+                  <ChevronRightIcon className="size-3.5 text-muted-foreground" />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
         <p className="flex items-center gap-2 text-muted-foreground text-xs">
           <ClockIcon className="size-3.5" />
-          Need older lines? Retention is {window}. Change it with --retention (settings UI in slice 6).
+          <span>
+            Need older lines? Retention is {window}. Change it in{' '}
+            <Link to="/settings/storage" className="text-brand hover:underline">
+              Settings → Storage
+            </Link>
+            .
+          </span>
         </p>
+      </div>
+    </div>
+  )
+}
+
+/** A flow link with nothing like it left in the window (design 08.6). */
+function Gone({
+  nf,
+  window,
+  oldest,
+  sources,
+}: {
+  nf: FlowNotFound
+  window: string
+  oldest: number | null
+  sources: { paused: boolean }[] | undefined
+}) {
+  const paused = sources?.filter((s) => s.paused).length ?? 0
+  const rows: [React.ReactNode, string, string][] = [
+    [
+      <ClockIcon key="i" />,
+      'Searchable window',
+      `${window}${oldest ? ` · oldest line ${fmtDay(oldest)}, ${fmtClock(oldest)}` : ''}`,
+    ],
+    [<SearchIcon key="i" />, 'Looked for', LOOKED_FOR],
+    [
+      <BoxesIcon key="i" />,
+      'Sources searched',
+      `all ${sources?.length ?? ''} · ${paused ? `${paused} paused` : 'none paused'}`.replace('  ', ' '),
+    ],
+  ]
+  return (
+    <div className="flex flex-1 flex-col justify-center px-[72px] pb-24">
+      <div className="flex max-w-[560px] flex-col gap-6">
+        <p className="font-mono text-muted-foreground text-sm">404</p>
+        <h1 className="font-semibold text-[32px] leading-tight tracking-tight">
+          This flow is no longer in the window.
+        </h1>
+        <p className="text-base text-muted-foreground">
+          Flow links only open while their lines are stored. Nothing in the last {window} carries {nf.id}, so it has
+          probably expired. It could also be a typo in the link.
+        </p>
+        <div className="flex h-9 items-center gap-2 border bg-card/40 px-3 font-mono text-[13px]">
+          <WorkflowIcon className="size-3.5 text-muted-foreground" />
+          <span className="text-muted-foreground">{`${location.host}/flow/`}</span>
+          <span className="truncate">{nf.id}</span>
+          <span className="flex-1" />
+          <span className="bg-status-err/15 px-1.5 text-[11px] text-status-err">404</span>
+        </div>
+        <dl className="border">
+          {rows.map(([icon, k, v]) => (
+            <div
+              key={k}
+              className="grid h-9 grid-cols-[180px_1fr] items-center border-border/60 border-b px-3 last:border-b-0"
+            >
+              <dt className="flex items-center gap-2 text-[13px] [&_svg]:size-3.5 [&_svg]:text-muted-foreground">
+                {icon}
+                {k}
+              </dt>
+              <dd className="truncate font-mono text-muted-foreground text-xs">{v}</dd>
+            </div>
+          ))}
+        </dl>
+        <div className="flex flex-wrap gap-2">
+          <Button nativeButton={false} render={<Link to="/" />}>
+            <ArrowLeftIcon />
+            Back to stream
+          </Button>
+          <Button
+            variant="outline"
+            nativeButton={false}
+            render={<Link to="/search" search={{ q: nf.id, range: '24h' }} />}
+          >
+            <SearchIcon />
+            Search {window} for {nf.id}
+          </Button>
+          <Button variant="ghost" nativeButton={false} render={<Link to="/settings/storage" />}>
+            <SettingsIcon />
+            Storage settings
+          </Button>
+        </div>
       </div>
     </div>
   )
