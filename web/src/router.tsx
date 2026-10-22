@@ -28,6 +28,7 @@ import { BrokenAuthLink, InvitePage, ResetPage, SetupPage, SignInPage } from '@/
 import { ConnectPage } from '@/routes/connect'
 import { FlowPage, LineFlowPage } from '@/routes/flow'
 import {
+  SettingsAbout,
   SettingsAccount,
   SettingsAppearance,
   SettingsFlowIds,
@@ -191,6 +192,11 @@ const settingsFlowIdsRoute = createRoute({
   path: '/flow-id-order',
   component: SettingsFlowIds,
 })
+const settingsAboutRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/about',
+  component: SettingsAbout,
+})
 const settingsAppearanceRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/appearance',
@@ -217,6 +223,7 @@ export const routeTree = rootRoute.addChildren([
     settingsFlowIdsRoute,
     settingsStorageRoute,
     settingsAppearanceRoute,
+    settingsAboutRoute,
   ]),
 ])
 

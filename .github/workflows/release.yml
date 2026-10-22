@@ -36,11 +36,17 @@ jobs:
           tags: |
             type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
+      - id: date
+        run: echo "d=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
+          # Settings → About shows the commit and build date.
+          build-args: |
+            QUIET_GIT_SHA=${{ github.sha }}
+            QUIET_BUILD_DATE=${{ steps.date.outputs.d }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

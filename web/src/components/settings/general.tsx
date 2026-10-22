@@ -10,7 +10,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import type { GeneralSettings, StreamDirection, TimestampFormat } from '@/gen'
 import { useHealth } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
-import { fmtBytes, fmtRowTime, fmtTime, publicHost, validTimeZone } from '@/lib/format'
+import { fmtRowTime, fmtTime, publicHost, validTimeZone } from '@/lib/format'
 import { useSaveGeneral, useSettings } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
 
@@ -21,6 +21,10 @@ const ZONES: string[] = (() => {
     return []
   }
 })()
+
+/** Line caps are binary: 65536 → `64 KB`, 1048576 → `1 MB`. */
+export const fmtLineSize = (b: number) =>
+  b >= 1024 * 1024 ? `${+(b / 1024 / 1024).toFixed(1)} MB` : `${+(b / 1024).toFixed(1)} KB`
 
 const LINE_SIZES = [16, 32, 64, 128, 256, 512, 1024].map((k) => k * 1024)
 
@@ -144,14 +148,14 @@ function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: str
             onValueChange={(v) => v && setDraft({ ...draft, max_line_bytes: Number(v) })}
           >
             <SelectTrigger aria-label="Max line size" className="w-30">
-              <SelectValue>{(v: string) => fmtBytes(Number(v))}</SelectValue>
+              <SelectValue>{(v: string) => fmtLineSize(Number(v))}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               {[...new Set([...LINE_SIZES, draft.max_line_bytes])]
                 .sort((a, b) => a - b)
                 .map((b) => (
                   <SelectItem key={b} value={String(b)}>
-                    {fmtBytes(b)}
+                    {fmtLineSize(b)}
                   </SelectItem>
                 ))}
             </SelectContent>

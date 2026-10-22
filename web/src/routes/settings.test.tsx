@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
+  About,
   Health,
   LogLine,
   SettingsResponse,
@@ -183,6 +184,17 @@ beforeEach(() => {
         return json(body)
       }
       if (url === '/api/storage/purge') return json({ lines: 42, source: body.source ?? null })
+      if (url === '/api/about') return json(aboutInfo)
+      if (url.startsWith('https://api.github.com/')) {
+        githubCalls += 1
+        return json({
+          tag_name: 'v0.1.1',
+          name: 'v0.1.1',
+          html_url: 'https://github.com/qwamicodes/quiet-telemetry/releases/tag/v0.1.1',
+          published_at: '2026-10-22T10:00:00Z',
+          body: '## Fixes\n- Parser tolerates duplicate keys\n- Fixes reconnect loop after laptop sleep\n',
+        })
+      }
       return json({ error: 'nope' }, 404)
     }),
   )
@@ -194,6 +206,22 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
+
+let githubCalls = 0
+const aboutInfo: About = {
+  version: '0.1.0',
+  commit: 'a1c9e04',
+  built: '2026-10-21',
+  started: NOW - 27 * H,
+  now: NOW,
+  store: 'sqlite',
+  sqlite_version: '3.46.0',
+  db_bytes: 1.9e9,
+  data_dir: '/var/lib/quiet',
+  live_clients: 3,
+  members: 2,
+  docker: { state: 'connected', containers: 6 },
+}
 
 function renderAt(path: string, user: User = owner) {
   const client = makeQueryClient()
@@ -430,5 +458,45 @@ describe('system banners', () => {
     await user.click(within(disk).getByRole('button', { name: /Dismiss/ }))
     expect(screen.queryByText('Disk is at 96% of the 5.0 GB cap')).not.toBeInTheDocument()
     expect(JSON.parse(sessionStorage.getItem('quiet.dismissed-issues') ?? '[]')).toEqual(['disk_at_cap'])
+  })
+})
+
+describe('Settings → About (07.6)', () => {
+  beforeEach(() => {
+    githubCalls = 0
+  })
+
+  it('shows version, uptime, database and live clients; no update check while it is off', async () => {
+    renderAt('/settings/about')
+    expect(await screen.findByText('1d 3h')).toBeInTheDocument()
+    expect(screen.getByText('v0.1.0')).toBeInTheDocument()
+    expect(screen.getByText('1.9 GB')).toBeInTheDocument()
+    expect(screen.getByText('sqlite 3.46.0 · wal')).toBeInTheDocument()
+    expect(screen.getByText('websocket · 2 members')).toBeInTheDocument()
+    expect(screen.getByText('/var/lib/quiet')).toBeInTheDocument()
+    expect(screen.getByText('docker.sock · 6 containers')).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Check for updates daily' })).not.toBeChecked()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(githubCalls).toBe(0)
+  })
+
+  it('switching the check on saves it and shows the newer release with the host command', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings/about')
+    await user.click(await screen.findByRole('switch', { name: 'Check for updates daily' }))
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          url: '/api/settings/general',
+          body: expect.objectContaining({ check_updates: true }),
+        }),
+      ),
+    )
+    const callout = await screen.findByRole('region', { name: 'Update available' })
+    expect(callout).toHaveTextContent('v0.1.1 is available')
+    expect(callout).toHaveTextContent('patch')
+    expect(callout).toHaveTextContent('Parser tolerates duplicate keys')
+    expect(callout).toHaveTextContent('docker compose pull quiet && docker compose up -d quiet')
+    expect(githubCalls).toBe(1)
   })
 })

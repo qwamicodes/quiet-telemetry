@@ -361,8 +361,12 @@ async fn about(State(s): State<AppState>) -> Json<About> {
     let members = s.accounts.members().map(|m| m.len() as u64).unwrap_or(0);
     Json(About {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        commit: option_env!("QUIET_GIT_SHA").map(|c| c.chars().take(7).collect()),
-        built: option_env!("QUIET_BUILD_DATE").map(String::from),
+        commit: option_env!("QUIET_GIT_SHA")
+            .filter(|c| !c.is_empty())
+            .map(|c| c.chars().take(7).collect()),
+        built: option_env!("QUIET_BUILD_DATE")
+            .filter(|d| !d.is_empty())
+            .map(String::from),
         started: s.started,
         now: chrono::Utc::now().timestamp_millis(),
         store: s.pipeline.store().kind().to_string(),
