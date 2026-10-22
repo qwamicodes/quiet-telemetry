@@ -17,6 +17,10 @@ user: User | null,
  */
 csrf: string | null, version: string, 
 /**
+ * Settings → General instance name, shown signed out too ("Join legivent").
+ */
+instance_name: string, 
+/**
  * Only while setup is required.
  */
 host: SetupHost | null, };
