@@ -58,14 +58,21 @@ function LineRow({
   words,
   showSource,
   onPick,
+  muted = false,
 }: {
   line: LogLine
   words: string[]
   showSource: boolean
   onPick: (f: string) => void
+  /** Matches its source's muted-lines rules and is shown anyway: dimmed and tagged. */
+  muted?: boolean
 }) {
   return (
-    <div className="flex h-full items-center gap-3 px-9 font-mono text-[13px]" data-line-id={line.id}>
+    <div
+      className={cn('flex h-full items-center gap-3 px-9 font-mono text-[13px]', muted && 'opacity-50')}
+      data-line-id={line.id}
+      data-muted={muted || undefined}
+    >
       <span className="w-24 shrink-0 text-muted-foreground tabular-nums">{fmtRowTime(line.ts, 'seconds')}</span>
       <span className="w-12 shrink-0">
         <LevelBadge level={line.level} />
@@ -78,6 +85,14 @@ function LineRow({
         <FieldChip key={k} k={k} v={v} words={words} onPick={onPick} />
       ))}
       <span className="flex-1" />
+      {muted && (
+        <span
+          title="Matches this source’s muted-lines rules"
+          className="shrink-0 border px-1 font-mono text-[10px] text-muted-foreground uppercase tracking-[0.06em]"
+        >
+          muted
+        </span>
+      )}
       <FlowLink line={line} />
     </div>
   )
@@ -179,8 +194,11 @@ export function SearchResults({
   onMore,
   onPick,
   summaries,
+  mutedIds,
 }: {
   summaries?: Map<string, FlowSummary | null>
+  /** Muted lines being shown (included in search): dimmed and tagged. */
+  mutedIds?: ReadonlySet<number>
   lines: LogLine[]
   view: 'flows' | 'lines'
   words: string[]
@@ -248,7 +266,13 @@ export function SearchResults({
                     (it.line.level === 'error' || it.line.level === 'fatal') && 'bg-row-error',
                   )}
                 >
-                  <LineRow line={it.line} words={words} showSource={view === 'lines'} onPick={onPick} />
+                  <LineRow
+                    line={it.line}
+                    words={words}
+                    showSource={view === 'lines'}
+                    onPick={onPick}
+                    muted={mutedIds?.has(it.line.id) ?? false}
+                  />
                 </div>
               )}
             </li>
