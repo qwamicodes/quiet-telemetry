@@ -5,7 +5,18 @@ import { kindLabel } from '@/lib/connect'
 import { isRecent } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-export function SourceItem({ source, active, rate }: { source: SourceInfo; active: boolean; rate: number | null }) {
+export function SourceItem({
+  source,
+  active,
+  rate,
+  nested = false,
+}: {
+  source: SourceInfo
+  active: boolean
+  rate: number | null
+  /** Under a group header in the sidebar: indented. */
+  nested?: boolean
+}) {
   const live = isRecent(source.last_ts)
   return (
     <Link
@@ -13,7 +24,8 @@ export function SourceItem({ source, active, rate }: { source: SourceInfo; activ
       search={{ source: source.name }}
       aria-current={active ? 'page' : undefined}
       className={cn(
-        'group relative flex h-9 items-center gap-2.5 px-3 text-left outline-none hover:bg-sidebar-accent focus-visible:bg-sidebar-accent',
+        nested ? 'pr-3 pl-6' : 'px-3',
+        'group relative flex h-9 items-center gap-2.5 text-left outline-none hover:bg-sidebar-accent focus-visible:bg-sidebar-accent',
         active &&
           'bg-sidebar-accent text-foreground before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-brand',
       )}

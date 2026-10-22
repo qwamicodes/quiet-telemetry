@@ -87,6 +87,7 @@ export const sourceInfo = z.object({
   kind: z.enum(['docker', 'http', 'vector', 'fluentbit', 'otlp']),
   containers: z.array(z.string()),
   group: z.string().nullable(),
+  group_kind: z.enum(['compose', 'stack', 'standalone', 'ingest']).nullable().catch(null),
   lines: z.number(),
   last_ts: z.number().nullable(),
   display_name: z.string().nullable(),

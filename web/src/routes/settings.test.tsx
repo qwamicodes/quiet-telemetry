@@ -24,6 +24,7 @@ const source = (name: string, over: Partial<SourceInfo> = {}): SourceInfo => ({
   kind: 'docker',
   containers: [],
   group: null,
+  group_kind: null,
   lines: 10,
   last_ts: NOW,
   display_name: null,

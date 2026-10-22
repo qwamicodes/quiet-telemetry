@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Bucket, Health, SettingsResponse, SourceActivity, SourceFields, SourceInfo, StreamStats } from '@/gen'
+import { resetCollapsedGroups } from '@/lib/source-groups'
 import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
 import { seedAuth } from '@/test/auth'
@@ -14,6 +15,7 @@ const src = (name: string, over: Partial<SourceInfo> = {}): SourceInfo => ({
   kind: 'docker',
   containers: [],
   group: null,
+  group_kind: null,
   lines: 1000,
   last_ts: NOW,
   display_name: null,
@@ -21,7 +23,13 @@ const src = (name: string, over: Partial<SourceInfo> = {}): SourceInfo => ({
   paused: false,
   ...over,
 })
-const sources = [src('legivent-api'), src('order-worker'), src('traefik', { kind: 'vector' })]
+const apps = { group: 'legivent-os-local-apps', group_kind: 'compose' } as const
+const sources = [
+  src('legivent-api', apps),
+  src('order-worker', { ...apps, last_ts: NOW - 10 * 60_000 }),
+  src('redis', { group: 'Standalone', group_kind: 'standalone' }),
+  src('traefik', { kind: 'vector', group: 'Ingest', group_kind: 'ingest' }),
+]
 const health: Health = {
   ok: true,
   version: '0.1.0',
@@ -143,6 +151,8 @@ beforeEach(() => {
   )
 })
 afterEach(() => {
+  localStorage.clear()
+  resetCollapsedGroups()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -160,24 +170,64 @@ function renderAt(path: string) {
 }
 
 describe('sources list (06.1)', () => {
-  it('groups by host and shows a sparkline, the flow id and the error share per source', async () => {
+  it('groups by stack and shows a sparkline, the flow id and the error share per source', async () => {
     const user = userEvent.setup()
     renderAt('/sources')
     const table = await screen.findByRole('table', {}, { timeout: 5000 })
-    expect(within(table).getByText('this host')).toBeInTheDocument()
-    expect(within(table).getByText('2 sources · docker.sock')).toBeInTheDocument()
-    expect(within(table).getByText('HTTP ingest')).toBeInTheDocument()
-    await waitFor(() => expect(within(table).getAllByTestId('sparkline')).toHaveLength(3))
-    expect(within(table).getByText('request_id')).toBeInTheDocument()
+    const apps = within(table).getByRole('button', { name: 'legivent-os-local-apps · 1/2 sending · 2 shown' })
+    expect(apps).toHaveAttribute('aria-expanded', 'true')
+    expect(within(table).getByRole('button', { name: 'Standalone · 1/1 sending · 1 shown' })).toBeInTheDocument()
+    expect(within(table).getByRole('button', { name: 'Ingest · 1/1 sending · 1 shown' })).toBeInTheDocument()
+    // Projects first, then Standalone, then Ingest.
+    const headers = within(table)
+      .getAllByRole('button', { expanded: true })
+      .map((b) => b.textContent)
+    expect(headers.map((h) => h?.split(/compose|docker|push/)[0])).toEqual([
+      'legivent-os-local-apps',
+      'Standalone',
+      'Ingest',
+    ])
+    await waitFor(() => expect(within(table).getAllByTestId('sparkline')).toHaveLength(4))
+    expect(within(table).getAllByText('request_id').length).toBeGreaterThan(0)
     expect(within(table).getByText('job_id')).toBeInTheDocument()
     expect(within(table).getByText('none found')).toBeInTheDocument()
     expect(within(table).getByText('10%')).toBeInTheDocument()
-    expect(within(table).getAllByText('0.4%')).toHaveLength(2)
+
+    // Collapse the project: its rows hide, the choice is kept in localStorage.
+    await user.click(apps)
+    expect(apps).toHaveAttribute('aria-expanded', 'false')
+    expect(within(table).getByText('legivent-api')).not.toBeVisible()
+    expect(JSON.parse(localStorage.getItem('quiet.source-groups.collapsed') ?? '[]')).toEqual([
+      'compose:legivent-os-local-apps',
+    ])
+    await user.click(apps)
+    expect(within(table).getByText('legivent-api')).toBeVisible()
+
+    // Group kind filter: Standalone only, then Compose / Stack only.
+    await user.click(screen.getByRole('tab', { name: 'Standalone' }))
+    expect(within(table).queryByText('legivent-api')).not.toBeInTheDocument()
+    expect(within(table).getByText('redis')).toBeInTheDocument()
+    expect(within(table).queryByText('traefik')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Compose / Stack' }))
+    expect(within(table).getByText('legivent-api')).toBeInTheDocument()
+    expect(within(table).queryByText('redis')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'All' }))
 
     // Erroring tab: only order-worker.
     await user.click(await screen.findByRole('tab', { name: 'Erroring 1' }))
     expect(within(table).queryByText('legivent-api')).not.toBeInTheDocument()
     expect(within(table).getByText('order-worker')).toBeInTheDocument()
+  })
+
+  it('the sidebar nests sources under collapsible group headers', async () => {
+    const user = userEvent.setup()
+    renderAt('/sources')
+    const group = await screen.findByRole('region', { name: 'legivent-os-local-apps' }, { timeout: 5000 })
+    expect(within(group).getByRole('link', { name: /legivent-api/ })).toBeInTheDocument()
+    expect(within(group).getByRole('link', { name: /order-worker/ })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Ingest' })).toHaveTextContent('traefik')
+    await user.click(within(group).getByRole('button', { expanded: true }))
+    expect(within(group).queryByRole('link', { name: /legivent-api/ })).not.toBeInTheDocument()
   })
 })
 

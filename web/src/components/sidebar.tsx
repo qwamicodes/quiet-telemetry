@@ -2,12 +2,14 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import { KeyboardIcon, PlugIcon, PlusIcon, RowsIcon, SearchIcon, SettingsIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Logo } from '@/components/logo'
+import { SourceGroupHeader } from '@/components/source-group-header'
 import { SourceItem } from '@/components/source-item'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { UserMenu } from '@/components/user-menu'
 import { useHealth, useSources } from '@/lib/api'
 import { useConnection } from '@/lib/connection'
 import { fmtWindow } from '@/lib/format'
+import { groupSources, useCollapsedGroups } from '@/lib/source-groups'
 import { useRates } from '@/lib/use-rates'
 
 function NavItem({
@@ -50,6 +52,10 @@ export function Sidebar({
   const rates = useRates(sources)
   // Hidden sources stay under Sources and in search, not here (unless open now).
   const listed = sources?.filter((s) => !s.hidden || s.name === activeSource)
+  const groups = groupSources(listed ?? [], listed ?? [])
+  // One group (say, only Ingest): no headers, just the list.
+  const flat = groups.length <= 1
+  const { isCollapsed, toggle } = useCollapsedGroups()
   const onStream = useRouterState({ select: (s) => s.location.pathname === '/' })
 
   return (
@@ -102,14 +108,25 @@ export function Sidebar({
             <span className="text-muted-foreground text-xs">Sources appear here as soon as they send a line.</span>
           </div>
         )}
-        {listed?.map((s) => (
-          <SourceItem
-            key={s.name}
-            source={s}
-            active={onStream && s.name === activeSource}
-            rate={down ? null : (rates[s.name] ?? null)}
-          />
-        ))}
+        {groups.map((g) => {
+          // The open source stays visible even in a collapsed group.
+          const collapsed = !flat && isCollapsed(g.key)
+          const rows = collapsed ? g.rows.filter((s) => onStream && s.name === activeSource) : g.rows
+          return (
+            <section key={g.key} aria-label={g.name}>
+              {!flat && <SourceGroupHeader group={g} collapsed={collapsed} onToggle={() => toggle(g.key)} compact />}
+              {rows.map((s) => (
+                <SourceItem
+                  key={s.name}
+                  source={s}
+                  active={onStream && s.name === activeSource}
+                  rate={down ? null : (rates[s.name] ?? null)}
+                  nested={!flat}
+                />
+              ))}
+            </section>
+          )
+        })}
         <Link
           to="/connect"
           className="mt-3 flex h-8 items-center justify-center gap-1.5 border border-sidebar-border border-dashed text-muted-foreground text-xs outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:bg-sidebar-accent [&_svg]:size-3.5"

@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { BoxIcon, EllipsisIcon, PlusIcon, SearchIcon, TriangleAlertIcon } from 'lucide-react'
 import { Fragment, useEffect, useRef, useState } from 'react'
+import { SourceGroupHeader } from '@/components/source-group-header'
 import { Sparkline } from '@/components/sparkline'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -10,6 +11,13 @@ import type { SourceInfo } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
 import { fmtAgo, fmtBytes, fmtCount, fmtWindow, isRecent } from '@/lib/format'
+import {
+  type GroupFilter,
+  groupSources,
+  inGroupFilter,
+  type SourceGroup,
+  useCollapsedGroups,
+} from '@/lib/source-groups'
 import { useSourceFields, useStreamStats } from '@/lib/stream-api'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { useRates } from '@/lib/use-rates'
@@ -57,10 +65,15 @@ function SourceRow({
   s,
   rate,
   onStats,
+  nested = false,
+  hidden = false,
 }: {
   s: SourceInfo
   rate: number | undefined
   onStats: (name: string, v: { erroring: boolean; stopped: boolean }) => void
+  /** Under a stack group header: indented. */
+  nested?: boolean
+  hidden?: boolean
 }) {
   const { stats, errors, idKey, stopped } = useSourceStats(s.name)
   const erroring = errors != null && errors >= ERRORING
@@ -69,8 +82,8 @@ function SourceRow({
   useEffect(() => onStats(s.name, { erroring, stopped }), [s.name, erroring, stopped])
   const live = isRecent(s.last_ts)
   return (
-    <tr className="h-11 border-b last:border-b-0 hover:bg-row-hover">
-      <td className="px-4">
+    <tr className="h-11 border-b last:border-b-0 hover:bg-row-hover" hidden={hidden}>
+      <td className={nested ? 'pr-4 pl-9' : 'px-4'}>
         <Link
           to="/sources/$name"
           params={{ name: s.name }}
@@ -133,7 +146,9 @@ export function SourcesPage() {
   const rates = useRates(sources)
   const [filter, setFilter] = useState<Filter>('all')
   const [text, setText] = useState('')
-  const [grouped, setGrouped] = useState(true)
+  const [grouping, setGrouping] = useState<'stack' | 'host' | 'none'>('stack')
+  const [groupFilter, setGroupFilter] = useState<GroupFilter>('all')
+  const { isCollapsed, toggle } = useCollapsedGroups()
   const [flags, setFlags] = useState<Record<string, { erroring: boolean; stopped: boolean }>>({})
   const onStats = (name: string, v: { erroring: boolean; stopped: boolean }) =>
     setFlags((f) => (f[name]?.erroring === v.erroring && f[name]?.stopped === v.stopped ? f : { ...f, [name]: v }))
@@ -151,16 +166,22 @@ export function SourcesPage() {
             ? flags[s.name]?.erroring
             : true,
     )
+    .filter((s) => inGroupFilter(s, groupFilter))
     .filter((s) => !text.trim() || s.name.toLowerCase().includes(text.trim().toLowerCase()))
   const total = Object.values(rates).reduce((a, b) => a + b, 0)
   const erroring = all.filter((s) => flags[s.name]?.erroring).length
   const stoppedOne = all.find((s) => flags[s.name]?.stopped)
-  const groups = grouped
-    ? [...new Set(shown.map((s) => hostOf(s).key))].map((k) => ({
-        host: hostOf(shown.find((s) => hostOf(s).key === k) as SourceInfo),
-        rows: shown.filter((s) => hostOf(s).key === k),
-      }))
-    : [{ host: null, rows: shown }]
+  type Group = { key: string; host?: ReturnType<typeof hostOf>; stack?: SourceGroup; rows: SourceInfo[] }
+  const groups: Group[] =
+    grouping === 'stack'
+      ? groupSources(all, shown).map((g) => ({ key: g.key, stack: g, rows: g.rows }))
+      : grouping === 'host'
+        ? [...new Set(shown.map((s) => hostOf(s).key))].map((k) => ({
+            key: k,
+            host: hostOf(shown.find((s) => hostOf(s).key === k) as SourceInfo),
+            rows: shown.filter((s) => hostOf(s).key === k),
+          }))
+        : [{ key: 'all', rows: shown }]
 
   return (
     <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-8 py-6">
@@ -220,6 +241,30 @@ export function SourcesPage() {
             </button>
           ))}
         </div>
+        <div className="flex border" role="tablist" aria-label="Group kind">
+          {(
+            [
+              ['all', 'All'],
+              ['standalone', 'Standalone'],
+              ['stack', 'Compose / Stack'],
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              role="tab"
+              aria-selected={groupFilter === k}
+              onClick={() => setGroupFilter(k)}
+              className={cn(
+                'h-7 px-3 text-muted-foreground text-xs outline-none focus-visible:bg-muted',
+                groupFilter === k && 'bg-muted text-foreground',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="flex-1" />
         <div className="flex items-center gap-2">
           <div className="relative w-60">
             <SearchIcon className="absolute top-2 left-2 size-3.5 text-muted-foreground" />
@@ -233,11 +278,14 @@ export function SourcesPage() {
             />
             <kbd className="absolute top-1.5 right-1.5 border px-1 font-mono text-[10px] text-muted-foreground">/</kbd>
           </div>
-          <Select value={grouped ? 'host' : 'none'} onValueChange={(v) => setGrouped(v === 'host')}>
+          <Select value={grouping} onValueChange={(v) => v && setGrouping(v as typeof grouping)}>
             <SelectTrigger aria-label="Grouping" className="w-40">
-              <SelectValue>{(v: string) => (v === 'host' ? 'Group by host' : 'No grouping')}</SelectValue>
+              <SelectValue>
+                {(v: string) => (v === 'stack' ? 'Group by stack' : v === 'host' ? 'Group by host' : 'No grouping')}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="stack">Group by stack</SelectItem>
               <SelectItem value="host">Group by host</SelectItem>
               <SelectItem value="none">No grouping</SelectItem>
             </SelectContent>
@@ -295,26 +343,44 @@ export function SourcesPage() {
             </tr>
           </thead>
           <tbody>
-            {groups.map((g) => (
-              <Fragment key={g.host?.key ?? 'all'}>
-                {g.host && (
-                  <tr className="h-8 border-b bg-muted/20">
-                    <td colSpan={8} className="px-4">
-                      <span className="flex items-center gap-2 text-xs">
-                        <BoxIcon className="size-3.5 text-muted-foreground" />
-                        <span className="font-medium">{g.host.title}</span>
-                        <span className="font-mono text-[11px] text-muted-foreground">
-                          {g.rows.length} {g.rows.length === 1 ? 'source' : 'sources'} · {g.host.via}
+            {groups.map((g) => {
+              const collapsed = g.stack ? isCollapsed(g.key) : false
+              return (
+                <Fragment key={g.key}>
+                  {g.stack && (
+                    <tr className="border-b bg-muted/20" data-group={g.key}>
+                      <td colSpan={8} className="px-4">
+                        <SourceGroupHeader group={g.stack} collapsed={collapsed} onToggle={() => toggle(g.key)} />
+                      </td>
+                    </tr>
+                  )}
+                  {g.host && (
+                    <tr className="h-8 border-b bg-muted/20">
+                      <td colSpan={8} className="px-4">
+                        <span className="flex items-center gap-2 text-xs">
+                          <BoxIcon className="size-3.5 text-muted-foreground" />
+                          <span className="font-medium">{g.host.title}</span>
+                          <span className="font-mono text-[11px] text-muted-foreground">
+                            {g.rows.length} {g.rows.length === 1 ? 'source' : 'sources'} · {g.host.via}
+                          </span>
                         </span>
-                      </span>
-                    </td>
-                  </tr>
-                )}
-                {g.rows.map((s) => (
-                  <SourceRow key={s.name} s={s} rate={rates[s.name]} onStats={onStats} />
-                ))}
-              </Fragment>
-            ))}
+                      </td>
+                    </tr>
+                  )}
+                  {/* Collapsed rows stay mounted (hidden) so their error / stopped flags still count. */}
+                  {g.rows.map((s) => (
+                    <SourceRow
+                      key={s.name}
+                      s={s}
+                      rate={rates[s.name]}
+                      onStats={onStats}
+                      nested={Boolean(g.stack)}
+                      hidden={collapsed}
+                    />
+                  ))}
+                </Fragment>
+              )
+            })}
             {shown.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-4 py-6 text-muted-foreground text-xs">

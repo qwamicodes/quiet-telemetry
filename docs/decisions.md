@@ -261,3 +261,30 @@ session, `qi_`/`qx_` tokens keep working without one.
   everywhere else.
 - New `components/ui/dropdown-menu.tsx` on Base UI Menu with no GroupLabel
   export (the legivent #162 crash); a jsdom test opens it.
+
+## Docker sources grouped by stack (2026-10-22, PR #11)
+
+Asked by Kwaame, modelled on a container manager's Containers view.
+
+- **Group from labels**, read when quiet starts following a container:
+  `com.docker.stack.namespace` (Swarm stack) wins over
+  `com.docker.compose.project` (Compose), else the container is
+  **Standalone**. An empty label counts as none. A `quiet.source=` rename keeps
+  the container's project or stack. The first container seen sets a source's
+  group (replicas share it).
+- **Pushed sources** (HTTP, Vector, Fluent Bit, OTLP) form one **Ingest**
+  group: they have no Docker labels, and per-token grouping can come later.
+- **API**: `SourceInfo.group` is always filled (`Standalone` / `Ingest` as
+  fallbacks) and `group_kind` is `compose | stack | standalone | ingest`, so
+  the UI never guesses from the kind.
+- **UI**: Sources page and sidebar render group headers (`N/M sending · K
+  shown`, sending = a line in the last minute), projects and stacks by name,
+  then Standalone, then Ingest. The sidebar drops headers when there is only
+  one group. Collapse state is per group in localStorage
+  (`quiet.source-groups.collapsed`), shared by both lists; the open source
+  stays visible in a collapsed sidebar group. Collapsed rows on the Sources
+  page stay mounted (hidden) so the Erroring count and stopped banner still
+  see them. "Group by host" (receiver) stays as an option.
+- **Not built**: streaming a whole group. The stream stays one source at a
+  time for v0.1; a merged multi-source stream needs its own filter and
+  ordering work.

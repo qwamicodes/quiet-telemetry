@@ -56,12 +56,34 @@ impl SourceKind {
     }
 }
 
+/// What a source's group is (Sources page / sidebar grouping, like a
+/// container manager's Containers view).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupKind {
+    /// `com.docker.compose.project`
+    Compose,
+    /// `com.docker.stack.namespace` (Swarm)
+    Stack,
+    /// A Docker container in no project or stack.
+    Standalone,
+    /// Pushed over HTTP, Vector, Fluent Bit or OTLP.
+    Ingest,
+}
+
+/// Group names for sources without a project or stack.
+pub const STANDALONE_GROUP: &str = "Standalone";
+pub const INGEST_GROUP: &str = "Ingest";
+
 #[derive(Debug, Clone, Default, Serialize, TS)]
 pub struct SourceMeta {
     /// Containers feeding this source (docker only).
     pub containers: Vec<String>,
-    /// e.g. compose project or swarm stack.
+    /// Compose project or Swarm stack; `Standalone` / `Ingest` otherwise
+    /// (filled in by [`Source::info`]).
     pub group: Option<String>,
+    /// What `group` is. Docker sets it from labels; [`Source::info`] fills the rest.
+    pub group_kind: Option<GroupKind>,
     pub lines: u64,
     pub last_ts: Option<i64>,
 }
@@ -93,10 +115,19 @@ impl Source {
     }
 
     pub fn info(&self) -> SourceInfo {
+        let kind = self.kind();
+        let mut meta = self.meta();
+        let (group, group_kind) = match (kind, meta.group_kind, meta.group.take()) {
+            (SourceKind::Docker, Some(k), Some(g)) if k != GroupKind::Standalone => (g, k),
+            (SourceKind::Docker, _, _) => (STANDALONE_GROUP.to_string(), GroupKind::Standalone),
+            _ => (INGEST_GROUP.to_string(), GroupKind::Ingest),
+        };
+        meta.group = Some(group);
+        meta.group_kind = Some(group_kind);
         SourceInfo {
             name: self.name.clone(),
-            kind: self.kind(),
-            meta: self.meta(),
+            kind,
+            meta,
             display_name: None,
             hidden: false,
             paused: false,
@@ -180,6 +211,28 @@ impl Hub {
 mod tests {
     use super::*;
     use crate::normalize::normalize;
+
+    #[test]
+    fn groups_fall_back_to_standalone_and_ingest() {
+        let hub = Hub::new();
+        let c = hub.ensure_source("api", SourceKind::Docker);
+        c.update_meta(|m| {
+            m.group = Some("shop".into());
+            m.group_kind = Some(GroupKind::Compose);
+        });
+        hub.ensure_source("redis", SourceKind::Docker);
+        hub.ensure_source("payments", SourceKind::Otlp);
+        let by = |n: &str| {
+            let i = hub.source(n).unwrap().info();
+            (i.meta.group.unwrap(), i.meta.group_kind.unwrap())
+        };
+        assert_eq!(by("api"), ("shop".into(), GroupKind::Compose));
+        assert_eq!(
+            by("redis"),
+            (STANDALONE_GROUP.into(), GroupKind::Standalone)
+        );
+        assert_eq!(by("payments"), (INGEST_GROUP.into(), GroupKind::Ingest));
+    }
 
     #[tokio::test]
     async fn subscribers_get_new_lines_and_meta_counts() {
