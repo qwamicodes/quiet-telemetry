@@ -9,8 +9,28 @@ import { seedAuth } from '@/test/auth'
 
 const T = 1_760_000_000_000
 const sources: SourceInfo[] = [
-  { name: 'api', kind: 'docker', containers: [], group: null, lines: 3, last_ts: T },
-  { name: 'worker', kind: 'docker', containers: [], group: null, lines: 3, last_ts: T },
+  {
+    name: 'api',
+    kind: 'docker',
+    containers: [],
+    group: null,
+    lines: 3,
+    last_ts: T,
+    display_name: null,
+    hidden: false,
+    paused: false,
+  },
+  {
+    name: 'worker',
+    kind: 'docker',
+    containers: [],
+    group: null,
+    lines: 3,
+    last_ts: T,
+    display_name: null,
+    hidden: false,
+    paused: false,
+  },
 ]
 const health: Health = {
   ok: true,

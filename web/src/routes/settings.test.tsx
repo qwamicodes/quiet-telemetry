@@ -1,0 +1,401 @@
+import { createMemoryHistory, RouterProvider } from '@tanstack/react-router'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type {
+  Health,
+  LogLine,
+  SettingsResponse,
+  SourceActivity,
+  SourceInfo,
+  StorageReport,
+  SystemStatus,
+  User,
+} from '@/gen'
+import { makeQueryClient, Providers } from '@/providers'
+import { makeRouter } from '@/router'
+import { member, owner, seedAuth } from '@/test/auth'
+
+const H = 3_600_000
+const NOW = Date.now()
+
+const source = (name: string, over: Partial<SourceInfo> = {}): SourceInfo => ({
+  name,
+  kind: 'docker',
+  containers: [],
+  group: null,
+  lines: 10,
+  last_ts: NOW,
+  display_name: null,
+  hidden: false,
+  paused: false,
+  ...over,
+})
+
+const health: Health = {
+  ok: true,
+  version: '0.1.0',
+  started: 0,
+  docker: { state: 'connected', containers: 3 },
+  store: 'sqlite',
+  retention_ms: 24 * H,
+  disk_bytes: 0,
+  stored_lines: 0,
+  oldest: null,
+  ingest: { auth: 'token', loopback: true, max_body: 16_000_000, rate: 20_000, tokens: 0 },
+}
+
+let sources: SourceInfo[]
+let settings: SettingsResponse
+let storage: StorageReport
+let system: SystemStatus
+let activity: SourceActivity
+let calls: { url: string; method: string; body: unknown }[]
+
+function fresh() {
+  sources = [source('legivent-api'), source('traefik', { kind: 'vector' }), source('noisy', { hidden: true })]
+  settings = {
+    general: { instance_name: 'quiet', stream_direction: 'bottom', timezone: 'local' },
+    storage: {
+      retention_ms: 24 * H,
+      retention_origin: 'default',
+      max_disk: 5e9,
+      max_disk_origin: 'default',
+      flag_retention_ms: 24 * H,
+      flag_max_disk: 5e9,
+      at_cap: 'drop_oldest_hour',
+    },
+    flow_ids: { order: ['request_id', 'job_id', 'trace_id', 'correlation_id'], match_by: 'value' },
+    sources: {},
+  }
+  const hour = Math.floor(NOW / H) * H
+  storage = {
+    settings: settings.storage,
+    store: 'sqlite',
+    path: '/var/lib/quiet/quiet.db',
+    used: 1.9e9,
+    ratio: 0.38,
+    lines: 4_380_000,
+    oldest: NOW - 23 * H,
+    fs_free: 41.2e9,
+    hours: [0, 1, 2].map((i) => ({ start: hour - i * H, lines: 1000, bytes: 80e6 })).reverse(),
+    sources: [
+      { source: 'traefik', lines: 2_310_000, bytes: 1e9, disk: 0.71e9, share: 0.37 },
+      { source: 'legivent-api', lines: 1_210_000, bytes: 0.9e9, disk: 0.62e9, share: 0.33 },
+    ],
+    bytes_per_hour: 80e6,
+    steady_bytes: 1.92e9,
+    cap_in_ms: null,
+    now: NOW,
+  }
+  system = {
+    ok: true,
+    issues: [],
+    docker: { state: 'connected', containers: 3 },
+    disk: {
+      state: 'ok',
+      used: 1.9e9,
+      cap: 5e9,
+      ratio: 0.38,
+      fs_free: null,
+      fs_total: null,
+      fs_low: false,
+      window_ms: 24 * H,
+      reaches_ms: 23 * H,
+      capped_lines: 0,
+      capped_at: null,
+    },
+    ingest: { rejected_15m: 0, rejected_24h: 0, recent: [], paused: [] },
+    store: { kind: 'sqlite', write_errors: 0, last_error: null, last_error_at: null, disk_full: false },
+    now: NOW,
+  }
+  activity = { source: 'legivent-api', rejections: [], rejected_15m: 0, paused_dropped: 0 }
+  calls = []
+}
+
+const line = (id: number): LogLine => ({
+  id,
+  ts: NOW - 1000 * (10 - id),
+  received: NOW,
+  source: 'legivent-api',
+  level: 'warn',
+  display_id: null,
+  ids: [],
+  msg: `line ${id}`,
+  raw: `line ${id}`,
+})
+
+class FakeSocket {
+  static all: FakeSocket[] = []
+  onopen: (() => void) | null = null
+  onmessage: ((e: { data: string }) => void) | null = null
+  onclose: (() => void) | null = null
+  constructor(public url: string) {
+    FakeSocket.all.push(this)
+    queueMicrotask(() => {
+      this.onopen?.()
+      this.onmessage?.({ data: JSON.stringify({ type: 'backlog', lines: [line(1), line(2), line(3)] }) })
+    })
+  }
+  close() {}
+}
+
+beforeEach(() => {
+  fresh()
+  FakeSocket.all = []
+  localStorage.clear()
+  sessionStorage.clear()
+  vi.stubGlobal('WebSocket', FakeSocket)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      const body = init?.body ? JSON.parse(String(init.body)) : null
+      const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status })
+      if (method !== 'GET') calls.push({ url, method, body })
+      if (url.startsWith('/api/health')) return json(health)
+      if (url === '/api/sources') return json({ sources })
+      if (url.endsWith('/activity')) return json(activity)
+      if (url === '/api/settings') return json(settings)
+      if (url === '/api/storage') return json(storage)
+      if (url === '/api/system') return json(system)
+      if (url === '/api/settings/general') {
+        settings.general = body
+        return json(body)
+      }
+      if (url === '/api/settings/storage') {
+        settings.storage = { ...settings.storage, retention_ms: body.retention_ms ?? settings.storage.retention_ms }
+        return json(settings.storage)
+      }
+      if (url.startsWith('/api/settings/sources/')) {
+        const name = decodeURIComponent(url.split('/').pop() ?? '')
+        settings.sources[name] = body
+        return json(body)
+      }
+      if (url === '/api/storage/purge') return json({ lines: 42, source: body.source ?? null })
+      return json({ error: 'nope' }, 404)
+    }),
+  )
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(600)
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1000)
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600)
+})
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
+
+function renderAt(path: string, user: User = owner) {
+  const client = makeQueryClient()
+  seedAuth(client, user)
+  const router = makeRouter(createMemoryHistory({ initialEntries: [path] }), client)
+  render(
+    <Providers client={client}>
+      <RouterProvider router={router} />
+    </Providers>,
+  )
+  return { router, client }
+}
+
+describe('Settings → Storage', () => {
+  it('shows usage, partitions and volume; the window toggle saves', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings/storage')
+    expect(await screen.findByText('1.90 GB')).toBeInTheDocument()
+    expect(screen.getByText(/SQLite on this host · \/var\/lib\/quiet\/quiet\.db/)).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: '3 hourly partitions stored' })).toBeInTheDocument()
+    const table = screen.getByRole('table')
+    expect(within(table).getByText('traefik')).toBeInTheDocument()
+    expect(within(table).getByText('37%')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '3d' }))
+    await waitFor(() => expect(calls).toContainEqual({ url: '/api/settings/storage', method: 'PUT', body: { retention_ms: 72 * H } }))
+  })
+
+  it('warns near the cap; purge needs the word typed', async () => {
+    storage = { ...storage, used: 4.82e9, ratio: 0.964 }
+    system = { ...system, disk: { ...system.disk, state: 'full', capped_at: NOW } }
+    const user = userEvent.setup()
+    renderAt('/settings/storage')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Disk is at 96% of the 5.00 GB cap')
+    expect(alert).toHaveTextContent('traefik is 37% of the volume')
+
+    await user.click(screen.getByRole('button', { name: /Purge now/ }))
+    const dialog = await screen.findByRole('dialog')
+    const go = within(dialog).getByRole('button', { name: /Purge/ })
+    expect(go).toBeDisabled()
+    await user.type(within(dialog).getByRole('textbox', { name: 'Confirm purge' }), 'purge')
+    await user.click(go)
+    await waitFor(() =>
+      expect(calls).toContainEqual({ url: '/api/storage/purge', method: 'POST', body: { confirm: 'purge' } }),
+    )
+  })
+
+  it('members read but cannot change or purge', async () => {
+    renderAt('/settings/storage', member)
+    expect(await screen.findByText(/Only an owner can change/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Purge now/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '24h' })).toBeDisabled()
+  })
+})
+
+describe('Settings → General', () => {
+  it('saves instance name, timezone and stream direction; bad zones can't be saved', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings')
+    const name = await screen.findByLabelText('Instance name')
+    await user.clear(name)
+    await user.type(name, 'legivent')
+    const tz = screen.getByLabelText('Timezone')
+    await user.clear(tz)
+    await user.type(tz, 'Mars/Olympus')
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+    await user.clear(tz)
+    await user.type(tz, 'Africa/Accra')
+    await user.click(screen.getByRole('button', { name: 'Newest at top' }))
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        url: '/api/settings/general',
+        method: 'PUT',
+        body: { instance_name: 'legivent', stream_direction: 'top', timezone: 'Africa/Accra' },
+      }),
+    )
+  })
+
+  it('is read-only for members', async () => {
+    renderAt('/settings', member)
+    expect(await screen.findByLabelText('Instance name')).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
+  })
+})
+
+describe('source settings', () => {
+  it('reorders ids, masks a field, pauses ingest and saves', async () => {
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?tab=settings')
+    const form = await screen.findByRole('form', { name: 'Settings for legivent-api' })
+    await user.type(within(form).getByLabelText('Display name'), 'API')
+    await user.click(within(form).getByRole('button', { name: 'Move job_id up' }))
+    await user.click(within(form).getByRole('button', { name: 'Stop counting correlation_id' }))
+    await user.type(within(form).getByRole('textbox', { name: 'Mask another field' }), 'customer.address')
+    await user.click(within(form).getByRole('button', { name: /Add/ }))
+    await user.click(within(form).getByRole('switch', { name: 'Mask user_agent' }))
+    await user.click(within(form).getByRole('switch', { name: 'Pause ingest' }))
+    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]).toEqual({
+      url: '/api/settings/sources/legivent-api',
+      method: 'PUT',
+      body: {
+        display_name: 'API',
+        hidden: false,
+        paused: true,
+        retention_ms: null,
+        id_keys: ['job_id', 'request_id', 'trace_id'],
+        default_level: null,
+        mask_fields: ['customer.address'],
+        unmasked: ['user_agent'],
+      },
+    })
+  })
+
+  it('the Rejected tab lists refused requests for the source', async () => {
+    activity = {
+      ...activity,
+      rejected_15m: 38,
+      rejections: [
+        {
+          minute: NOW,
+          endpoint: 'otlp-logs',
+          status: 401,
+          reason: 'ingest token revoked',
+          source: 'legivent-api',
+          token: 'qi_••••77e0',
+          count: 38,
+        },
+      ],
+    }
+    renderAt('/sources/legivent-api?tab=rejected')
+    expect(await screen.findByText('ingest token revoked')).toBeInTheDocument()
+    expect(screen.getByText('qi_••••77e0')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Rejected 38/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('the sidebar hides hidden sources and shows display names', async () => {
+    sources = [source('legivent-api', { display_name: 'API' }), source('noisy', { hidden: true })]
+    renderAt('/sources')
+    const sidebar = await screen.findByRole('complementary')
+    expect(await within(sidebar).findByText('API')).toBeInTheDocument()
+    expect(within(sidebar).queryByText('noisy')).not.toBeInTheDocument()
+    // The Sources page still lists it, marked hidden.
+    expect(await screen.findByRole('link', { name: /noisy\s*hidden/ })).toBeInTheDocument()
+  })
+})
+
+describe('stream defaults from settings', () => {
+  it('opens with the source default level; `all` clears it; direction flips per browser', async () => {
+    settings.sources['legivent-api'] = {
+      display_name: null,
+      hidden: false,
+      paused: false,
+      retention_ms: null,
+      id_keys: null,
+      default_level: 'warn',
+      mask_fields: [],
+      unmasked: [],
+    }
+    settings.general.stream_direction = 'top'
+    const user = userEvent.setup()
+    const { router } = renderAt('/?source=legivent-api')
+    await waitFor(() => expect(FakeSocket.all.some((s) => s.url.includes('level=warn'))).toBe(true))
+    expect(await screen.findByText(/newest at top/)).toBeInTheDocument()
+    // Rows newest first.
+    const rows = await screen.findAllByText(/^line \d$/)
+    expect(rows.map((r) => r.textContent)).toEqual(['line 3', 'line 2', 'line 1'])
+
+    await user.click(screen.getByRole('button', { name: 'warn and above' }))
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ level: 'all' }))
+
+    await user.click(screen.getByRole('button', { name: 'Newest at top' }))
+    expect(await screen.findByText(/newest at bottom/)).toBeInTheDocument()
+    expect(localStorage.getItem('quiet.stream-direction')).toBe('bottom')
+  })
+})
+
+describe('system banners', () => {
+  it('Docker down shows troubleshooting; a dismissed banner stays dismissed', async () => {
+    system = {
+      ...system,
+      ok: false,
+      issues: [
+        {
+          kind: 'docker_unavailable',
+          severity: 'error',
+          title: 'Docker is unavailable',
+          detail: 'quiet can’t read /var/run/docker.sock (permission denied).',
+        },
+        {
+          kind: 'disk_at_cap',
+          severity: 'warn',
+          title: 'Disk is at 96% of the 5.0 GB cap',
+          detail: 'search now reaches back 2d 13h, not 3d',
+        },
+      ],
+    }
+    const user = userEvent.setup()
+    renderAt('/sources')
+    const docker = await screen.findByRole('alert')
+    expect(docker).toHaveTextContent('Docker is unavailable')
+    await user.click(within(docker).getByRole('button', { name: /Troubleshoot/ }))
+    expect(within(docker).getByText(/group_add/)).toBeInTheDocument()
+
+    const disk = screen.getByText('Disk is at 96% of the 5.0 GB cap').closest('[data-issue]') as HTMLElement
+    expect(within(disk).getByRole('link', { name: 'Storage settings' })).toBeInTheDocument()
+    await user.click(within(disk).getByRole('button', { name: /Dismiss/ }))
+    expect(screen.queryByText('Disk is at 96% of the 5.0 GB cap')).not.toBeInTheDocument()
+    expect(JSON.parse(sessionStorage.getItem('quiet.dismissed-issues') ?? '[]')).toEqual(['disk_at_cap'])
+  })
+})

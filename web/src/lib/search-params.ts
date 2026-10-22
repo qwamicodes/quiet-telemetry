@@ -8,12 +8,16 @@ import { LEVEL_FILTERS } from '@/lib/format'
  * of throwing, and the page still opens.
  */
 const text = z.string().trim().min(1).optional().catch(undefined)
-const minLevel = z.enum(LEVEL_FILTERS).optional().catch(undefined)
+/** The stream's level: `all` overrides a source's default level filter. */
+const streamLevel = z
+  .enum([...LEVEL_FILTERS, 'all'])
+  .optional()
+  .catch(undefined)
 
 /** `/` — the live stream of one source. */
 export const streamSearch = z.object({
   source: text,
-  level: minLevel,
+  level: streamLevel,
   q: text,
 })
 export type StreamSearch = z.infer<typeof streamSearch>
@@ -63,3 +67,18 @@ export function searchBounds(s: Pick<SearchSearch, 'range' | 'from' | 'to'>, now
   if (s.from) return { since: s.from, until: s.to ?? now }
   return { since: now - RANGE_MS[s.range], until: now }
 }
+
+/** `/sources/$name`: a source name as the server accepts it (1–128 chars, no control chars). */
+export const sourceParams = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(128)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
+    .refine((v) => !/[\u0000-\u001f\u007f]/.test(v)),
+})
+
+/** `/sources/$name?tab=` */
+export const sourceSearch = z.object({
+  tab: z.enum(['rejected', 'settings']).optional().catch(undefined),
+})

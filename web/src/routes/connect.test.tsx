@@ -125,7 +125,19 @@ describe('connect a source', () => {
 
     // Waiting… then the first line from a vector source arrives.
     expect(within(panel).getByText('waiting for the first line …')).toBeInTheDocument()
-    sources = [{ name: 'traefik', kind: 'vector', containers: [], group: null, lines: 41, last_ts: Date.now() }]
+    sources = [
+      {
+        name: 'traefik',
+        kind: 'vector',
+        containers: [],
+        group: null,
+        lines: 41,
+        last_ts: Date.now(),
+        display_name: null,
+        hidden: false,
+        paused: false,
+      },
+    ]
     await act(() => client.invalidateQueries({ queryKey: ['sources'] }))
     expect(await within(panel).findByText('traefik is connected')).toBeInTheDocument()
     expect(within(panel).getByRole('button', { name: /Open stream/ })).toHaveAttribute('href', '/?source=traefik')
@@ -144,12 +156,34 @@ describe('connect a source', () => {
     expect(snippet).toHaveTextContent('X-Quiet-Source: cron-runner')
     expect(snippet).toHaveTextContent('quiet pipe --name cron-runner')
 
-    sources = [{ name: 'other', kind: 'http', containers: [], group: null, lines: 5, last_ts: Date.now() }]
+    sources = [
+      {
+        name: 'other',
+        kind: 'http',
+        containers: [],
+        group: null,
+        lines: 5,
+        last_ts: Date.now(),
+        display_name: null,
+        hidden: false,
+        paused: false,
+      },
+    ]
     await act(() => client.invalidateQueries({ queryKey: ['sources'] }))
     expect(within(panel).queryByText(/is connected/)).not.toBeInTheDocument()
     sources = [
       ...sources,
-      { name: 'cron-runner', kind: 'http', containers: [], group: null, lines: 1, last_ts: Date.now() },
+      {
+        name: 'cron-runner',
+        kind: 'http',
+        containers: [],
+        group: null,
+        lines: 1,
+        last_ts: Date.now(),
+        display_name: null,
+        hidden: false,
+        paused: false,
+      },
     ]
     await act(() => client.invalidateQueries({ queryKey: ['sources'] }))
     expect(await within(panel).findByText('cron-runner is connected')).toBeInTheDocument()
@@ -206,6 +240,9 @@ describe('sources page', () => {
         group: 'legivent',
         lines: 1200,
         last_ts: Date.now(),
+        display_name: null,
+        hidden: false,
+        paused: false,
       },
       {
         name: 'cron-runner',
@@ -214,8 +251,21 @@ describe('sources page', () => {
         group: null,
         lines: 288,
         last_ts: Date.now() - 3 * 3_600_000,
+        display_name: null,
+        hidden: false,
+        paused: false,
       },
-      { name: 'payments-svc', kind: 'otlp', containers: [], group: null, lines: 5, last_ts: Date.now() },
+      {
+        name: 'payments-svc',
+        kind: 'otlp',
+        containers: [],
+        group: null,
+        lines: 5,
+        last_ts: Date.now(),
+        display_name: null,
+        hidden: false,
+        paused: false,
+      },
     ]
     const user = userEvent.setup()
     renderAt('/sources')
@@ -271,6 +321,9 @@ describe('snippets', () => {
       group: null,
       lines,
       last_ts: 1,
+      display_name: null,
+      hidden: false,
+      paused: false,
     })
     const base = { api: 10 }
     expect(firstArrival('otlp', [s('api', 'otlp', 10), s('pay', 'otlp', 2)], base, 'svc')?.name).toBe('pay')
