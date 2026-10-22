@@ -84,6 +84,11 @@ pub struct GeneralSettings {
     pub keep_non_json: bool,
     /// Settings → About checks GitHub releases from the browser when on.
     pub check_updates: bool,
+    /// Include muted lines in search results (dimmed, tagged `muted`) for
+    /// sources that don't decide for themselves. `null` = the
+    /// `--search-include-muted` flag, else off. In effect: [`MutedSearch`].
+    #[ts(type = "boolean | null")]
+    pub search_include_muted: Option<bool>,
 }
 
 impl Default for GeneralSettings {
@@ -97,6 +102,7 @@ impl Default for GeneralSettings {
             max_line_bytes: DEFAULT_MAX_LINE_BYTES,
             keep_non_json: true,
             check_updates: false,
+            search_include_muted: None,
         }
     }
 }
@@ -229,6 +235,10 @@ pub struct SourceSettings {
     /// stream and search by default ("N muted · show"); still stored,
     /// counted and searchable. Matching happens in the browser.
     pub muted: Vec<MuteRule>,
+    /// Include this source's muted lines in search results; `null` = as
+    /// Settings → General says. The stream always hides them.
+    #[ts(type = "boolean | null")]
+    pub search_include_muted: Option<bool>,
 }
 
 /// One muted-lines rule. With `field`, the field's value (dot path, compared
@@ -244,11 +254,23 @@ pub struct MuteRule {
 /// At most this many muted-lines rules per source.
 pub const MAX_MUTE_RULES: usize = 32;
 
+/// Whether search includes muted lines, instance-wide, as in effect now
+/// (sources can still say otherwise). Saved in Settings → General wins over
+/// `--search-include-muted` (`QUIET_SEARCH_INCLUDE_MUTED`), which wins over off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+pub struct MutedSearch {
+    pub include: bool,
+    pub origin: Origin,
+    /// What the flag (or the built-in off) says, for "use the server default".
+    pub flag: bool,
+}
+
 /// `GET /api/settings`: everything at once (any signed-in user).
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct SettingsResponse {
     pub general: GeneralSettings,
     pub storage: StorageSettings,
+    pub muted_search: MutedSearch,
     pub grouping: GroupingSettings,
     pub flow_ids: FlowIdSettings,
     pub sources: BTreeMap<String, SourceSettings>,
@@ -266,6 +288,9 @@ pub struct Defaults {
     pub group_by: Option<GroupMode>,
     /// `--group-label` / `QUIET_GROUP_LABEL` (also locks the control).
     pub group_label: Option<String>,
+    /// `--search-include-muted` / `QUIET_SEARCH_INCLUDE_MUTED`; under
+    /// Settings → General like the storage flags.
+    pub search_include_muted: Option<bool>,
 }
 
 impl Default for Defaults {
@@ -275,6 +300,7 @@ impl Default for Defaults {
             max_disk: DEFAULT_MAX_DISK,
             group_by: None,
             group_label: None,
+            search_include_muted: None,
         }
     }
 }
@@ -483,6 +509,46 @@ impl Settings {
         }
     }
 
+    /// Search's muted-lines default for the instance, and where it came from.
+    pub fn muted_search(&self) -> MutedSearch {
+        let flag = self.defaults.read().unwrap().search_include_muted;
+        let saved = self.state.read().unwrap().general.search_include_muted;
+        let (include, origin) = match (saved, flag) {
+            (Some(v), _) => (v, Origin::Setting),
+            (None, Some(v)) => (v, Origin::Flag),
+            (None, None) => (false, Origin::Default),
+        };
+        MutedSearch {
+            include,
+            origin,
+            flag: flag.unwrap_or(false),
+        }
+    }
+
+    /// Whether search includes `source`'s muted lines: the source's own
+    /// choice, else the instance's.
+    pub fn search_includes_muted(&self, source: &str) -> bool {
+        let own = self
+            .state
+            .read()
+            .unwrap()
+            .sources
+            .get(source)
+            .and_then(|s| s.search_include_muted);
+        own.unwrap_or_else(|| self.muted_search().include)
+    }
+
+    /// `source`'s muted-lines rules.
+    pub fn mute_rules(&self, source: &str) -> Vec<MuteRule> {
+        self.state
+            .read()
+            .unwrap()
+            .sources
+            .get(source)
+            .map(|s| s.muted.clone())
+            .unwrap_or_default()
+    }
+
     /// The searchable window now, ms.
     pub fn retention_ms(&self) -> i64 {
         self.storage().retention_ms
@@ -532,6 +598,7 @@ impl Settings {
         SettingsResponse {
             general: self.general(),
             storage: self.storage(),
+            muted_search: self.muted_search(),
             grouping: self.grouping(),
             flow_ids: self.flow_ids(),
             sources: self.sources(),
@@ -1102,6 +1169,82 @@ mod tests {
         // Old saved settings (no `muted` key) still read.
         let old: SourceSettings = serde_json::from_str(r#"{"hidden":true}"#).unwrap();
         assert!(old.muted.is_empty() && old.hidden);
+    }
+
+    #[test]
+    fn muted_in_search_saved_beats_flag_beats_off_and_sources_inherit() {
+        let path = tmp();
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        assert_eq!(
+            s.muted_search(),
+            MutedSearch {
+                include: false,
+                origin: Origin::Default,
+                flag: false
+            }
+        );
+        assert!(!s.search_includes_muted("api"));
+        drop(s);
+
+        // The flag turns it on for every source that doesn't decide.
+        let flags = Defaults {
+            search_include_muted: Some(true),
+            ..Default::default()
+        };
+        let s = Settings::open(Some(&path), flags.clone(), false).unwrap();
+        assert_eq!(
+            (s.muted_search().include, s.muted_search().origin),
+            (true, Origin::Flag)
+        );
+        assert!(s.search_includes_muted("api"));
+        s.put_source(
+            "worker",
+            SourceSettings {
+                search_include_muted: Some(false),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert!(
+            !s.search_includes_muted("worker"),
+            "a source's own choice wins"
+        );
+
+        // Saved in Settings → General wins over the flag and survives a restart.
+        let g = GeneralSettings {
+            search_include_muted: Some(false),
+            ..s.general()
+        };
+        s.put_general(g, Some(1)).unwrap();
+        drop(s);
+        let s = Settings::open(Some(&path), flags, false).unwrap();
+        assert_eq!(
+            s.muted_search(),
+            MutedSearch {
+                include: false,
+                origin: Origin::Setting,
+                flag: true
+            }
+        );
+        assert!(!s.search_includes_muted("api"));
+        s.put_source(
+            "api",
+            SourceSettings {
+                search_include_muted: Some(true),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert!(s.search_includes_muted("api"));
+        // Back to inherit: the source's row goes away when nothing else is set.
+        s.reset_source("api", None).unwrap();
+        assert!(!s.sources().contains_key("api"));
+        assert!(!s.search_includes_muted("api"));
+        // Saved values from before this setting still read.
+        let old: GeneralSettings = serde_json::from_str(r#"{"instance_name":"x"}"#).unwrap();
+        assert_eq!(old.search_include_muted, None);
     }
 
     #[test]
