@@ -66,6 +66,7 @@ function fresh() {
       max_line_bytes: 65536,
       keep_non_json: true,
       check_updates: false,
+      search_include_muted: null,
     },
     storage: {
       retention_ms: 24 * H,
@@ -76,6 +77,7 @@ function fresh() {
       flag_max_disk: 5e9,
       at_cap: 'drop_oldest_hour',
     },
+    muted_search: { include: false, origin: 'default', flag: false },
     grouping: { mode: 'auto', label: 'quiet.group', origin: 'default', locked: false },
     flow_ids: { order: ['request_id', 'job_id', 'trace_id', 'correlation_id'], match_by: 'value' },
     sources: {},
@@ -351,8 +353,32 @@ describe('Settings → General', () => {
           max_line_bytes: 65536,
           keep_non_json: false,
           check_updates: false,
+          search_include_muted: null,
         },
       }),
+    )
+  })
+
+  it('includes muted lines in search instance-wide; "use server default" goes back to the flag', async () => {
+    settings.muted_search = { include: true, origin: 'flag', flag: true }
+    const user = userEvent.setup()
+    renderAt('/settings')
+    const toggle = await screen.findByRole('switch', { name: 'Include muted lines in search' })
+    expect(toggle).toBeChecked()
+    expect(screen.getByText('server QUIET_SEARCH_INCLUDE_MUTED · on')).toBeInTheDocument()
+    await user.click(toggle)
+    expect(toggle).not.toBeChecked()
+    await user.click(screen.getByRole('button', { name: 'use server default (on)' }))
+    expect(toggle).toBeChecked()
+    await user.click(toggle)
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          url: '/api/settings/general',
+          body: expect.objectContaining({ search_include_muted: false }),
+        }),
+      ),
     )
   })
 
@@ -401,7 +427,25 @@ describe('source settings', () => {
           { field: 'path', value: '/api/v1/health' },
           { field: null, value: 'kube-probe' },
         ],
+        search_include_muted: null,
       },
+    })
+  })
+
+  it('a source can include its muted lines in search, or inherit the instance choice', async () => {
+    settings.muted_search = { include: true, origin: 'setting', flag: false }
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?tab=settings')
+    const form = await screen.findByRole('form', { name: 'Settings for legivent-api' })
+    const select = within(form).getByRole('combobox', { name: 'Include muted lines in search' })
+    expect(select).toHaveTextContent('Inherit · on')
+    await user.click(select)
+    await user.click(await screen.findByRole('option', { name: 'Off' }))
+    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]).toMatchObject({
+      url: '/api/settings/sources/legivent-api',
+      body: { search_include_muted: false },
     })
   })
 
@@ -450,6 +494,7 @@ describe('stream defaults from settings', () => {
       mask_fields: [],
       unmasked: [],
       muted: [],
+      search_include_muted: null,
     }
     settings.general.stream_direction = 'top'
     const user = userEvent.setup()

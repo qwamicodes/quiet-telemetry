@@ -12,6 +12,7 @@ import type {
   IngestHealth,
   Issue,
   KeyCoverage,
+  MutedSearch,
   PausedSource,
   PiiKind,
   Purged,
@@ -68,7 +69,15 @@ export const generalSettings = z.object({
   max_line_bytes: z.number().catch(65_536),
   keep_non_json: z.boolean().catch(true),
   check_updates: z.boolean().catch(false),
+  search_include_muted: z.boolean().nullable().catch(null),
 }) satisfies z.ZodType<GeneralSettings>
+
+/** Whether search includes muted lines instance-wide, in effect now. */
+export const mutedSearch = z.object({
+  include: z.boolean(),
+  origin,
+  flag: z.boolean(),
+}) satisfies z.ZodType<MutedSearch>
 
 export const storageSettings = z.object({
   retention_ms: z.number(),
@@ -95,6 +104,7 @@ export const sourceSettings = z.object({
   mask_fields: z.array(z.string()),
   unmasked: z.array(piiKind),
   muted: z.array(z.object({ field: z.string().nullable(), value: z.string() })).catch([]),
+  search_include_muted: z.boolean().nullable().catch(null),
 }) satisfies z.ZodType<SourceSettings>
 
 export const groupMode = z.enum(['auto', 'label', 'off'])
@@ -115,6 +125,7 @@ export const groupingPreview = z.object({
 export const settingsResponse = z.object({
   general: generalSettings,
   storage: storageSettings,
+  muted_search: mutedSearch.catch({ include: false, origin: 'default', flag: false }),
   grouping: groupingSettings.catch({ mode: 'auto', label: 'quiet.group', origin: 'default', locked: false }),
   flow_ids: flowIdSettings,
   sources: z.record(z.string(), sourceSettings),
@@ -259,6 +270,7 @@ export const DEFAULT_SOURCE_SETTINGS: SourceSettings = {
   mask_fields: [],
   unmasked: [],
   muted: [],
+  search_include_muted: null,
 }
 
 export function useSourceSettings(name: string | null): SourceSettings {

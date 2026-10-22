@@ -50,6 +50,27 @@ per-board status). Source grouping has its own section further down.
   Edit rules" when any line in view is muted. Cost: a stream backlog that is
   mostly muted lines shows fewer rows (the server does not top it up), and a
   search page can look short until the next page loads.
+- **Muted lines in search** (Kwaame, 2026-10-22): muted lines stay hidden from
+  Search by default, but "Include muted lines in search" can show them,
+  **dimmed with a `muted` tag**. It is a setting at two levels: a per-source
+  choice in the source's Muted lines panel (`SourceSettings.search_include_muted`:
+  inherit / on / off) over an instance default in Settings → General
+  (`GeneralSettings.search_include_muted`), which follows the storage
+  precedence: saved in the UI → `--search-include-muted` /
+  `QUIET_SEARCH_INCLUDE_MUTED` → off (`GET /api/settings` → `muted_search`
+  says which). The note reads "N muted lines included · Hide" when they are in
+  the results. Show muted / Hide on a search is a one-off override kept in the
+  URL (`muted=include|hide`) so it survives reloads and shared links; without
+  it the setting applies. **The stream is unchanged**: always hidden until
+  Show muted, because a live tail is where the noise hurts. **Exports from
+  search follow what the search shows**: the dialog sends `muted=auto` (per
+  source, as the setting says) or the override (`hide`; `include` = the
+  default), so the server applies the same rules (`server/src/mute.rs`, a
+  port of `web/src/lib/mute.ts`, kept in step by tests on both sides). Without
+  `muted=` an export keeps every line, as before (flows, existing curls). The
+  dialog's size estimate still counts muted lines (it is one `/api/search`
+  count), and a server-prepared export's progress counts lines read, then
+  settles on the lines written.
 - **Flow minimap** (04.3) is drawn on long flows (the same ones that get the
   All steps / Problems only toolbar): one tick per step, a folded run drawing
   a tick per step it holds, errors red and warnings amber, positions measured

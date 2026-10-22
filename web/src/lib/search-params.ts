@@ -60,6 +60,12 @@ export const searchSearch = z.object({
   to: ms,
   view: z.enum(['flows', 'lines']).default('flows').catch('flows'),
   order: z.enum(['newest', 'oldest']).default('newest').catch('newest'),
+  /**
+   * Muted lines (06.3), a one-off override of "Include muted lines in
+   * search": `include` shows them dimmed, `hide` leaves them out. Unset
+   * follows the setting (per source, else Settings → General, else hidden).
+   */
+  muted: z.enum(['include', 'hide']).optional().catch(undefined),
 })
 export type SearchSearch = z.infer<typeof searchSearch>
 

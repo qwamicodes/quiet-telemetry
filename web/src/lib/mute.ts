@@ -81,8 +81,59 @@ export function useMuteRules(): (source: string) => readonly MuteRule[] {
 }
 
 /**
+ * Whether search includes a source's muted lines by default: the source's own
+ * choice (Muted lines → Include in search), else Settings → General, else off.
+ */
+export function useSearchIncludesMuted(): (source: string) => boolean {
+  const data = useSettings().data
+  return useMemo(() => {
+    const instance = data?.muted_search?.include ?? false
+    return (source: string) => data?.sources[source]?.search_include_muted ?? instance
+  }, [data])
+}
+
+/** `muted=include|hide` on `/search`: a one-off override of the setting. */
+export type MutedOverride = 'include' | 'hide'
+
+/**
+ * Search's split of `lines`: muted lines are shown (dimmed, tagged) where the
+ * setting or the override includes them, else hidden.
+ *
+ * - `muted`: matched lines in view, shown or not;
+ * - `hidden`: those left out right now;
+ * - `mutedIds`: matched lines, so shown ones can be dimmed;
+ * - `included`: every muted line in view is shown (the note reads "N muted
+ *   lines included · Hide"); otherwise "N muted · Show muted".
+ */
+export function useSearchMuted(lines: LogLine[], override: MutedOverride | undefined) {
+  const rulesOf = useMuteRules()
+  const includes = useSearchIncludesMuted()
+  return useMemo(() => {
+    const mutedIds = new Set<number>()
+    const hiddenIds = new Set<number>()
+    for (const l of lines) {
+      const rules = rulesOf(l.source)
+      if (rules.length && isMuted(l, rules)) {
+        mutedIds.add(l.id)
+        const show = override ? override === 'include' : includes(l.source)
+        if (!show) hiddenIds.add(l.id)
+      }
+    }
+    const visible = hiddenIds.size === 0 ? lines : lines.filter((l) => !hiddenIds.has(l.id))
+    return {
+      visible,
+      muted: mutedIds.size,
+      hidden: hiddenIds.size,
+      mutedIds,
+      included: mutedIds.size > 0 && hiddenIds.size === 0,
+    }
+  }, [lines, override, rulesOf, includes])
+}
+
+/**
  * Split `lines` into what is shown and how many are muted. With `show`, every
- * line is shown and muted ones are still counted.
+ * line is shown and muted ones are still counted. (The stream: always hidden
+ * unless "Show muted".)
  */
 export function useMuted(lines: LogLine[], show: boolean) {
   const rulesOf = useMuteRules()

@@ -1,6 +1,7 @@
 //! Export: lines → NDJSON / JSON array / CSV, optional gzip and PII masking,
 //! plus the short-lived read-only `qx_` tokens behind "Copy curl".
 
+use crate::mute::{is_muted, MutedMode};
 use crate::normalize::LogLine;
 use crate::search::{field_at, scalar_text};
 use crate::settings::{Masker, PiiKind};
@@ -63,9 +64,23 @@ pub struct Formatter {
     /// Per-source masking rules (extra keys, groups switched off); `None` =
     /// the built-in groups for every source.
     pub rules: Option<std::sync::Arc<crate::settings::Settings>>,
+    /// Muted lines (06.3): kept, left out, or as search shows them. Needs
+    /// `rules` to leave anything out.
+    pub muted: MutedMode,
 }
 
 impl Formatter {
+    /// Whether `l` goes in the file (muted lines can be left out).
+    pub fn keeps(&self, l: &LogLine) -> bool {
+        let Some(s) = &self.rules else { return true };
+        let hide = match self.muted {
+            MutedMode::Include => return true,
+            MutedMode::Hide => true,
+            MutedMode::Auto => !s.search_includes_muted(&l.source),
+        };
+        !(hide && is_muted(l, &s.mute_rules(&l.source)))
+    }
+
     pub fn columns(&self) -> Vec<String> {
         let mut cols = if self.columns.is_empty() {
             DEFAULT_COLUMNS.iter().map(|s| s.to_string()).collect()

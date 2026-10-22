@@ -38,6 +38,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         max_disk: args.max_disk,
         group_by: args.group_by,
         group_label: args.group_label.clone(),
+        search_include_muted: args.search_include_muted,
     };
     let settings_path = args.data_dir.join("quiet.db");
     let settings = Arc::new(

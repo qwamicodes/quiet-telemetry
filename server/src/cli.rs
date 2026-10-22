@@ -139,6 +139,12 @@ pub struct ServerArgs {
     #[arg(long, env = "QUIET_GROUP_LABEL")]
     pub group_label: Option<String>,
 
+    /// Include muted lines in search results by default (`on`/`off`; dimmed
+    /// and tagged `muted`). Settings → General wins over it when saved there;
+    /// a source can still say otherwise. Unset = off.
+    #[arg(long, env = "QUIET_SEARCH_INCLUDE_MUTED", value_parser = parse_switch)]
+    pub search_include_muted: Option<bool>,
+
     /// Serve the UI from this directory instead of the copy built into the binary.
     #[arg(long, env = "QUIET_WEB_DIR")]
     pub web_dir: Option<PathBuf>,
@@ -307,6 +313,11 @@ mod tests {
         assert_eq!(cli.server.max_disk, 5_000_000_000);
         assert_eq!(cli.server.group_by, None::<GroupMode>);
         assert_eq!(cli.server.group_label, None);
+        assert_eq!(cli.server.search_include_muted, None);
+        let on = Cli::try_parse_from(["quiet", "--search-include-muted", "on"]).unwrap();
+        assert_eq!(on.server.search_include_muted, Some(true));
+        let off = Cli::try_parse_from(["quiet", "--search-include-muted", "off"]).unwrap();
+        assert_eq!(off.server.search_include_muted, Some(false));
         assert_eq!(cli.server.ring_memory, 64_000_000);
         assert_eq!(parse_ring_memory("128MB"), Ok(128_000_000));
         assert!(parse_ring_memory("10KB").is_err());

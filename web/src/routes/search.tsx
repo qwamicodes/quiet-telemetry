@@ -11,11 +11,11 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import type { SearchParams } from '@/gen'
+import type { MutedMode, SearchParams } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, fmtCount, fmtWindow } from '@/lib/format'
-import { useMuted } from '@/lib/mute'
+import { useSearchMuted } from '@/lib/mute'
 import { displayIds, groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
 import { useSearchLines } from '@/lib/search-api'
 import { searchBounds } from '@/lib/search-params'
@@ -66,9 +66,13 @@ export function SearchPage() {
   const pages = res.data?.pages ?? []
   const first = pages[0]
   const found = useMemo(() => pages.flatMap((p) => p.lines), [pages])
-  // Muted lines (06.3) are hidden unless "show"; still counted and searchable.
-  const [showMuted, setShowMuted] = useState(false)
-  const { visible: lines, muted } = useMuted(found, showMuted)
+  // Muted lines (06.3): hidden unless the source (or Settings → General)
+  // includes them in search, or `muted=include|hide` overrides it for this
+  // search. Included ones are shown dimmed and tagged; all are counted.
+  const { visible: lines, muted, hidden, mutedIds, included } = useSearchMuted(found, search.muted)
+  const toggleMuted = () => navigate({ search: (s) => ({ ...s, muted: included ? 'hide' : 'include' }), replace: true })
+  // Exports follow what this search shows.
+  const exportMuted: MutedMode = search.muted ?? 'auto'
   // Group by flow: one summary per display id stitches groups across ids.
   const ids = useMemo(() => (search.view === 'flows' ? displayIds(lines) : []), [lines, search.view])
   const summaries = useFlowSummaries(ids)
@@ -239,9 +243,10 @@ export function SearchPage() {
         <>
           {muted > 0 && (
             <MutedNote
-              count={muted}
-              shown={showMuted}
-              onToggle={() => setShowMuted((v) => !v)}
+              count={included ? muted : hidden}
+              shown={false}
+              included={included}
+              onToggle={toggleMuted}
               source={search.source}
               className="-mt-2 flex items-center gap-2 font-mono text-muted-foreground text-xs"
             />
@@ -255,6 +260,7 @@ export function SearchPage() {
             onMore={() => res.fetchNextPage()}
             onPick={addChip}
             summaries={summaries}
+            mutedIds={mutedIds}
           />
         </>
       )}
@@ -265,6 +271,7 @@ export function SearchPage() {
         title="Export search results"
         description="Exports the matching lines, not whole flows. Open a flow to export it."
         params={params}
+        muted={exportMuted}
         summary={
           <>
             <div className="flex min-h-7 items-center gap-3 border-border/60 border-b py-1">

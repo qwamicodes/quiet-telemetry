@@ -17,7 +17,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import type { ExportFormat, ExportJob, SearchParams } from '@/gen'
+import type { ExportFormat, ExportJob, MutedMode, SearchParams } from '@/gen'
 import { fetchJson, sendJson, useHealth } from '@/lib/api'
 import { fmtBytes, fmtClock, fmtCount, fmtWindow } from '@/lib/format'
 import { exportJob, searchResponse } from '@/lib/schemas'
@@ -254,6 +254,7 @@ export function ExportDialog({
   fileName,
   defaultGzip = true,
   footnote,
+  muted,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -271,6 +272,8 @@ export function ExportDialog({
   defaultGzip?: boolean
   /** Replaces the size line (a flow says lines · steps · size). */
   footnote?: (est: { total: number | null; bytes: number | null }) => ReactNode
+  /** Muted lines (06.3): what the view does with them, so the file matches. Unset = every line. */
+  muted?: MutedMode
 }) {
   const retention = useHealth().data?.retention_ms ?? 86_400_000
   const [opts, setOpts] = useState<ExportOptions>({
@@ -306,7 +309,7 @@ export function ExportDialog({
   const total = estimate.data?.total ?? null
   const bytes = estimate.data?.bytes ?? null
 
-  const query = exportQuery(effective, opts)
+  const query = exportQuery(effective, opts, muted)
   const file = fileName ? `${fileName}.${opts.format}${opts.gzip ? '.gz' : ''}` : exportFileName(effective, opts)
   const toggleColumn = (c: string, on: boolean) =>
     set({ columns: on ? [...opts.columns.filter((x) => x !== c), c] : opts.columns.filter((x) => x !== c) })
@@ -346,6 +349,17 @@ export function ExportDialog({
 
         <div className="border bg-background/40 px-3 py-1">
           {summary}
+          {muted && (
+            <Row label="muted lines">
+              <span>
+                {muted === 'hide'
+                  ? 'left out, as in this view'
+                  : muted === 'include'
+                    ? 'included, as in this view'
+                    : 'as each source’s search setting'}
+              </span>
+            </Row>
+          )}
           <Row label="time range">
             {fixedRange ? (
               <span>{fixedRange}</span>

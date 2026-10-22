@@ -1,5 +1,5 @@
 import { infiniteQueryOptions, useInfiniteQuery } from '@tanstack/react-query'
-import type { ExportFormat, ExportParams, SearchParams } from '@/gen'
+import type { ExportFormat, ExportParams, MutedMode, SearchParams } from '@/gen'
 import { fetchJson } from '@/lib/api'
 import { publicOrigin } from '@/lib/format'
 import { exportTokenResponse, searchResponse } from '@/lib/schemas'
@@ -46,14 +46,19 @@ export type ExportOptions = {
   columns: string[]
 }
 
-/** The `/api/export` query string for these filters and options. */
-export function exportQuery(p: SearchParams, o: ExportOptions): string {
+/**
+ * The `/api/export` query string for these filters and options. `muted`
+ * (search's current state) leaves muted lines out (`hide`) or follows each
+ * source's setting (`auto`); `include` is the server's default, so omitted.
+ */
+export function exportQuery(p: SearchParams, o: ExportOptions, muted?: MutedMode): string {
   const e: ExportParams = {
     format: o.format,
     gzip: o.gzip ? '1' : undefined,
     mask: o.mask ? 'pii' : undefined,
     raw: o.raw && o.format !== 'ndjson' ? '1' : undefined,
     columns: o.format === 'csv' ? o.columns.join(',') : undefined,
+    muted: muted && muted !== 'include' ? muted : undefined,
   }
   return toQuery({ ...p, ...e })
 }

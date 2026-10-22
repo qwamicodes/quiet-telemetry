@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import type { GeneralSettings, GroupingSettings, StreamDirection, TimestampFormat } from '@/gen'
+import type { GeneralSettings, GroupingSettings, MutedSearch, StreamDirection, TimestampFormat } from '@/gen'
 import { useHealth } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { fmtRowTime, fmtTime, publicHost, validTimeZone } from '@/lib/format'
@@ -42,9 +42,10 @@ export function General() {
   // Remount the form when the saved values change (after a save or another owner's edit).
   return (
     <GeneralForm
-      key={JSON.stringify([all.general, all.grouping])}
+      key={JSON.stringify([all.general, all.grouping, all.muted_search])}
       saved={all.general}
       grouping={all.grouping}
+      mutedSearch={all.muted_search}
       version={health?.version}
     />
   )
@@ -53,10 +54,12 @@ export function General() {
 function GeneralForm({
   saved,
   grouping,
+  mutedSearch,
   version,
 }: {
   saved: GeneralSettings
   grouping: GroupingSettings
+  mutedSearch: MutedSearch
   version?: string
 }) {
   const owner = isOwner(useMe())
@@ -72,6 +75,9 @@ function GeneralForm({
   const tzOk = validTimeZone(draft.timezone)
   const urlOk = validPublicUrl(draft.public_url)
   const sample = Date.now() - 2_000
+  // Muted lines in search: saved here, else the server flag, else off.
+  const includeMuted = draft.search_include_muted ?? mutedSearch.flag
+  const serverDefault = `${mutedSearch.origin === 'flag' || (mutedSearch.origin === 'setting' && mutedSearch.flag) ? 'QUIET_SEARCH_INCLUDE_MUTED' : 'default'} · ${mutedSearch.flag ? 'on' : 'off'}`
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -193,6 +199,37 @@ function GeneralForm({
             aria-label="Keep non-JSON lines"
             checked={draft.keep_non_json}
             onCheckedChange={(v) => setDraft({ ...draft, keep_non_json: Boolean(v) })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Include muted lines in search"
+          hint={
+            <>
+              Lines hidden by a source’s muted-lines rules show up in search results, dimmed and tagged{' '}
+              <span className="border px-1 font-mono text-[10px]">muted</span>. Sources can say otherwise in their Muted
+              lines settings. The stream always hides them.
+            </>
+          }
+          under={
+            draft.search_include_muted === null ? (
+              `server ${serverDefault}`
+            ) : owner ? (
+              <button
+                type="button"
+                className="text-brand hover:underline"
+                onClick={() => setDraft({ ...draft, search_include_muted: null })}
+              >
+                use server default ({mutedSearch.flag ? 'on' : 'off'})
+              </button>
+            ) : (
+              'set here'
+            )
+          }
+        >
+          <Switch
+            aria-label="Include muted lines in search"
+            checked={includeMuted}
+            onCheckedChange={(v) => setDraft({ ...draft, search_include_muted: Boolean(v) })}
           />
         </SettingRow>
         <SettingRow

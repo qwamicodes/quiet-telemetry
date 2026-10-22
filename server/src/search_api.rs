@@ -14,6 +14,7 @@ use crate::api::AppState;
 use crate::auth::Viewer;
 use crate::export::{canonical_query, ExportFormat, Formatter, TokenError, TOKEN_TTL_MS};
 use crate::hub::Line;
+use crate::mute::MutedMode;
 use crate::normalize::{Level, LogLine};
 use crate::search::{Bucket, Cursor, Order, SearchQuery, MAX_PAGE};
 use axum::body::Body;
@@ -197,6 +198,10 @@ pub struct ExportParams {
     /// CSV columns, comma-separated, in order.
     #[ts(optional)]
     pub columns: Option<String>,
+    /// Muted lines (06.3): `include` (default), `hide`, or `auto` (as search
+    /// shows them by default, per source). Search sends its current state.
+    #[ts(optional)]
+    pub muted: Option<MutedMode>,
 }
 
 fn on(v: &Option<String>) -> bool {
@@ -271,6 +276,7 @@ pub(crate) fn plan(
             .map(String::from)
             .collect(),
         rules: Some(s.pipeline.settings().clone()),
+        muted: e.muted.unwrap_or_default(),
     };
     let name = file_name(&q, format, gzip);
     Ok(Plan {
@@ -361,7 +367,7 @@ async fn export(
                     return;
                 }
             };
-            for l in &page.lines {
+            for l in page.lines.iter().filter(|l| fmt.keeps(l)) {
                 out.push(fmt.line(l, first).as_bytes());
                 first = false;
             }
@@ -627,6 +633,66 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v.as_array().unwrap().len(), 1);
         assert_eq!(v[0]["job_id"], "payout:88");
+    }
+
+    #[tokio::test]
+    async fn export_follows_the_searchs_muted_state() {
+        use crate::settings::{MuteRule, SourceSettings};
+        let (st, app) = app().await;
+        let settings = st.pipeline.settings();
+        let mute = |src: &str, field: &str, value: &str, include: Option<bool>| {
+            settings
+                .put_source(
+                    src,
+                    SourceSettings {
+                        muted: vec![MuteRule {
+                            field: Some(field.into()),
+                            value: value.into(),
+                        }],
+                        search_include_muted: include,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap();
+        };
+        mute("api", "msg", "GET /health*", None);
+        mute("worker", "job_id", "payout:*", Some(true));
+        let count = |body: Vec<u8>| String::from_utf8(body).unwrap().lines().count();
+
+        // No `muted=` (flows, old curls): everything, as before.
+        assert_eq!(count(get(&app, "/api/export", None).await.2), 3);
+        assert_eq!(
+            count(get(&app, "/api/export?muted=include", None).await.2),
+            3
+        );
+        // Hide: every source's muted lines are left out.
+        let (_, _, body) = get(&app, "/api/export?muted=hide", None).await;
+        let text = String::from_utf8(body).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.contains("slow"));
+        // Auto: per source, as search shows them by default (worker includes).
+        let (_, _, body) = get(&app, "/api/export?muted=auto", None).await;
+        let text = String::from_utf8(body).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(text.contains("payout failed") && !text.contains("/health"));
+        // The instance default turns it on for api too.
+        let g = crate::settings::GeneralSettings {
+            search_include_muted: Some(true),
+            ..settings.general()
+        };
+        settings.put_general(g, None).unwrap();
+        assert_eq!(count(get(&app, "/api/export?muted=auto", None).await.2), 3);
+        assert_eq!(
+            get(&app, "/api/export?muted=sometimes", None).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        // GET /api/settings carries the effective default.
+        let (_, _, body) = get(&app, "/api/settings", None).await;
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["muted_search"]["include"], true);
+        assert_eq!(v["muted_search"]["origin"], "setting");
+        assert_eq!(v["sources"]["worker"]["search_include_muted"], true);
     }
 
     #[tokio::test]

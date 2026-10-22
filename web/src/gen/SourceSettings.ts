@@ -46,4 +46,9 @@ unmasked: Array<PiiKind>,
  * stream and search by default ("N muted · show"); still stored,
  * counted and searchable. Matching happens in the browser.
  */
-muted: Array<MuteRule>, };
+muted: Array<MuteRule>, 
+/**
+ * Include this source's muted lines in search results; `null` = as
+ * Settings → General says. The stream always hides them.
+ */
+search_include_muted: boolean | null, };

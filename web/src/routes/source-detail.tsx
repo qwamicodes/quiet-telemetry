@@ -688,6 +688,8 @@ export function SourceSettingsForm({
   const [field, setField] = useState('')
   const [mute, setMute] = useState('')
   const [purging, setPurging] = useState(false)
+  // Settings → General's choice, what "Inherit" means here.
+  const instanceIncludesMuted = useSettings().data?.muted_search.include ?? false
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
   const set = (p: Partial<SourceSettings>) => setDraft({ ...draft, ...p })
   const windows = WINDOWS.filter((w) => w.ms <= globalRetention)
@@ -828,10 +830,41 @@ export function SourceSettingsForm({
                 </li>
               </ul>
               <span className="text-muted-foreground text-xs">
-                Muted lines are still stored and searchable, just hidden from the stream and search until you click Show
-                muted. <code className="font-mono">field:value</code> matches a field (<code>*</code> for any run of
-                characters); anything else matches text in the line.
+                Muted lines are still stored and searchable, just hidden from the stream (and from search unless
+                included below) until you click Show muted. <code className="font-mono">field:value</code> matches a
+                field (<code>*</code> for any run of characters); anything else matches text in the line.
               </span>
+              <div className="flex items-center justify-between gap-4 border-t pt-3 text-sm">
+                <span className="flex flex-col">
+                  <span>Include muted lines in search</span>
+                  <span className="text-muted-foreground text-xs">
+                    Shown dimmed and tagged <span className="border px-1 font-mono text-[10px]">muted</span>. The stream
+                    still hides them.
+                  </span>
+                </span>
+                <Select
+                  value={draft.search_include_muted == null ? 'inherit' : draft.search_include_muted ? 'on' : 'off'}
+                  onValueChange={(v) => set({ search_include_muted: v === 'on' ? true : v === 'off' ? false : null })}
+                  disabled={!owner}
+                >
+                  <SelectTrigger aria-label="Include muted lines in search" size="sm" className="w-44">
+                    <SelectValue>
+                      {(v: string) =>
+                        v === 'inherit'
+                          ? `Inherit · ${instanceIncludesMuted ? 'on' : 'off'}`
+                          : v === 'on'
+                            ? 'On'
+                            : 'Off'
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inherit">Inherit · {instanceIncludesMuted ? 'on' : 'off'}</SelectItem>
+                    <SelectItem value="on">On</SelectItem>
+                    <SelectItem value="off">Off</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </Panel>
           <Panel title="Stream & retention">

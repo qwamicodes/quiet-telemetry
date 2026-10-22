@@ -54,6 +54,7 @@ const settings: SettingsResponse = {
     max_line_bytes: 65536,
     keep_non_json: true,
     check_updates: false,
+    search_include_muted: null,
   },
   storage: {
     retention_ms: 24 * H,
@@ -64,6 +65,7 @@ const settings: SettingsResponse = {
     flag_max_disk: 5e9,
     at_cap: 'drop_oldest_hour',
   },
+  muted_search: { include: false, origin: 'default', flag: false },
   grouping: { mode: 'auto', label: 'quiet.group', origin: 'default', locked: false },
   flow_ids: { order: ['request_id', 'job_id', 'trace_id', 'correlation_id'], match_by: 'value' },
   sources: {},

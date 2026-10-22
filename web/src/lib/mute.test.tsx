@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MutedNote } from '@/components/muted-note'
 import type { LogLine, MuteRule } from '@/gen'
-import { isMuted, matchesMute, parseMute, useMuted } from '@/lib/mute'
+import { isMuted, matchesMute, parseMute, useMuted, useSearchMuted } from '@/lib/mute'
 import { DEFAULT_SOURCE_SETTINGS, SETTINGS_KEY } from '@/lib/settings-api'
 
 const line = (id: number, source: string, fields: Record<string, unknown> | null, raw?: string): LogLine => ({
@@ -83,6 +83,45 @@ describe('useMuted', () => {
     rerender({ show: true })
     expect(result.current.muted).toBe(2)
     expect(result.current.visible).toBe(lines)
+  })
+
+  it('search hides them unless the source or the instance includes them; the override wins', () => {
+    const lines = [health, healthz, order, text]
+    const { result, rerender } = renderHook(({ o }) => useSearchMuted(lines, o), {
+      wrapper,
+      initialProps: { o: undefined as 'include' | 'hide' | undefined },
+    })
+    expect(result.current).toMatchObject({ muted: 2, hidden: 2, included: false })
+    expect(result.current.visible.map((l) => l.id)).toEqual([3, 4])
+    rerender({ o: 'include' })
+    expect(result.current).toMatchObject({ muted: 2, hidden: 0, included: true })
+    expect(result.current.visible).toBe(lines)
+    expect([...result.current.mutedIds]).toEqual([1, 2])
+
+    // The instance includes them; api inherits, so no override is needed.
+    client.setQueryData(SETTINGS_KEY, (d: never) => ({
+      ...(d as object),
+      muted_search: { include: true, origin: 'setting', flag: false },
+    }))
+    rerender({ o: undefined })
+    expect(result.current).toMatchObject({ hidden: 0, included: true })
+    rerender({ o: 'hide' })
+    expect(result.current).toMatchObject({ hidden: 2, included: false })
+    // api says off for itself: hidden again without an override.
+    client.setQueryData(SETTINGS_KEY, (d: { sources: Record<string, object> }) => ({
+      ...d,
+      sources: { ...d.sources, api: { ...d.sources.api, search_include_muted: false } },
+    }))
+    rerender({ o: undefined })
+    expect(result.current).toMatchObject({ hidden: 2, included: false })
+  })
+
+  it('in search, an included note reads "N muted lines included · Hide"', () => {
+    const onToggle = vi.fn()
+    render(<MutedNote count={3} shown={false} included onToggle={onToggle} />)
+    expect(screen.getByTestId('muted-note')).toHaveTextContent('3 muted lines included')
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
+    expect(onToggle).toHaveBeenCalled()
   })
 
   it('the note says how many and toggles', () => {

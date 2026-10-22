@@ -368,6 +368,8 @@ async fn prepare(
         Out::Plain(w)
     };
     let mut written: u64 = 0;
+    // Lines in the file (muted ones can be left out; `done` counts lines read).
+    let mut kept: u64 = 0;
     let mut first = true;
     let header = fmt.header();
     if out.write(header.as_bytes()).is_err() {
@@ -387,9 +389,10 @@ async fn prepare(
             }
         };
         let mut chunk = String::new();
-        for l in &page.lines {
+        for l in page.lines.iter().filter(|l| fmt.keeps(l)) {
             chunk.push_str(&fmt.line(l, first));
             first = false;
+            kept += 1;
         }
         if out.write(chunk.as_bytes()).is_err() {
             return fail(&job, "could not write the export file (disk full?)");
@@ -421,7 +424,8 @@ async fn prepare(
     let mut i = job.info.lock().unwrap();
     i.state = ExportJobState::Ready;
     i.bytes = size;
-    i.total = i.done;
+    i.done = kept;
+    i.total = kept;
     i.finished = Some(now);
     i.expires_at = Some(now + JOB_TTL_MS);
 }

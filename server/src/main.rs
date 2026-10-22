@@ -12,6 +12,7 @@ mod grouping;
 mod hub;
 mod idpolicy;
 mod lint;
+mod mute;
 mod normalize;
 mod pipe;
 mod pipeline;
