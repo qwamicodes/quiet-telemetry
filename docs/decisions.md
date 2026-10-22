@@ -4,6 +4,61 @@ Technical choices made while building quiet, newest slice first. Each one
 stands unless Kwaame pushes back. The product-level log lives with the
 project notes; this file records what the code does and why.
 
+## v0.1 design parity (2026-10-22, PR #11)
+
+Choices made while matching the v0.1 boards (`docs/v01-parity.md` has the
+per-board status). Source grouping has its own section further down.
+
+- **Large exports are prepared in the browser, not on the server** (05.7).
+  Over ~100k lines the dialog fetches `/api/export` as a stream, counts lines
+  and bytes for the progress bar and "~Ns left", and keeps going when the
+  dialog is closed; an "Export ready" toast offers the file (05.8). No
+  server-side job queue: export already streams page by page (slice 2), and a
+  job would mean storing a temp file inside the 256MB container. Cost: lines
+  that expire during a long export are not promised, and closing the tab
+  cancels it.
+- **Stream histogram = the last hour in one-minute bars, stacked by level**
+  (`/api/stream/stats`). The board shows ~96 bars over a longer span; an hour
+  matches what the live stream is about and keeps the stats query cheap.
+- **Remove source = pause ingest + hide + purge its lines.** There is no source
+  table to delete from; a Docker container that logs again comes back. An
+  ingest token is separate and stays valid until it is revoked (the remove
+  dialog links to Ingest tokens instead of revoking for you).
+- **"Stopped sending" banner** (06.1): a source that had lines earlier in the
+  hour and none in the last three one-minute buckets, so it shows after about
+  2–3 minutes of silence.
+- **Similar values** (05.3) are computed in the browser: on zero results the
+  page runs a wider search for stems of the query words (`payout_reversed` →
+  `payout`, `rever`) and offers the `key:value` pairs it finds. No server
+  endpoint yet.
+- **Timezone** (07.10) is a searchable input over the browser's IANA zone list
+  (`Intl.supportedValuesOf`) plus `local`, not a plain select: the list has
+  400+ entries. A zone the browser doesn't know can't be saved.
+- **Grouping: env wins and locks the UI**; **auto order is `quiet.group` →
+  Compose project → Swarm stack** (details in *Source grouping*).
+- **Custom flow id keys** (07.8) are stored in the existing `key` column of the
+  id index: 0–3 for the built-ins, the field name as text for a custom key
+  (SQLite keeps a non-numeric string in an INTEGER column). No migration. At
+  most 8 custom keys; a key matches an exact top-level field first, then the
+  dotted path, at its place in the order.
+- **Check my logs** (Guide 11.x) is a heuristic scorecard over the newest lines
+  of one source (`GET /api/sources/:name/lint`, sample 1000): JSON, timestamp,
+  level, service, msg, canonical line, request_id, job_id, job ↔ request_id,
+  error object, outbound calls, PII. Each check passes or warns by share of
+  lines at per-check thresholds (e.g. JSON pass ≥ 95 %, warn ≥ 50 %), is `na`
+  when nothing applies, and carries a one-line fix. PII is pattern matching
+  (email / phone shapes in values), so it can miss or over-flag.
+- **Undo on token revoke** (08.3): revoke takes effect at once; for 60 s
+  (`UNDO_REVOKE_MS`) an owner can `POST /api/ingest-tokens/:id/restore` and the
+  same secret works again. After that it is 409 and the token stays revoked.
+  The toast offers Undo for 15 s.
+
+**Open questions**
+- Should removing a source really delete it (and offer to revoke its bound
+  token in one step) rather than pause + hide + purge?
+- Should similar values move to a server endpoint (one pass over the window
+  instead of a second search from the browser)?
+
 ## Slice 6 · Settings, storage, per-source settings, system states (2026-10-22)
 
 Scope agreed beforehand: retention / disk cap / purge in the UI over the slice 2

@@ -1,6 +1,6 @@
 # v0.1 design parity
 
-Audit of every v0.1 board in `design/portal-v01/` (pages 01–09 plus Foundations; v0.2+, mobile and archive left out) against `main` at `371f1e4` (slice 6 merged). Each row says what the board shows that `main` did not, and the **Status** column says what `v01/design-parity` did about it.
+Audit of every v0.1 board in `design/portal-v01/` (pages 01–09 and 11 plus Foundations; v0.2+, mobile (10.x) and archive left out) against `main` at `371f1e4` (slice 6 merged). Each row says what the board shows that `main` did not, and the **Status** column says what `v01/design-parity` (PR #11) did about it. Status is as of the end of the branch (Undo on token revoke, 2026-10-22).
 
 Method: every board PNG was read at full size and compared with screenshots of `main` rendered in headless Chromium (server + sample generator + Vite) and with the code. Times, names and counts in the boards are mock data. Matching means showing the same thing with real values.
 
@@ -43,6 +43,8 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 | 03.5 Hover + preview | **No inline preview** (click/space expands a 3-column field grid under the row with Open flow ↵ · Copy JSON · Filter request_id and "5 steps across … · press space to collapse"); main opened a side field card instead. Selected row periwinkle left bar was there. | fixed |
 | 03.6 Empty filter result | Plain "No lines match these filters yet." instead of the EmptyState (icon, "No lines match", "Nothing in <source> has … in the last 24h", Clear filters, "Try: …" suggestions, search all sources); histogram axis kept; "· 0 match". | fixed |
 | 03.7 Source disconnected | Indicator "Offline · reconnecting"; banner names the source and the last line time; rows dimmed; footer "offline · showing the last N lines". Main had a generic "Lost connection to the server" banner. | fixed |
+| 03.8 Sidebar source picker, grouped | Sources were a flat list; no group headers, no stream top-bar picker. | fixed: compact group headers with kind tag, 28px single-line items, collapse / expand all; top-bar source picker (group / name, ↑↓ move, ← → fold, ↵ streams). See *Source grouping* below. |
+| 03.9 ⌘K sources grouped | Palette listed sources flat. | fixed: sources under their group, a Groups section opening `/sources?group=…`, "Search <group> · 24h". |
 
 ## 04 · Flow & field card
 
@@ -50,7 +52,7 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 |---|---|---|
 | 04.1 HTTP flow | Header lacked **Export flow** (05.6 puts it first). Field card actions matched. Waterfall, lanes, wideEvents group, brand edge matched. | fixed |
 | 04.2 Job retry | Matches (bar timeline, retry arcs, "started by" note, attempt in card). Card action now follows the picked field ("Filter by err.code"). | — |
-| 04.3 Long flow | Matches (collapsed runs, Problems only, segmented bar). Minimap not built. | open: minimap (the canvas scrolls; low value at v0.1 flow sizes) |
+| 04.3 Long flow | Matches (collapsed runs, Problems only, segmented bar). Minimap not built. | partial: minimap open (the canvas scrolls; low value at v0.1 flow sizes) |
 | 04.4 Single line | One-node card lacked "Open in stream" action. | fixed |
 | 04.5 Id not found | Retention note pointed to "--retention (settings UI in slice 6)"; board points to Settings (Storage). | fixed |
 | 04.6 JSON tab | No line numbers; footer actions did not switch to Copy as JSON / **Download .json**. | fixed |
@@ -62,7 +64,7 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 |---|---|---|
 | 05.1 Grouped by flow | Matches; Export button now uses the file glyph. | fixed |
 | 05.2 Time range picker | No **24h window mini histogram** with the selected range highlighted in the picker. | fixed |
-| 05.3 No results | No "Similar values seen: key:value ×" suggestions. Button copy "Search last 24h". | fixed |
+| 05.3 No results | No "Similar values seen: key:value ×" suggestions. Button copy "Search last 24h". | fixed (similar values are computed in the browser from a wider search; see decisions) |
 | 05.4 Export from stream | Dialog lacked the **time range select** (defaults to the view's range, "from the stream view" / "changed in this dialog"); filters showed `level ≥x` instead of chips + "level info, warn, error"; mask hint lacked "on because PII masking is on for these sources". | fixed |
 | 05.5 CSV columns | Columns could not be **dragged to reorder**; suggested columns are unchecked checkboxes. | fixed |
 | 05.6 Export flow | **Missing** (no entry point, no flow scope: request_id → job_id, sources, whole flow span, lines · steps · size; gzip off). | fixed |
@@ -73,12 +75,14 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 
 | Board | Gap on main | Status |
 |---|---|---|
-| 06.1 List | Columns lacked **rate sparkline**, **errors %**, **flow id** chip; no host group rows ("this host · 3 sources · docker.sock"); no "stopped sending" banner; "Erroring n" filter missing. | fixed (grouped by stack by default, see *Docker stack groups* below; "Group by host" keeps the receiver grouping) |
+| 06.1 List | Columns lacked **rate sparkline**, **errors %**, **flow id** chip; no host group rows ("this host · 3 sources · docker.sock"); no "stopped sending" banner; "Erroring n" filter missing. | fixed (grouped by stack by default, see *Source grouping* below; "Group by host" keeps the receiver grouping) |
 | 06.2 Detail | Overview lacked rate / last line / lines 24h / flow id stats as drawn, **lines per 15 min · 24h histogram**, **Fields detected** table (field, type, coverage bar, sample), **Flow id detected** (coverage per id key), Connection details, Remove source. | fixed (remove = purge this source's lines + forget it; Docker containers come back if they log again) |
 | 06.3 Edit / rename | Edit sheet (display name, matches, flow id order, muted lines). Display name + id order live in the Settings tab on main. | partial: Edit opens the Settings tab; **muted lines** (hide a path from the live stream) not built: needs a per-source stream filter, logged as follow-up |
 | 06.4 Confirm remove | Type-to-confirm dialog + "also revoke its token". | fixed (type-to-confirm; token revoke is a link to Ingest tokens) |
 | 06.5 Rejected + malformed | Rejected tab existed. **Malformed** tab + stats (accepted, rejected 15 min, malformed 24h) missing. | fixed (malformed = lines kept as raw text: not JSON / truncated / duplicate key, from the store) |
 | 06.6 Per-source settings | Built in slice 6 (display name, match, id order, PII, ignore). | — |
+| 06.7 Grouped by stack | Flat list (host groups only). | fixed: group rows with kind tag (compose / stack / label / docker / push), `N/M sending · K shown`, aggregate rate, Search this group · 24h, ⋯ menu (incl. Ignore all N), member dots when collapsed, all-stopped row. |
+| 06.8 Group filter | No All · Standalone · Compose / Stack filter. | fixed (with a "hiding …" note; custom-label groups count as Compose / Stack) |
 
 ## 07 · Settings
 
@@ -89,11 +93,12 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 | 07.3 Storage | Matches. | — |
 | 07.4 Cap warning | Matches. | — |
 | 07.5 Disk cap banner | Matches. | — |
-| 07.6 About | **Missing page** (running version, uptime, database size, live clients, update callout + host command, This instance table, check for updates, Docs/GitHub/License/Copy debug info). | open: in progress on this branch |
+| 07.6 About | **Missing page** (running version, uptime, database size, live clients, update callout + host command, This instance table, check for updates, Docs/GitHub/License/Copy debug info). | fixed (update check runs in the browser against GitHub releases, only when switched on, daily and cached) |
 | 07.7 Ingest tokens | Matches. | — |
-| 07.8 Flow id order | No **coverage per id** ("61% of lines · legivent-api, traefik"), no drag handle, **no custom id fields** ("Add a field, e.g. x-request-id or ctx.trace"). | open: in progress on this branch |
+| 07.8 Flow id order | No **coverage per id** ("61% of lines · legivent-api, traefik"), no drag handle, **no custom id fields** ("Add a field, e.g. x-request-id or ctx.trace"). | fixed: `GET /api/id-coverage`, drag (or ↑↓) to reorder, add / remove custom fields (exact top-level key, then dotted path; at most 8) |
 | 07.9 Appearance | Matches. | — |
 | 07.10 General | Lacked **Public URL**, **Timestamps** (14:07:35 / 14:07:35.412 / 2s ago), **Max line size**, **Keep non-JSON lines**; timezone is a free input instead of a select. | fixed |
+| 07.11 Source grouping | No setting. | fixed: Settings → General → Source grouping (auto / custom label / off) with live preview; `QUIET_GROUP_BY` / `QUIET_GROUP_LABEL` win and lock the control. |
 
 ## 08 · System states & errors
 
@@ -101,7 +106,7 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 |---|---|---|
 | 08.1 Command palette | Sources lacked kind · rate; flows lacked key badge and status; actions lacked "Search last 24h for "…" ⌘↵", Pause stream, Switch theme T; footer tip "paste any id to jump straight to its flow". | fixed |
 | 08.2 Keyboard shortcuts | **Missing sheet** (`?`), and shortcuts E (errors only), 1–4 (toggle levels), X (clear filters), C / F / O in flows, ⌘/ search, S sources, T theme. | fixed |
-| 08.3 Toasts | sileo toasts exist; "reconnected · N buffered lines replayed", "Copied line as JSON · id · bytes", "Token revoked … Undo" copy. | fixed (copy); Undo on token revoke: open (revoke is immediate on the server) |
+| 08.3 Toasts | sileo toasts exist; "reconnected · N buffered lines replayed", "Copied line as JSON · id · bytes", "Token revoked … Undo" copy. | fixed: copy, and Undo on "Token revoked / <name> can no longer send lines." (`POST /api/ingest-tokens/:id/restore`, owner only, within 60 s of the revoke, 409 after) |
 | 08.4 Loading skeleton | Stream showed an empty table while connecting; board: "Connecting" indicator, skeleton histogram + rows, "loading the last 15 minutes · then streaming live". | fixed |
 | 08.5 Source is quiet | Missing ("dokploy is quiet" EmptyState, still listening · last line, show the last 50 lines, "· no flow id found"). | fixed |
 | 08.6 404 broken flow link | Not-found page lacked the 404 layout when there are no close matches (URL box, searchable window / looked for / sources searched table, Back to stream / Search 24h / Storage settings). | fixed |
@@ -113,6 +118,27 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 | Board | Gap on main | Status |
 |---|---|---|
 | 09.1–09.3 | Light tokens exist; every new component above uses tokens only, so light follows. | fixed (checked by screenshot) |
+
+## 10 · Mobile
+
+Left out of v0.1 parity (the app is desktop-first; 10.1 / 10.2 are a later pass).
+
+## 11 · Guide
+
+| Board | Gap on main | Status |
+|---|---|---|
+| 11.1 Guide home · how quiet works | **Missing** (no `/guide`). | fixed: `/guide` Overview, sidebar Guide item, ⌘K entries, `G H` |
+| 11.2 Instrument your app with an agent | Missing. | fixed: full copyable prompt (from `docs/agent-logging-prompt.md`), stack selector defaulting to Node · pino, stack notes, done checklist, verify steps, section index, Download .md; `⌘⇧C` copies the prompt with a toast |
+| 11.3–11.7 Canonical line · Ids & flows · Check my logs | Missing. | fixed: The canonical line, Ids & flows, and the Check my logs scorecard backed by `GET /api/sources/:name/lint` (`G L`); entry points from the empty / quiet stream, Connect and a source's page |
+
+## Still open after this branch
+
+- 04.3 flow minimap.
+- 05.7 server-side preparing job for very large exports (the browser streams the file with progress instead).
+- 06.3 muted lines (hide a path from the live stream per source).
+- 06.4 real "also revoke its token" on remove (today a link to Ingest tokens).
+- Streaming a whole source group.
+- 10.x mobile.
 
 ## Added outside the boards
 
