@@ -7,6 +7,7 @@
 //! GET  /api/sources/:name/lines?limit=500
 //! GET  /api/stream?source=api&backlog=500&level=warn&q=text   (WebSocket)
 //! GET  /api/search, /api/export, POST /api/export/token       (see `search_api.rs`)
+//! GET  /api/flow, POST /api/flow-summaries                     (see `flow_api.rs`)
 //!
 //! Ingest endpoints belong to their receivers (see `receiver/`).
 
@@ -74,6 +75,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sources/:name/lines", get(lines))
         .route("/api/stream", get(stream))
         .merge(crate::search_api::routes())
+        .merge(crate::flow_api::routes())
         .with_state(state)
 }
 

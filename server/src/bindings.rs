@@ -4,6 +4,9 @@
 //! Regenerate: `QUIET_UPDATE_TS=1 cargo test bindings` (or `bun run gen:types` in web/).
 
 use crate::api::{Frame, Health, LinesResponse, SourcesResponse};
+use crate::flow_api::{
+    FlowNotFound, FlowParams, FlowResponse, FlowSummariesRequest, FlowSummariesResponse,
+};
 use crate::search_api::{
     ExportParams, ExportTokenRequest, ExportTokenResponse, SearchParams, SearchResponse,
 };
@@ -27,6 +30,11 @@ fn export_into(dir: &Path) {
     ExportParams::export_all(&cfg).unwrap();
     ExportTokenRequest::export_all(&cfg).unwrap();
     ExportTokenResponse::export_all(&cfg).unwrap();
+    FlowParams::export_all(&cfg).unwrap();
+    FlowResponse::export_all(&cfg).unwrap();
+    FlowNotFound::export_all(&cfg).unwrap();
+    FlowSummariesRequest::export_all(&cfg).unwrap();
+    FlowSummariesResponse::export_all(&cfg).unwrap();
 
     // A barrel so the UI imports from one place.
     let mut names: Vec<String> = std::fs::read_dir(dir)
