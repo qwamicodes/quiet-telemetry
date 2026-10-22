@@ -259,7 +259,9 @@ describe('ingest tokens settings', () => {
     expect(await within(section).findByText('revoked')).toBeInTheDocument()
 
     act(() => opts?.button?.onClick())
-    await waitFor(() => expect(posts.some((p) => p.method === 'POST' && p.url === '/api/ingest-tokens/4/restore')).toBe(true))
+    await waitFor(() =>
+      expect(posts.some((p) => p.method === 'POST' && p.url === '/api/ingest-tokens/4/restore')).toBe(true),
+    )
     await waitFor(() => expect(ok).toHaveBeenCalledWith('Token restored', expect.anything()))
     await waitFor(() => expect(within(section).queryByText('revoked')).not.toBeInTheDocument())
   })
