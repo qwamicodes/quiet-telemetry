@@ -1,7 +1,10 @@
 //! A bounded ring of recent lines per source. Fast, lossy, gone on restart.
 
 use super::{Query, Store};
-use crate::hub::Line;
+use crate::hub::{Line, SourceKind};
+use crate::search::{
+    add_to_histogram, bucket_width, empty_histogram, Cursor, Order, SearchPage, SearchQuery,
+};
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, RwLock};
@@ -17,6 +20,13 @@ impl MemoryStore {
         MemoryStore {
             cap: cap.max(1),
             rings: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Append without the async trait (the SQLite store warms its ring with this).
+    pub fn push_many(&self, lines: &[Line]) {
+        for line in lines {
+            self.push(line);
         }
     }
 
@@ -47,7 +57,7 @@ impl Store for MemoryStore {
         "memory"
     }
 
-    async fn append(&self, lines: &[Line]) -> anyhow::Result<()> {
+    async fn append(&self, _kind: SourceKind, lines: &[Line]) -> anyhow::Result<()> {
         for line in lines {
             self.push(line);
         }
@@ -72,6 +82,48 @@ impl Store for MemoryStore {
             .collect();
         out.reverse();
         Ok(out)
+    }
+
+    async fn search(&self, q: &SearchQuery) -> anyhow::Result<SearchPage> {
+        let rings = self.rings.read().unwrap();
+        let mut all: Vec<Line> = rings
+            .values()
+            .flat_map(|r| r.lock().unwrap().iter().cloned().collect::<Vec<_>>())
+            .filter(|l| q.in_time(l) && q.matches(l))
+            .collect();
+        all.sort_by_key(|l| (l.ts, l.id));
+        if q.order == Order::Newest {
+            all.reverse();
+        }
+        let searched = rings.values().map(|r| r.lock().unwrap().len() as u64).sum();
+        let mut page = SearchPage {
+            searched,
+            ..Default::default()
+        };
+        if q.cursor.is_none() {
+            if let (Some(n), Some(since), Some(until)) = (q.histogram, q.since, q.until) {
+                let w = bucket_width(since, until, n);
+                let mut h = empty_histogram(since, w, n);
+                for l in &all {
+                    add_to_histogram(&mut h, since, w, l.ts, l.level);
+                }
+                page.total = Some(all.len() as u64);
+                page.bytes = Some(all.iter().map(|l| l.raw.len() as u64).sum());
+                page.histogram = Some(h);
+            }
+        }
+        let limit = q.limit.max(1);
+        let mut lines: Vec<Line> = all
+            .into_iter()
+            .filter(|l| q.cursor.is_none_or(|c| c.before(l, q.order)))
+            .take(limit + 1)
+            .collect();
+        if lines.len() > limit {
+            lines.truncate(limit);
+            page.next_cursor = lines.last().map(Cursor::of);
+        }
+        page.lines = lines;
+        Ok(page)
     }
 
     async fn expire(&self, cutoff: i64) -> anyhow::Result<u64> {
@@ -106,7 +158,7 @@ mod tests {
         let lines: Vec<_> = (1..=5)
             .map(|i| line(i, &format!("line {i}"), i as i64))
             .collect();
-        s.append(&lines).await.unwrap();
+        s.append(SourceKind::Http, &lines).await.unwrap();
         let tail = s.tail("api", 10).await.unwrap();
         assert_eq!(tail.iter().map(|l| l.id).collect::<Vec<_>>(), vec![3, 4, 5]);
         assert_eq!(s.tail("api", 1).await.unwrap()[0].msg, "line 5");
@@ -116,12 +168,15 @@ mod tests {
     #[tokio::test]
     async fn query_filters_time_and_text_then_limits_newest() {
         let s = MemoryStore::new(100);
-        s.append(&[
-            line(1, r#"{"level":"warn","msg":"slow a"}"#, 10),
-            line(2, r#"{"level":"info","msg":"ok"}"#, 20),
-            line(3, r#"{"level":"error","msg":"slow b"}"#, 30),
-            line(4, r#"{"level":"warn","msg":"slow c"}"#, 40),
-        ])
+        s.append(
+            SourceKind::Http,
+            &[
+                line(1, r#"{"level":"warn","msg":"slow a"}"#, 10),
+                line(2, r#"{"level":"info","msg":"ok"}"#, 20),
+                line(3, r#"{"level":"error","msg":"slow b"}"#, 30),
+                line(4, r#"{"level":"warn","msg":"slow c"}"#, 40),
+            ],
+        )
         .await
         .unwrap();
         let got = s

@@ -41,6 +41,19 @@ impl Level {
         })
     }
 
+    /// Inverse of `level as u8` (trace = 0 … fatal = 5), as stored on disk.
+    pub fn from_rank(n: i64) -> Option<Level> {
+        Some(match n {
+            0 => Level::Trace,
+            1 => Level::Debug,
+            2 => Level::Info,
+            3 => Level::Warn,
+            4 => Level::Error,
+            5 => Level::Fatal,
+            _ => return None,
+        })
+    }
+
     pub fn parse_name(s: &str) -> Option<Level> {
         Some(match s.trim().to_ascii_lowercase().as_str() {
             "trace" | "verbose" => Level::Trace,

@@ -10,6 +10,22 @@ export type Health = { ok: boolean, version: string,
  */
 started: number, docker: DockerStatus, 
 /**
- * Where lines are kept: `memory` today, `sqlite` from slice 2.
+ * Where lines are kept: `sqlite` or `memory`.
  */
-store: string, };
+store: string, 
+/**
+ * How long lines stay searchable, ms.
+ */
+retention_ms: number, 
+/**
+ * Bytes on disk (0 for the memory store).
+ */
+disk_bytes: number, 
+/**
+ * Lines in the searchable window.
+ */
+stored_lines: number, 
+/**
+ * Oldest stored event time, unix ms.
+ */
+oldest: number | null, };

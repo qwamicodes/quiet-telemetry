@@ -46,6 +46,21 @@ impl Pipeline {
         })
     }
 
+    /// Carry on after a restart: ids continue past the last stored one and
+    /// stored sources are listed (with their counts) before they log again.
+    pub async fn restore(&self) -> anyhow::Result<()> {
+        let r = self.store.restore().await?;
+        *self.next_id.lock().await = r.last_id + 1;
+        for s in r.sources {
+            let src = self.hub.ensure_source(&s.name, s.kind);
+            src.update_meta(|m| {
+                m.lines = s.lines;
+                m.last_ts = s.last_ts;
+            });
+        }
+        Ok(())
+    }
+
     pub fn hub(&self) -> &Arc<Hub> {
         &self.hub
     }
@@ -77,7 +92,7 @@ impl Pipeline {
                 Arc::new(l)
             })
             .collect();
-        self.store.append(&lines).await?;
+        self.store.append(kind, &lines).await?;
         for line in &lines {
             self.hub.broadcast(line, kind);
         }
