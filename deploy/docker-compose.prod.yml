@@ -20,10 +20,17 @@ services:
       QUIET_INGEST_AUTH: token
       QUIET_INGEST_MAX_BODY: 16MB
       QUIET_INGEST_RATE: "20000"  # lines/s per token
-    # No accounts until slice 5: publish on loopback only, or route through
-    # Dokploy's Traefik with access control in front. Shippers on other hosts
-    # need a route to /ingest/* and /v1/* (tokens gate those); keep /api and
-    # the UI behind access control until accounts land.
+      # Accounts: sign-in on (the default). Traefik sets X-Forwarded-For/Proto,
+      # so client addresses are real and the cookie gets Secure over https.
+      QUIET_AUTH: "on"
+      QUIET_TRUST_PROXY: "on"
+      QUIET_COOKIE_SECURE: auto
+    # Route it through Dokploy's Traefik (TLS). The UI and /api need a session,
+    # ingest needs a qi_ token. First start: open it and create the owner right
+    # away (the first visitor becomes the owner). Locked out:
+    #   docker exec <container> /quiet admin reset-password you@example.com
+    # The port stays on loopback so nothing reaches quiet around Traefik
+    # (QUIET_TRUST_PROXY trusts its X-Forwarded-For).
     ports: ["127.0.0.1:7070:7070"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro

@@ -11,7 +11,8 @@ dev:
 	wait
 
 # Dev server: ingest open so `make sample` works without a token
-# (QUIET_INGEST_AUTH=token make dev to try the token flow).
+# (QUIET_INGEST_AUTH=token make dev to try the token flow). Sign-in stays on:
+# create the owner on first visit, or `QUIET_AUTH=off make dev` to skip it.
 QUIET_INGEST_AUTH ?= open
 export QUIET_INGEST_AUTH
 

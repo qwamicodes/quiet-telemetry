@@ -14,8 +14,8 @@ Built in slices. Each slice is one PR to `main`, tested locally first, then prom
 | — | Foundation: CLI, Receiver/Store traits, embedded UI, shared types, UI kit | merged |
 | 2 | SQLite (WAL, hourly partitions) + FTS5 search over the window, export (NDJSON/JSON/CSV, Copy curl), retention + disk cap job | PR #4 |
 | 3 | Flows: stitch lines by every correlation id (request ↔ job), step nodes + timeline, field card per node, search grouped by flow | PR #6 |
-| 4 | HTTP ingest: Vector, Fluent Bit, OTLP/HTTP logs + traces (span tree in flows), NDJSON/curl, `quiet pipe`; `qi_` ingest tokens; Connect a source + Sources + Settings → Ingest tokens screens | this PR |
-| 5 | Accounts: owner first-run, members, copy-link invites | |
+| 4 | HTTP ingest: Vector, Fluent Bit, OTLP/HTTP logs + traces (span tree in flows), NDJSON/curl, `quiet pipe`; `qi_` ingest tokens; Connect a source + Sources + Settings → Ingest tokens screens | PR #7 |
+| 5 | Accounts: owner first-run setup, sign in, members + copy-link invites, sessions, reset links; every `/api` route behind a session | this PR |
 | 6 | Settings UI for retention / disk cap (the job itself ships in 2), storage + per-source settings | |
 
 Every slice goes **local → main → prod**: built and checked locally (`make check`, `make up`), merged to `main` by PR, then deployed to production once the `production` environment approves the release.
@@ -53,6 +53,8 @@ make up      # builds quiet from source + starts a sample log generator
 
 Open http://127.0.0.1:7070. The first build takes a few minutes (Rust); later ones are cached.
 
+The first visit asks you to **set up quiet**: your name, email and a password (12+ characters). That account is the owner. After that, quiet always asks you to sign in (see [Accounts](#accounts)).
+
 What you should see:
 - Sources on the left: `sample-api`, `sample-worker`, plus every other container running on your machine.
 - Pick `sample-api`: new lines arrive every second, newest at the bottom.
@@ -75,7 +77,7 @@ make dev              # server on :7070 + UI on :5173 with hot reload
 make sample           # second terminal: sample lines over HTTP
 ```
 
-Open http://127.0.0.1:5173 (Vite proxies `/api`, `/ingest` and `/v1` to the server). `make dev` runs with `QUIET_INGEST_AUTH=open` so `make sample` needs no token; `QUIET_INGEST_AUTH=token make dev` tries the token flow. Edit `web/src/**` and the page updates; edit `server/src/**` and the server restarts (with cargo-watch) or re-run `make dev`.
+Open http://127.0.0.1:5173 (Vite proxies `/api`, `/ingest` and `/v1` to the server) and create the owner account the first time (it lives in `server/data/quiet.db`). `make dev` runs with `QUIET_INGEST_AUTH=open` so `make sample` needs no token; `QUIET_INGEST_AUTH=token make dev` tries the token flow. Working on something unrelated to accounts? `QUIET_AUTH=off make dev` skips sign-in entirely (loopback only; see [Accounts](#accounts)). Edit `web/src/**` and the page updates; edit `server/src/**` and the server restarts (with cargo-watch) or re-run `make dev`.
 
 The server also reads your local Docker socket here, so your running containers show up too. Turn that off with `QUIET_DOCKER=off make dev`.
 
@@ -133,7 +135,10 @@ Every flag also reads its env var (`quiet --help`). `quiet` with no subcommand i
 
 | Flag / Env | Default | |
 |---|---|---|
-| `--addr` / `QUIET_ADDR` | `127.0.0.1:7070` | Loopback until accounts land (slice 5). The image uses `0.0.0.0:7070`. |
+| `--addr` / `QUIET_ADDR` | `127.0.0.1:7070` | The image uses `0.0.0.0:7070`. Everything except `/health`, `/ready` and token-gated ingest needs a signed-in session, so listening on all interfaces is fine; put TLS in front (a reverse proxy) for anything beyond your machine. |
+| `--auth` / `QUIET_AUTH` | `on` | `on`: accounts and sign-in. `off`: no sign-in, every request acts as a local owner, for local development only; the server refuses to start with `off` unless `--addr` is a loopback address. |
+| `--cookie-secure` / `QUIET_COOKIE_SECURE` | `auto` | `Secure` flag on the session cookie. `auto`: set when the proxy says the request came over https (`X-Forwarded-Proto: https`). `on` / `off` force it. |
+| `--trust-proxy` / `QUIET_TRUST_PROXY` | `off` | Take the client address from `X-Forwarded-For` (rightmost hop) / `X-Real-IP`, for sign-in backoff and the sessions list. Turn on only when a reverse proxy you run sets those headers and quiet isn't reachable around it. |
 | `--docker` / `QUIET_DOCKER` | `on` | `0`/`off` disables the Docker receiver. |
 | `--ring` / `QUIET_RING` | `10000` | Live lines kept in memory per source (the stream backlog). |
 | `--store` / `QUIET_STORE` | `sqlite` | `sqlite`: the searchable window on disk. `memory`: the live ring only, nothing survives a restart, search covers the ring. |
@@ -147,7 +152,7 @@ Every flag also reads its env var (`quiet --help`). `quiet` with no subcommand i
 | `--ingest-max-body` / `QUIET_INGEST_MAX_BODY` | `16MB` | Largest ingest body, checked before and after gzip (1KB … 1GB). Over it: 413. |
 | `--ingest-rate` / `QUIET_INGEST_RATE` | `20000` | Lines per second per ingest token, bursts of 5 s worth; `0` = unlimited. Over it: 429 + `Retry-After`. |
 
-`quiet agent` exists as a placeholder and exits non-zero until v0.2. `quiet pipe --name <source> [--url http://127.0.0.1:7070] [--token qi_…]` sends stdin to a server (see [Ingest](#ingest)).
+`quiet agent` exists as a placeholder and exits non-zero until v0.2. `quiet pipe --name <source> [--url http://127.0.0.1:7070] [--token qi_…]` sends stdin to a server (see [Ingest](#ingest)). `quiet admin reset-password <email> [--data-dir data] [--url https://quiet.example.com]` prints a one-time reset link (see [Accounts](#accounts)).
 
 ### Docker labels
 
@@ -170,6 +175,7 @@ Server (`server/src`, one crate):
 
 - `cli.rs`: clap; `server` (default), `agent` (stub), hidden `healthcheck` used by the image.
 - `receiver/`: the `Receiver` trait. Pull receivers (`docker.rs`) run a loop; push receivers mount routes: `http.rs` (all HTTP ingest: auth, gzip, body cap, rate limit), `shippers.rs` (NDJSON / Vector / Fluent Bit bodies → lines, envelope unwrapping, source naming), `otlp.rs` (OTLP/HTTP protobuf + JSON → canonical JSON lines; prost messages declared by hand, no protoc). OTLP/gRPC and the v0.2 agent are new impls here.
+- `accounts.rs`: users, sessions, invites and reset links in `quiet.db` (argon2id; session ids and link tokens stored as SHA-256), no HTTP in it. `auth.rs`: the session gate in front of `/api`, cookies, CSRF/same-origin checks, sign-in backoff. `auth_api.rs`: `/api/auth/*`, `/api/account*`, `/api/members*`, `/api/invites*`. `admin.rs`: `quiet admin reset-password`.
 - `tokens.rs`: `qi_` ingest tokens (SHA-256 only, `ingest_tokens` table in `quiet.db`, cached in memory, per-token rate bucket); `tokens_api.rs`: `/api/ingest-tokens`.
 - `pipe.rs`: `quiet pipe`, stdin → `/ingest/ndjson` over plain HTTP.
 - `pipeline.rs`: the only path a line takes: normalize → `Store::append` → hub broadcast, ids assigned in order.
@@ -182,7 +188,7 @@ Server (`server/src`, one crate):
 - `server.rs`: wiring and graceful shutdown (SIGTERM → `/ready` 503 → drain → close streams with 1012 → stop receivers → timeout).
 - `bindings.rs`: ts-rs exports the wire types to `web/src/gen/`; a test fails when they are stale (`make types` regenerates).
 
-Web (`web/src`): React 19 + Vite + TypeScript, Tailwind v4 and shadcn/ui (Lyra) on Base UI, TanStack Router (`/`, `/search`, `/flow/$id`, `/line/$lineId`, `/connect?kind=`, `/sources`, `/settings`, `/settings/ingest-tokens`; search params are zod schemas), TanStack Query, TanStack Virtual, cmdk (⌘K), sileo (toasts), zod, lucide. `routes/` are pages, `components/` small pieces (`components/ui/` is the shadcn kit), `lib/` hooks and helpers (`use-stream.ts` is the WebSocket with jittered backoff). Biome lints and formats; Vitest + Testing Library test.
+Web (`web/src`): React 19 + Vite + TypeScript, Tailwind v4 and shadcn/ui (Lyra) on Base UI, TanStack Router (`/`, `/search`, `/flow/$id`, `/line/$lineId`, `/connect?kind=`, `/sources`, `/settings`, `/settings/account`, `/settings/members`, `/settings/ingest-tokens`; signed out: `/setup`, `/signin?redirect=`, `/invite/$token`, `/reset/$token`; the root route's `beforeLoad` sends signed-out visitors to sign in; search and path params are zod schemas), TanStack Query, TanStack Virtual, cmdk (⌘K), sileo (toasts), zod, lucide. `routes/` are pages, `components/` small pieces (`components/ui/` is the shadcn kit), `lib/` hooks and helpers (`use-stream.ts` is the WebSocket with jittered backoff). Biome lints and formats; Vitest + Testing Library test.
 
 Keys: `/` filter · `j`/`k` move · `enter` open flow · `esc` close · `space` pause · `G` latest · `⌘K` jump.
 
@@ -194,7 +200,7 @@ Keys: `/` filter · `j`/`k` move · `enter` open flow · `esc` close · `space` 
 - The `deploy-production` job waits for approval on the `production` GitHub Environment, then points the Dokploy app (deploy.legivent.com) at the image **by digest** and deploys. It skips cleanly until the Dokploy secrets exist.
 - `deploy/docker-compose.prod.yml` is the reference for running it (digest-pinned, loopback port, healthcheck, memory limit).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Technical decisions per slice: [docs/decisions.md](docs/decisions.md).
 
 ## How a line is read
 
@@ -242,17 +248,37 @@ From the stream (top bar) or a search (Export): NDJSON (the raw lines; plain-tex
 
 ## API
 
+Every `/api` route needs a session cookie except the public auth routes, and every non-GET request also needs the `X-Quiet-Csrf` header (see [Accounts](#accounts)). Without a session: `401 { error, code: "session_required" | "session_expired" }`. `/health`, `/ready` and the ingest endpoints don't use sessions.
+
 - `GET /health` (liveness) · `GET /ready` (readiness, 503 while shutting down)
 - `GET /api/health` (now also `retention_ms`, `disk_bytes`, `stored_lines`, `oldest`) · `GET /api/sources` · `GET /api/sources/:name/lines?limit=`
 - `GET /api/search?q=&source=a,b&level=&since=&until=&id=&order=newest|oldest&cursor=&limit=&buckets=` → `{ lines, next_cursor, total, bytes, histogram, searched, took_ms, since, until }`. Times are unix ms; missing bounds = the retention window ending now. `total`/`histogram` come with the first page when `buckets` is set.
-- `GET /api/export?<search params>&format=ndjson|json|csv&gzip=1&mask=pii&raw=1&columns=a,b` streams a file (oldest first). Optional `Authorization: Bearer qx_…`.
-- `POST /api/export/token {"query":"<export query string>"}` → `{ token, expires_at, path }`: a read-only `qx_` token for that one query, reusable for 15 minutes; only its SHA-256 is kept (in memory).
+- `GET /api/export?<search params>&format=ndjson|json|csv&gzip=1&mask=pii&raw=1&columns=a,b` streams a file (oldest first). With `Authorization: Bearer qx_…` it needs no session (the token is the credential). Members always get PII masked.
+- `POST /api/export/token {"query":"<export query string>"}` → `{ token, expires_at, path }`: a read-only `qx_` token for that one query, reusable for 15 minutes; only its SHA-256 is kept (in memory). Members only get one for a masked query (`mask=pii`), else 403 `mask_required`.
 - `GET /api/flow?id=<any id>` or `?line=<line id>` → `{ flow, since, until, took_ms }`: `flow` has the header numbers (`title`, `status`, `line_count`, `steps`, `sources`, `duration_ms`, `retries`, `stitched_by`, `truncated`), `nodes`, `edges`, the `lines` themselves, `missing_parent` (a request id the jobs carry whose own line isn't in the window) and `partial`. Unknown id → 404 `{ error, id, close: [{ key, value, msg, ts, source }] }` (ids with the same prefix). Ids go in the query string, so any id works.
 - `POST /api/flow-summaries {"ids":[…]}` (≤ 100) → `{ flows: [{ id, flow: <header numbers> | null }] }`; ids of one flow share its `key`.
-- `WS /api/stream?source=&backlog=&level=&q=` → frames `backlog`, `lines` (batched every 75 ms), `gap` (client fell behind)
-- `GET /api/ingest-tokens` → `{ tokens: [{ id, name, preview: "qi_••••1a77", source | null, created, last_used, revoked }] }` · `POST /api/ingest-tokens {"name","source"?}` → `201 { token, secret }` (the secret only here) · `DELETE /api/ingest-tokens/:id` → the revoked token. Open until accounts land (slice 5), like the rest of `/api`.
+- `WS /api/stream?source=&backlog=&level=&q=` → frames `backlog`, `lines` (batched every 75 ms), `gap` (client fell behind). The upgrade must be same-origin; the stream re-checks its session every 30 s and closes with code 4401 once it ends.
+- `GET /api/ingest-tokens` → `{ tokens: [{ id, name, preview: "qi_••••1a77", source | null, created, last_used, revoked }] }` · `POST /api/ingest-tokens {"name","source"?}` → `201 { token, secret }` (the secret only here) · `DELETE /api/ingest-tokens/:id` → the revoked token. Anyone signed in can list; only owners create and revoke (else 403 `owner_only`).
 - `GET /api/health` also carries `ingest: { auth, loopback, max_body, rate, tokens }`.
+- Accounts (public, no session): `GET /api/auth/state` → `{ auth: "on"|"off", setup_required, user, csrf, version, host }` · `POST /api/auth/setup {name,email,password}` (first run only, else 409) · `POST /api/auth/login {email,password,remember?}` (401 / 429 + `Retry-After`) · `POST /api/auth/invite {token}` → the invite, or 410 `{ code: expired|used|revoked, invite }` · `POST /api/auth/invite/accept {token,name,email?,password}` · `POST /api/auth/reset {token}` → `{ email, name, expires }` · `POST /api/auth/reset/accept {token,password}` → 204. Sign-in routes answer `{ user, csrf }` and set the cookie.
+- Accounts (session): `POST /api/auth/logout` · `GET`/`PATCH /api/account {name,email,password?}` (changing the email needs the password) · `POST /api/account/password {current,password}` → `{ user, signed_out }` (other sessions signed out) · `GET /api/account/sessions` · `DELETE /api/account/sessions/:id` · `POST /api/account/sessions/sign-out-others` · `GET /api/members` → `{ members, invites }` (invites for owners only).
+- Accounts (owner): `POST /api/invites {email?,role}` → `201 { invite, token, path }` · `DELETE /api/invites/:id` · `PATCH /api/members/:id {role}` · `DELETE /api/members/:id` · `POST /api/members/:id/reset-link` → `{ token, path, expires }`. Removing or demoting the last owner: 409 `last_owner`.
 - Ingest (each needs `Authorization: Bearer qi_…`, see [Ingest](#ingest)): `POST /ingest/ndjson`, `POST /ingest/vector`, `POST /ingest/fluentbit`, `POST /v1/logs`, `POST /v1/traces`.
+
+## Accounts
+
+Local accounts, email + password. No mail is ever sent in v0.1.
+
+- **First run.** While quiet has no users, every page goes to **Set up quiet**, and whoever completes it becomes the **owner** (the server logs a warning until then, so set it up right after the first start). Setup works exactly once.
+- **Roles.** **Owner**: everything, plus members, invites, reset links, ingest tokens, and exports with PII unmasked. **Member**: reads every source, flow and search; exports always have PII masked; can manage only their own account (name, email, password, sessions). There is always at least one owner: the last one can't be demoted or removed. More than one owner is fine.
+- **Invites** (Settings → Members): an owner creates a copy link (`/invite/inv_…`), optionally for one email address (the invite page then locks it), as member or owner. Links work once and expire after 7 days; only their SHA-256 is stored, so a lost link can't be shown again: make a new one (the old one is revoked). Email invites come in v0.2.
+- **Sessions.** Signing in sets `quiet_session`: HttpOnly, SameSite=Lax, `Secure` behind https. "Keep me signed in" lasts 30 days; without it the cookie ends with the browser and the server forgets it after 12 hours. Sessions live in `quiet.db` (hashed ids), so a restart keeps everyone signed in. Settings → Account lists your sessions and signs out one or all others; changing your password signs out the others too. When a session ends while a page is open (signed out elsewhere, removed by an owner, expired), quiet asks for your password over the page and you carry on where you were.
+- **Forgot a password.** An owner opens Settings → Members → ⋯ → *Password reset link* and sends the link (one use, 24 hours, signs that person out everywhere). A locked-out owner runs on the host: `quiet admin reset-password you@example.com --url https://quiet.example.com` (in Docker: `docker exec <container> /quiet admin reset-password you@example.com`) and opens the printed link within an hour.
+- **Protection.** Passwords are hashed with argon2id. Sign-in backs off per email (5 free failures) and per client address (20), doubling the wait up to 15 minutes (429 + `Retry-After`). Writes need the session's CSRF token (`X-Quiet-Csrf`, handed out by `/api/auth/state` and sign-in) and must be same-origin (`Origin`/`Referer` vs `Host`/`X-Forwarded-Host`; `Sec-Fetch-Site: cross-site` is refused); so must the stream's WebSocket upgrade. Responses carry `X-Frame-Options: DENY` and `Referrer-Policy: same-origin` (link tokens never leak in a Referer).
+- **What needs no session.** `/health`, `/ready`; ingest with a `qi_` token; `GET /api/export` with a `qx_` token from Copy curl.
+- **Behind a proxy.** Forward `Host` (or set `X-Forwarded-Host`) and `X-Forwarded-Proto`; set `QUIET_TRUST_PROXY=on` so backoff and the sessions list see real client addresses.
+- **`QUIET_AUTH=off`.** No accounts at all: every request is a local owner. For local development only, and only on a loopback address (the server refuses otherwise). Default is `on` everywhere, including `make dev` and the compose files.
+- Accounts are always kept on disk under `--data-dir`, even with `--store memory` (losing them on restart would offer owner setup to whoever arrived first).
 
 ## Ingest
 
@@ -268,7 +294,7 @@ Docker needs nothing (quiet reads the socket). Everything else pushes over HTTP 
 - Shippers wrap the app's line (`{"message": "<line>", "container_name": …}` from Vector's `docker_logs`, `{"log": "<line>", "date": …}` from Fluent Bit). quiet stores the app's own line when the message is a JSON object, or when everything around it is collector metadata, so its ids stitch flows; the shipper's time becomes the collector timestamp. Events with their own fields are kept whole.
 - OTLP log records become `{ timestamp, level, msg, service, trace_id, span_id, …attributes, …body fields, resource, scope }`; spans become `{ timestamp (end), level (error when the status is ERROR), name, otel.type: "span", span.kind, duration_ms, trace_id, span_id, parent_span_id, otel.status_code, …attributes, steps (events) }`. gRPC comes in v0.2.
 - Bodies may be gzip (or deflate). Limits: `QUIET_INGEST_MAX_BODY` (413), `QUIET_INGEST_RATE` per token (429 + `Retry-After`; a limited batch is not stored, so the shipper's retry resends it whole). Missing/unknown/revoked token: 401 with the reason. Rejected requests are logged, their bodies are not.
-- **Remote shippers:** quiet listens on `127.0.0.1:7070` until accounts land (slice 5). Shippers on other machines need `QUIET_ADDR=0.0.0.0:7070` (the image already uses it; publish the port or route `/ingest/*` and `/v1/*` through your proxy). Tokens gate ingest, but `/api` and the UI have no login yet, so keep them behind access control.
+- **Remote shippers:** the binary listens on `127.0.0.1:7070` by default. Shippers on other machines need `QUIET_ADDR=0.0.0.0:7070` (the image already uses it; publish the port or route it through your proxy). Ingest is gated by `qi_` tokens and the UI and `/api` by sign-in, so exposing quiet is fine; use TLS (a reverse proxy) so tokens and passwords never cross the network in clear text.
 
 Vector (`vector.toml`):
 

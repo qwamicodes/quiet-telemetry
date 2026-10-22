@@ -3,7 +3,7 @@
 //! `quiet admin reset-password <email>` prints a one-time reset link (1 hour)
 //! for a user. It writes to the same `quiet.db` the server uses (SQLite WAL,
 //! safe while the server runs), so the link works immediately. In Docker:
-//! `docker exec <container> quiet admin reset-password you@example.com`.
+//! `docker exec <container> /quiet admin reset-password you@example.com`.
 
 use crate::accounts::{normalize_email, Accounts, RESET_TTL_CLI_MS};
 use crate::cli::{AdminArgs, AdminCommand};

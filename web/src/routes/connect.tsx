@@ -100,7 +100,8 @@ function Reachability({ health }: { health: Health | undefined }) {
       {health.ingest.loopback && (
         <p>
           quiet listens on loopback only. Shippers on other machines need{' '}
-          <code className="font-mono text-foreground">QUIET_ADDR=0.0.0.0:7070</code>; ingest stays gated by tokens.
+          <code className="font-mono text-foreground">QUIET_ADDR=0.0.0.0:7070</code>; ingest stays gated by tokens and
+          the UI by sign-in.
         </p>
       )}
       {health.ingest.auth === 'open' && (
