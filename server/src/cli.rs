@@ -103,6 +103,12 @@ pub struct ServerArgs {
     #[arg(long, env = "QUIET_RING", default_value_t = 10_000)]
     pub ring: usize,
 
+    /// Memory for those live lines, all sources together (estimated; e.g.
+    /// `64MB`). Split evenly between sources; each drops its oldest lines
+    /// when over its share. Keeps quiet inside a 256MB container limit.
+    #[arg(long, env = "QUIET_RING_MEMORY", default_value = "64MB", value_parser = parse_ring_memory)]
+    pub ring_memory: usize,
+
     /// Where lines are kept: `sqlite` (searchable window on disk) or `memory`
     /// (the live ring only, gone on restart).
     #[arg(long, env = "QUIET_STORE", value_enum, default_value_t = StoreKind::Sqlite)]
@@ -211,6 +217,15 @@ fn parse_bytes(v: &str) -> Result<u64, String> {
     Ok(bytes)
 }
 
+/// The ring memory budget: 1MB … 64GB.
+fn parse_ring_memory(v: &str) -> Result<usize, String> {
+    let bytes = bytes_of(v)?;
+    if !(1_000_000..=64_000_000_000).contains(&bytes) {
+        return Err(format!("`{v}`: ring memory must be between 1MB and 64GB"));
+    }
+    Ok(bytes as usize)
+}
+
 /// An ingest body cap: 1KB … 1GB.
 fn parse_body_size(v: &str) -> Result<u64, String> {
     let bytes = bytes_of(v)?;
@@ -278,6 +293,9 @@ mod tests {
         assert_eq!(cli.server.store, StoreKind::Sqlite);
         assert_eq!(cli.server.retention, Duration::from_secs(86_400));
         assert_eq!(cli.server.max_disk, 5_000_000_000);
+        assert_eq!(cli.server.ring_memory, 64_000_000);
+        assert_eq!(parse_ring_memory("128MB"), Ok(128_000_000));
+        assert!(parse_ring_memory("10KB").is_err());
         let cli = Cli::try_parse_from([
             "quiet",
             "--retention",
