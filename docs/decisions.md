@@ -4,6 +4,129 @@ Technical choices made while building quiet, newest slice first. Each one
 stands unless Kwaame pushes back. The product-level log lives with the
 project notes; this file records what the code does and why.
 
+## Slice 6 · Settings, storage, per-source settings, system states (2026-10-22)
+
+Scope agreed beforehand: retention / disk cap / purge in the UI over the slice 2
+job, live storage usage, per-source settings, General, failure states with
+`/api/system`, and a memory review against the 256MB prod limit.
+
+**Persistence and precedence**
+- One `settings (k, v JSON, updated, by)` table in `quiet.db`: keys `general`,
+  `storage`, `flow_ids`, `source:<name>`. Read into memory at start; a write
+  goes to SQLite first, then memory. A value this version can't read is logged
+  and skipped, never fatal. Always on disk (even with `--store memory`), like
+  accounts.
+- Storage precedence: **UI value > `--retention`/`--max-disk` (or env) >
+  built-in default.** The UI wins because it is the only place an owner can
+  change it without a redeploy, and the page shows the origin of each value
+  (*set here / from flag / default*) with "use flag" to delete the saved one.
+  Cost: a changed flag looks ignored while a UI value exists; documented in the
+  README and the prod compose comments.
+- Window choices in the UI are 1h / 24h / 3d / 7d (page 11 boards, decisions
+  d-Retention); the API takes any whole hour between 1h and 7d. The cap must be
+  ≥ 10 MB. "At the cap" has one behaviour (drop the oldest hour) and is shown
+  read-only.
+- The retention job reads the settings on every pass and is woken by a change
+  (`Notify::notify_one`, so a change during a sweep isn't lost); a shorter
+  window or lower cap applies within a second instead of a minute. Search and
+  flows read the live window too (`AppState::retention_ms()`).
+
+**Per-source settings**
+- Display name (stored lines keep the real name), hidden (left out of the
+  sidebar only; still stored, searchable, listed under Sources), pause ingest
+  (the pipeline drops the source's lines before parsing and counts them; Docker
+  lines dropped while paused are not backfilled), a window ≤ the instance's
+  (enforced on save; if the instance window later drops below it, the instance
+  window wins), id keys + order, default level filter, export masking.
+- Per-source windows delete line by line inside the hourly tables (lines, the
+  contentless FTS5 rows via the `'delete'` command with the original text, the
+  id index, counters); an hour left empty is dropped whole. Volume per source is
+  counted per hour in a new `source_hours` table, written with the lines and
+  backfilled once for databases from earlier slices, so Storage never scans lines.
+- The stream opens with the source's default level unless the URL has a level;
+  `level=all` overrides a default.
+
+**Correlation ids: which keys count, order, match by key**
+- Slice 4 showed the id order read-only. Now: Settings → Flow id order (instance)
+  and a per-source override choose which of the four keys count and in what
+  order. A key left out is not a correlation id for that source: not shown on
+  the row, not indexed for new lines, not followed when stitching.
+- It is applied inside `normalize` through a process-wide policy (`idpolicy.rs`)
+  because stored lines are re-derived with `normalize` on every read; threading
+  a handle through every read path (ring, SQLite rows, export, flows) would touch
+  all of them for the same result. The server's `Settings` installs it; tests and
+  `Settings::memory()` never do. Old index rows for a key that no longer counts
+  are ignored by stitching (a line joins only if its re-derived ids carry the id).
+- Answers the slice 3 open question (ids matched by value): new **match ids by**
+  setting, `value` (default, unchanged behaviour: `data.request_id` on a job
+  links it to the request) or `key` (only the same key links; a numeric
+  `job_id` 42 never merges with `request_id` 42). An id typed in (`/flow/42`)
+  matches any key at the start. Kept `value` as default: Kwaame's worker lines
+  carry the request id under `data.request_id`, which is a different spelling
+  but the same canonical key, so `key` would also work for them; flip it if
+  numeric ids collide.
+- Custom id fields (07.8's "Add a field, e.g. x-request-id") are not built: the
+  index stores one of four canonical keys. Open question.
+
+**Masking**
+- Per source: built-in groups (email, phone, name, ip, user_agent) can be
+  switched off and extra keys added (a bare key matches at any depth, a dotted
+  path matches exactly). Applied server-side in exports (members always masked,
+  owners when `mask=pii`). The stream, flows and field card still show values
+  unmasked to signed-in users; server-side masking of every line response for
+  members is not in this slice (open question).
+
+**Purge**
+- `POST /api/storage/purge` (owner, CSRF): everything (`confirm: "purge"`, drops
+  every hour including the newest, clears the ring) or one source
+  (`confirm: <name>`). The writer is flushed first so a line from a moment ago
+  goes too. Logged at warn with who did it.
+
+**System states**
+- `GET /api/system` (any signed-in user) → issues: Docker unavailable (error
+  text from the socket discovery merged from main), disk near cap (≥ 90%), at
+  cap (the cap dropped hours within the last hour, or ≥ 100%), data volume low
+  (`statvfs`: < 500MB or < 5% free; `libc` added), store write errors (the
+  SQLite writer and refused appends; `database or disk is full` is recognised),
+  ingest requests refused in the last 15 min.
+- Refused ingest requests are recorded in memory, grouped per minute by
+  endpoint/status/reason/source/token preview, kept 24h (≤ 2000 groups);
+  bodies and remote addresses are not kept (the receiver has no peer address
+  without extra plumbing). The source is known when the request named it
+  (`X-Quiet-Source`); token-bound sources can't be attributed on a 401 because
+  the token didn't resolve. Restart forgets them.
+- UI: one banner per issue across the top of the app, dismissible per tab
+  (sessionStorage) until the issue clears; Docker has troubleshooting steps.
+
+**Memory (256MB prod limit)**
+- Slice 2's ring was 10k lines per source with no byte bound. A parsed line
+  costs roughly raw + 3× raw (serde_json map) + summary + ids; at ~800 B lines
+  that is ~3–4 KB, so 10k lines ≈ 35 MB per source and 6–8 sources would pass
+  256 MB on the ring alone.
+- Now: `--ring-memory` / `QUIET_RING_MEMORY`, default **64MB** (estimated) for
+  every ring together, split evenly between sources; a ring over its share drops
+  its oldest live lines (stored lines are untouched; the stream backlog just
+  starts later for chatty sources). `QUIET_RING` (lines per source) stays as a
+  second bound. That leaves room for SQLite caches (~2 MB × 5 connections), the
+  broadcast fan-out (Arcs), search/flow/export pages and the runtime. The
+  estimate is a heuristic (`line_cost`), not measured allocation.
+
+**UI**
+- Settings nav (v0.1 boards): General · Account · Members · Ingest tokens ·
+  Flow id order · Storage · Appearance. General is per 07.10 minus public URL,
+  timestamp format, max line size and keep-non-JSON (not in scope); theme moved
+  to Appearance. About (07.6) is not built; the version shows in Appearance.
+- `/sources/$name?tab=` (06.2 / 06.5 / 06.6, modest): Overview (stats,
+  connection), Rejected, Settings. No fields-detected table, histogram or
+  malformed-lines tab yet.
+- Timezone: `fmtTime`/`fmtClock` take the instance zone (Intl, cached
+  formatters); `local` keeps the browser's.
+- Stream direction: instance default from General, per-browser flip stored in
+  localStorage; `j`/`k` follow the visual order.
+- Instance name: tab title (`legivent · quiet`), user menu header, invite page
+  "Join legivent"; exposed signed out via `/api/auth/state` (it's shown on the
+  invite page anyway).
+
 ## Slice 5 · Accounts, auth, members (2026-10-22)
 
 Scope agreed beforehand: local email + password accounts, first-run owner

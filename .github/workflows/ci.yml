@@ -107,6 +107,13 @@ jobs:
           curl -fs -X POST localhost:7070/ingest/ndjson -H "$AUTH" -H 'X-Quiet-Source: ci-api' --data-binary '{"msg":"POST /orders","request_id":"req_ci"}'
           curl -fs -X POST localhost:7070/ingest/ndjson -H "$AUTH" -H 'X-Quiet-Source: ci-worker' --data-binary '{"msg":"job done","job_id":"job_ci","data":{"request_id":"req_ci"}}'
           $S 'localhost:7070/api/flow?id=job_ci' | grep -q '"line_count":2'
+          # Settings: owner writes (CSRF), the instance name shows signed out, a UI
+          # window beats the flag, storage + system status answer.
+          $S -X PUT localhost:7070/api/settings/general -H "X-Quiet-Csrf: $CSRF" -H 'content-type: application/json' -d '{"instance_name":"ci","stream_direction":"bottom","timezone":"UTC"}' | grep -q '"instance_name":"ci"'
+          curl -fs localhost:7070/api/auth/state | grep -q '"instance_name":"ci"'
+          $S -X PUT localhost:7070/api/settings/storage -H "X-Quiet-Csrf: $CSRF" -H 'content-type: application/json' -d '{"retention_ms":10800000}' | grep -q '"retention_origin":"setting"'
+          $S localhost:7070/api/storage | grep -q '"store":"sqlite"'
+          $S localhost:7070/api/system | grep -q '"issues"'
           # Sign in again, sign out: the old cookie stops working.
           curl -fs -c jar2 -X POST localhost:7070/api/auth/login -H 'content-type: application/json' -d '{"email":"ci@example.com","password":"ci password 12345"}' | grep -q csrf
           $S -X POST localhost:7070/api/auth/logout -H "X-Quiet-Csrf: $CSRF" -o /dev/null

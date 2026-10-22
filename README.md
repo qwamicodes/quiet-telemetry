@@ -12,11 +12,15 @@ Built in slices. Each slice is one PR to `main`, tested locally first, then prom
 |---|---|---|
 | 1 | Docker receiver → normalize → per-source ring → WebSocket → stream view | merged |
 | — | Foundation: CLI, Receiver/Store traits, embedded UI, shared types, UI kit | merged |
-| 2 | SQLite (WAL, hourly partitions) + FTS5 search over the window, export (NDJSON/JSON/CSV, Copy curl), retention + disk cap job | PR #4 |
-| 3 | Flows: stitch lines by every correlation id (request ↔ job), step nodes + timeline, field card per node, search grouped by flow | PR #6 |
-| 4 | HTTP ingest: Vector, Fluent Bit, OTLP/HTTP logs + traces (span tree in flows), NDJSON/curl, `quiet pipe`; `qi_` ingest tokens; Connect a source + Sources + Settings → Ingest tokens screens | PR #7 |
-| 5 | Accounts: owner first-run setup, sign in, members + copy-link invites, sessions, reset links; every `/api` route behind a session | this PR |
-| 6 | Settings UI for retention / disk cap (the job itself ships in 2), storage + per-source settings | |
+| 2 | SQLite (WAL, hourly partitions) + FTS5 search over the window, export (NDJSON/JSON/CSV, Copy curl), retention + disk cap job | merged |
+| 3 | Flows: stitch lines by every correlation id (request ↔ job), step nodes + timeline, field card per node, search grouped by flow | merged |
+| 4 | HTTP ingest: Vector, Fluent Bit, OTLP/HTTP logs + traces (span tree in flows), NDJSON/curl, `quiet pipe`; `qi_` ingest tokens; Connect a source + Sources + Settings → Ingest tokens screens | merged |
+| 5 | Accounts: owner first-run setup, sign in, members + copy-link invites, sessions, reset links; every `/api` route behind a session | merged |
+| 6 | Settings: retention / disk cap / purge in the UI, storage usage, per-source settings (name, hide, pause, window, id keys, level, masking), General, system banners, `/api/system` | this PR |
+
+### v0.1 in one paragraph
+
+quiet v0.1 is one Rust binary with an embedded React UI that runs on a single host. It reads every container's logs from the local Docker socket and takes HTTP pushes from Vector, Fluent Bit, OTLP/HTTP (logs and traces), curl and `quiet pipe`, authenticated with send-only `qi_` tokens. Lines are normalized (JSON first, pino levels, every correlation id indexed), streamed live per source over a WebSocket, and kept in SQLite hourly partitions for a searchable window (24h default, 1h–7d, with a disk cap that drops the oldest hour first). Any line opens as a **flow**: every line sharing its ids across sources (request → job → retries, OTLP span trees), drawn as steps with a field card per line. Search has a small query language, a histogram and group-by-flow; exports go out as NDJSON/JSON/CSV with PII masking and a Copy-curl `qx_` token. Teams sign in with local accounts (owner + members, copy-link invites, CSRF-protected sessions). Owners tune storage, sources and the instance from Settings, and banners say when Docker, the disk or ingest needs attention. See [CHANGELOG.md](CHANGELOG.md).
 
 Every slice goes **local → main → prod**: built and checked locally (`make check`, `make up`), merged to `main` by PR, then deployed to production once the `production` environment approves the release.
 
@@ -141,10 +145,11 @@ Every flag also reads its env var (`quiet --help`). `quiet` with no subcommand i
 | `--trust-proxy` / `QUIET_TRUST_PROXY` | `off` | Take the client address from `X-Forwarded-For` (rightmost hop) / `X-Real-IP`, for sign-in backoff and the sessions list. Turn on only when a reverse proxy you run sets those headers and quiet isn't reachable around it. |
 | `--docker` / `QUIET_DOCKER` | `on` | `0`/`off` disables the Docker receiver. |
 | `--ring` / `QUIET_RING` | `10000` | Live lines kept in memory per source (the stream backlog). |
+| `--ring-memory` / `QUIET_RING_MEMORY` | `64MB` | Memory for those lines, every source together (estimated: raw line + parsed fields). Split evenly between sources; a source over its share drops its oldest live lines (stored lines are unaffected). Keeps quiet inside the prod compose's 256MB limit. |
 | `--store` / `QUIET_STORE` | `sqlite` | `sqlite`: the searchable window on disk. `memory`: the live ring only, nothing survives a restart, search covers the ring. |
 | `--data-dir` / `QUIET_DATA_DIR` | `data` (image: `/data`) | Where `quiet.db` (+ `-wal`) lives. **Mount a volume here** (`deploy/docker-compose.*.yml` do). |
-| `--retention` / `QUIET_RETENTION` | `24h` | How long lines stay searchable, `1h` … `7d` (e.g. `3d`, `7d`). Whole hours are dropped, so a line can outlive it by up to an hour. |
-| `--max-disk` / `QUIET_MAX_DISK` | `5GB` | Disk cap for the database (`500MB`, `5GB`, `1GiB`; min 10MB). Over it, the oldest hour goes first. Whichever of retention and cap hits first wins. |
+| `--retention` / `QUIET_RETENTION` | `24h` | How long lines stay searchable, `1h` … `7d` (e.g. `3d`, `7d`). Whole hours are dropped, so a line can outlive it by up to an hour. **A value saved in Settings → Storage wins over this flag** (see [Settings](#settings)). |
+| `--max-disk` / `QUIET_MAX_DISK` | `5GB` | Disk cap for the database (`500MB`, `5GB`, `1GiB`; min 10MB). Over it, the oldest hour goes first. Whichever of retention and cap hits first wins. **A value saved in Settings → Storage wins over this flag.** |
 | `--web-dir` / `QUIET_WEB_DIR` | embedded | Serve the UI from a directory instead of the copy built into the binary. |
 | `--drain-ms` / `QUIET_DRAIN_MS` | `1000` | On SIGTERM, how long `/ready` is 503 before connections close. |
 | `--shutdown-timeout-ms` / `QUIET_SHUTDOWN_TIMEOUT_MS` | `10000` | Hard limit for a graceful stop. |
@@ -240,7 +245,25 @@ dealer 88 level:>=warn source:order-worker status:500 -path:/health "exact phras
 
 ## Storage
 
-SQLite (bundled, WAL) in `--data-dir`. One set of tables per hour: the lines (only the raw line is stored; fields and ids are re-derived when read), a contentless FTS5 index over the raw line, and a side index of every correlation id. A writer thread coalesces queued lines into one transaction; the in-memory ring in front serves the live stream and is warmed from disk on start, so ids, sources and the backlog survive restarts. Every minute the retention job drops hours older than `--retention`, then the oldest hours while the database is over `--max-disk`, and hands the pages back to the OS (incremental vacuum).
+SQLite (bundled, WAL) in `--data-dir`. One set of tables per hour: the lines (only the raw line is stored; fields and ids are re-derived when read), a contentless FTS5 index over the raw line, and a side index of every correlation id. A writer thread coalesces queued lines into one transaction; the in-memory ring in front serves the live stream and is warmed from disk on start, so ids, sources and the backlog survive restarts. Every minute (and right after a storage setting changes) the retention job drops hours older than the window, then deletes lines of sources with a shorter window of their own, then drops the oldest hours while the database is over the disk cap, and hands the pages back to the OS (incremental vacuum). Per-source volume is counted per hour (`source_hours`), so Settings → Storage never scans lines.
+
+## Settings
+
+Owners change these in the UI; members see them read-only. Writes need a session and the CSRF header, like every `/api` write. Everything is stored in the `settings` table of `quiet.db` (kept on disk even with `--store memory`) and applies at once, without a restart.
+
+**Precedence (storage):** a value saved in Settings → Storage → the `--retention` / `--max-disk` flag or `QUIET_RETENTION` / `QUIET_MAX_DISK` → the built-in default (24h, 5GB). The page shows where each value comes from (*set here*, *from flag*, *default*); "use flag" deletes the saved value so the flag applies again. If a flag seems ignored, check Settings → Storage.
+
+| Page | What |
+|---|---|
+| General | Instance name (browser tab, user menu, “Join <name>” on invite links, also shown signed out); timezone for every timestamp (`local` = each viewer's browser, `UTC`, or an IANA zone); default stream direction (newest at bottom; each browser can flip it from the stream's view button). |
+| Flow id order | Which correlation-id keys count (`request_id`, `job_id`, `trace_id`, `correlation_id`) and in what order (the first found is shown on the row); **match ids by value** (default: an id links lines whatever key carries it) or **by key** (only the same key links, so a numeric `job_id` 42 and a `request_id` 42 never merge). |
+| Storage | Disk used vs the cap, hourly partitions, volume per source, the projected time to the cap; searchable window (1h / 24h / 3d / 7d); disk cap; at the cap the oldest hour goes; **Purge now** (owner, type `purge` to confirm) deletes every stored line. |
+| Appearance | Theme (per browser). |
+| Sources → a source → Settings | Display name; hide from the sidebar; **pause ingest** (new lines are dropped and counted); a shorter window than the instance's; its own id keys/order; the level filter the stream opens with; PII masking for exports (switch off built-in groups, add keys like `customer.address`); purge this source's lines. The **Rejected** tab lists refused ingest requests (status, reason, token preview, grouped per minute; bodies are never kept). |
+
+Changing which id keys count applies to new lines, to every line read from now on (stored lines are re-read with the current rule) and to stitching; the id index of lines stored before still holds the old keys, and stitching ignores those.
+
+**System banners** come from `GET /api/system`: Docker unreachable (with troubleshooting steps), disk near (≥ 90%) or at the cap (the cap dropped hours in the last hour), the data volume itself almost full (< 500MB or < 5% free), lines failing to save (e.g. `database or disk is full`), and refused ingest requests in the last 15 minutes. Each can be dismissed for the tab.
 
 ## Export
 
@@ -260,6 +283,10 @@ Every `/api` route needs a session cookie except the public auth routes, and eve
 - `WS /api/stream?source=&backlog=&level=&q=` → frames `backlog`, `lines` (batched every 75 ms), `gap` (client fell behind). The upgrade must be same-origin; the stream re-checks its session every 30 s and closes with code 4401 once it ends.
 - `GET /api/ingest-tokens` → `{ tokens: [{ id, name, preview: "qi_••••1a77", source | null, created, last_used, revoked }] }` · `POST /api/ingest-tokens {"name","source"?}` → `201 { token, secret }` (the secret only here) · `DELETE /api/ingest-tokens/:id` → the revoked token. Anyone signed in can list; only owners create and revoke (else 403 `owner_only`).
 - `GET /api/health` also carries `ingest: { auth, loopback, max_body, rate, tokens }`.
+- Settings: `GET /api/settings` → `{ general, storage, flow_ids, sources }` · owner only: `PUT /api/settings/general {instance_name, stream_direction, timezone}` · `PUT /api/settings/storage {retention_ms?: number|null, max_disk?: number|null}` (`null` = use the flag) · `PUT /api/settings/flow-ids {order, match_by}` · `PUT /api/settings/sources/:name {display_name, hidden, paused, retention_ms, id_keys, default_level, mask_fields, unmasked}` · `DELETE /api/settings/sources/:name`. Bad values: 400 `invalid`; members: 403 `owner_only`.
+- `GET /api/storage` → `{ settings, store, path, used, ratio, lines, oldest, fs_free, hours: [{start, lines, bytes}], sources: [{source, lines, bytes, disk, share}], bytes_per_hour, steady_bytes, cap_in_ms, now }` · `POST /api/storage/purge {source?, confirm}` (owner; `confirm` = `purge`, or the source name) → `{ lines, source }`.
+- `GET /api/sources/:name/activity` → `{ rejections, rejected_15m, paused_dropped }` · `GET /api/system` → `{ ok, issues: [{kind, severity, title, detail}], docker, disk, ingest, store, now }`.
+- `GET /api/sources` entries also carry `display_name`, `hidden`, `paused`; `/api/auth/state` carries `instance_name`.
 - Accounts (public, no session): `GET /api/auth/state` → `{ auth: "on"|"off", setup_required, user, csrf, version, host }` · `POST /api/auth/setup {name,email,password}` (first run only, else 409) · `POST /api/auth/login {email,password,remember?}` (401 / 429 + `Retry-After`) · `POST /api/auth/invite {token}` → the invite, or 410 `{ code: expired|used|revoked, invite }` · `POST /api/auth/invite/accept {token,name,email?,password}` · `POST /api/auth/reset {token}` → `{ email, name, expires }` · `POST /api/auth/reset/accept {token,password}` → 204. Sign-in routes answer `{ user, csrf }` and set the cookie.
 - Accounts (session): `POST /api/auth/logout` · `GET`/`PATCH /api/account {name,email,password?}` (changing the email needs the password) · `POST /api/account/password {current,password}` → `{ user, signed_out }` (other sessions signed out) · `GET /api/account/sessions` · `DELETE /api/account/sessions/:id` · `POST /api/account/sessions/sign-out-others` · `GET /api/members` → `{ members, invites }` (invites for owners only).
 - Accounts (owner): `POST /api/invites {email?,role}` → `201 { invite, token, path }` · `DELETE /api/invites/:id` · `PATCH /api/members/:id {role}` · `DELETE /api/members/:id` · `POST /api/members/:id/reset-link` → `{ token, path, expires }`. Removing or demoting the last owner: 409 `last_owner`.

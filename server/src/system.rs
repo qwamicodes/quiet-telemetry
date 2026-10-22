@@ -385,8 +385,8 @@ pub fn status(sys: &SystemState, r: Readings) -> SystemStatus {
             severity: Severity::Error,
             title: "Docker is unavailable".into(),
             detail: format!(
-                "quiet can't read /var/run/docker.sock ({error}). Container logs pause until it \
-                 comes back; quiet retries every 5 s and backfills from Docker's own log."
+                "quiet can't reach the Docker engine: {error}. Container logs pause until it comes \
+                 back; quiet retries every 5 s and backfills from Docker's own log."
             ),
         });
     }

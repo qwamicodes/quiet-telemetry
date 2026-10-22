@@ -55,8 +55,9 @@ function DockerHelp() {
         <code className="font-mono text-foreground">group_add: ["$(stat -c %g /var/run/docker.sock)"]</code>
       </li>
       <li>
-        Rootless Docker or Podman: mount <code className="font-mono text-foreground">$XDG_RUNTIME_DIR/docker.sock</code>{' '}
-        or set <code className="font-mono text-foreground">DOCKER_HOST</code>.
+        Docker Desktop, OrbStack, Colima, rootless Docker: quiet looks for their sockets and your current{' '}
+        <code className="font-mono text-foreground">docker context</code>; to pick one, set{' '}
+        <code className="font-mono text-foreground">DOCKER_HOST</code>.
       </li>
       <li>
         Not using Docker here? Set <code className="font-mono text-foreground">QUIET_DOCKER=off</code> and ship logs
