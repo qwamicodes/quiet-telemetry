@@ -114,7 +114,7 @@ make build   # optional: one release binary at server/target/release/quiet with 
 
 | Problem | Fix |
 |---|---|
-| No containers in the source list | Docker isn't reachable. Check `docker ps` works. On Linux add yourself to the `docker` group (`sudo usermod -aG docker $USER`, then log out/in). With Colima/OrbStack/rootless Docker, set `DOCKER_HOST` (e.g. `export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock`) for `make dev`; for `make up`, change the socket path in `deploy/docker-compose.local.yml`. |
+| No containers in the source list | Docker isn't reachable. Check `docker ps` works. `make dev` finds the engine on its own: `DOCKER_HOST`, then `/var/run/docker.sock`, Docker Desktop (`~/.docker/run/docker.sock`), OrbStack, Colima, Rancher Desktop, rootless Docker, then your current `docker context`. The log line `docker connected endpoint=…` says which one it used. Still stuck: `export DOCKER_HOST=$(docker context inspect -f '{{.Endpoints.docker.Host}}')`. On Linux add yourself to the `docker` group (`sudo usermod -aG docker $USER`, then log out/in). For `make up`, change the socket path in `deploy/docker-compose.local.yml`. |
 | `port 7070 is already allocated` / `address in use` | Something else is on 7070: `make down`, or run with `QUIET_ADDR=127.0.0.1:7171 make dev`. |
 | UI shows "Reconnecting…" forever | The server isn't running or crashed: check the `make dev` terminal or `make logs`. |
 | Blank page at :7070 after `cargo run` | The binary embeds the UI at build time: run `npm --prefix web run build` first (or use `make build` / `make dev`). |
