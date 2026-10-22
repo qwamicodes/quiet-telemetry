@@ -12,12 +12,15 @@ services:
       QUIET_RING: "10000"
       QUIET_DRAIN_MS: "3000"
       QUIET_SHUTDOWN_TIMEOUT_MS: "10000"
+      QUIET_DATA_DIR: /data
+      QUIET_RETENTION: 24h   # 1h … 7d
+      QUIET_MAX_DISK: 5GB    # oldest hour dropped first; keep below the volume's free space
     # No auth until slice 5: publish on loopback only, or route through Dokploy's
     # Traefik with access control in front.
     ports: ["127.0.0.1:7070:7070"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Slice 2 (SQLite) will keep its data here.
+      # The searchable window: SQLite (quiet.db + WAL), hourly partitions.
       - quiet-prod-data:/data
     labels:
       quiet.ignore: "true"

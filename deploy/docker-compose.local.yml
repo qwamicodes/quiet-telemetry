@@ -8,10 +8,15 @@ services:
     build: ..
     environment:
       QUIET_ADDR: 0.0.0.0:7070
+      QUIET_DATA_DIR: /data
+      QUIET_RETENTION: 24h
+      QUIET_MAX_DISK: 1GB
       RUST_LOG: quiet=debug,tower_http=warn
     ports: ["127.0.0.1:7070:7070"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Search history survives `make down`/`up`; `docker volume rm quiet-local_quiet-data` resets it.
+      - quiet-data:/data
     labels:
       quiet.ignore: "true"
     healthcheck:
@@ -39,3 +44,6 @@ services:
       quiet.source: sample-api
     depends_on:
       quiet: { condition: service_healthy }
+
+volumes:
+  quiet-data:

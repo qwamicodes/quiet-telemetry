@@ -23,7 +23,9 @@ RUN touch src/main.rs src/web.rs && cargo build --release && strip target/releas
 
 FROM scratch
 COPY --from=server /src/server/target/release/quiet /quiet
-ENV QUIET_ADDR=0.0.0.0:7070
+ENV QUIET_ADDR=0.0.0.0:7070 QUIET_DATA_DIR=/data
+# The searchable window (SQLite). Mount a volume here or it is lost with the container.
+VOLUME ["/data"]
 EXPOSE 7070
 # Runs as root: reading /var/run/docker.sock needs it (or the docker group's gid).
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 CMD ["/quiet", "healthcheck"]
