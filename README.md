@@ -16,30 +16,114 @@ Built in slices. Each slice is one PR to `main`, tested locally first, then prom
 | 3 | Flows: stitch lines by every correlation id, field card | |
 | 4 | HTTP ingest: Vector / Fluent Bit NDJSON, OTLP/HTTP logs + spans, ingest tokens | |
 | 5 | Accounts: owner first-run, members, copy-link invites | |
-| 6 | Retention (1h/24h/3d/7d), ~5 GB cap, storage + per-source settings | |
+| 6 | Retention (24h default, 3d/7d), ~5 GB cap, storage + per-source settings | |
 
 Every slice goes **local → main → prod**: built and checked locally (`make check`, `make up`), merged to `main` by PR, then deployed to production once the `production` environment approves the release.
 
-## Run locally
+## Getting started (local)
 
-Needs Rust (stable), Node 22, and Docker for the compose stack.
+Follow these steps top to bottom. You should see live logs in about 10 minutes.
+
+### 1. Install the tools (once)
+
+| Tool | Why | Install | Check |
+|---|---|---|---|
+| Docker Desktop (macOS) or Docker Engine + Compose v2 (Linux) | runs quiet and reads container logs | https://docs.docker.com/get-docker/ | `docker compose version` |
+| Git | clone the repo | already on most machines | `git --version` |
+| Node 22+ | the web UI (only for `make dev` / `make check`) | https://nodejs.org or `nvm install 22` | `node -v` |
+| Rust stable | the server (only for `make dev` / `make check`) | `curl https://sh.rustup.rs -sSf \| sh` | `cargo -V` |
+| make | the shortcuts below | macOS: `xcode-select --install` | `make -v` |
+| cargo-watch (optional) | restarts the server when you save | `cargo install cargo-watch` | |
+
+Only want to try it? Docker + Git + make is enough (path A).
+
+### 2. Get the code
 
 ```sh
-make dev     # server on :7070 (cargo watch if installed) + Vite on :5173 with hot reload
-make sample  # in another terminal: realistic lines for sample-api + sample-worker over HTTP
-make up      # or: the whole thing in Docker, built from source, plus the sample generator
-make down
-make check   # what CI runs: web lint/typecheck/test/build, cargo fmt/clippy/test
+git clone https://github.com/qwamicodes/quiet-telemetry.git
+cd quiet-telemetry
+git checkout main   # until the open PRs merge, use: git checkout foundation/structure
 ```
 
-`make up` uses `deploy/docker-compose.local.yml`: quiet reads every container on the local socket, and the sample generator emits canonical JSON lines, an HTTP API (`wideEvents.calls`) on stdout and BullMQ-style payout jobs with retries (sharing the API's `request_id`) over `/ingest/ndjson`. Open http://127.0.0.1:7070.
-
-Send your own lines without Docker:
+### 3A. Run everything in Docker (easiest)
 
 ```sh
-curl -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: api' \
+make up      # builds quiet from source + starts a sample log generator
+```
+
+Open http://127.0.0.1:7070. The first build takes a few minutes (Rust); later ones are cached.
+
+What you should see:
+- Sources on the left: `sample-api`, `sample-worker`, plus every other container running on your machine.
+- Pick `sample-api`: new lines arrive every second, newest at the bottom.
+- Click a line: the field card opens (Fields / JSON / Raw). Lines sharing a `request_id` with `sample-worker` are what flows will stitch (slice 3).
+
+Useful while it runs:
+
+```sh
+make logs    # quiet's own logs
+make down    # stop and remove the stack
+```
+
+### 3B. Run it for development (hot reload)
+
+```sh
+npm --prefix web ci   # once, and after package.json changes
+make dev              # server on :7070 + UI on :5173 with hot reload
+make sample           # second terminal: sample lines over HTTP
+```
+
+Open http://127.0.0.1:5173 (Vite proxies `/api` and `/ingest` to the server). Edit `web/src/**` and the page updates; edit `server/src/**` and the server restarts (with cargo-watch) or re-run `make dev`.
+
+The server also reads your local Docker socket here, so your running containers show up too. Turn that off with `QUIET_DOCKER=off make dev`.
+
+### 4. Point your own apps at it
+
+Any container on the same machine shows up automatically: quiet reads its stdout/stderr through the Docker socket. Names come from the Swarm service, then the Compose service, then the container name.
+
+```yaml
+# in your app's compose file (optional labels)
+services:
+  legivent-api:
+    labels:
+      quiet.source: legivent-api   # rename the source
+  redis:
+    labels:
+      quiet.ignore: "true"         # hide noisy containers
+```
+
+Not in Docker? Push lines over HTTP (one JSON object or plain text per line):
+
+```sh
+curl -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: my-app' \
   --data-binary $'{"level":30,"msg":"hello","request_id":"req_1"}\nplain text works too'
+
 ```
+
+For the best flows, follow the logging guide: one canonical JSON line per request or job attempt, `request_id` on every line, jobs carry the parent `request_id`, timed calls in `wideEvents.calls`.
+
+### 5. Before you push
+
+```sh
+make check   # exactly what CI runs: web lint/typecheck/test/build, cargo fmt/clippy/test
+make types   # only if you changed a Rust type the UI uses (regenerates web/src/gen)
+make build   # optional: one release binary at server/target/release/quiet with the UI inside
+```
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| No containers in the source list | Docker isn't reachable. Check `docker ps` works. On Linux add yourself to the `docker` group (`sudo usermod -aG docker $USER`, then log out/in). With Colima/OrbStack/rootless Docker, set `DOCKER_HOST` (e.g. `export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock`) for `make dev`; for `make up`, change the socket path in `deploy/docker-compose.local.yml`. |
+| `port 7070 is already allocated` / `address in use` | Something else is on 7070: `make down`, or run with `QUIET_ADDR=127.0.0.1:7171 make dev`. |
+| UI shows "Reconnecting…" forever | The server isn't running or crashed: check the `make dev` terminal or `make logs`. |
+| Blank page at :7070 after `cargo run` | The binary embeds the UI at build time: run `npm --prefix web run build` first (or use `make build` / `make dev`). |
+| `make check` fails on stale types | Run `make types` and commit `web/src/gen`. |
+| `cargo fmt`/`clippy` errors | `cd server && cargo fmt` then fix what clippy prints; CI uses `-D warnings`. |
+| First `make up` is slow | Normal: Rust compiles everything once. Later builds reuse the cache. |
+| Sample lines missing | `make sample` needs the server running first; in Docker, `docker compose -f deploy/docker-compose.local.yml logs sample`. |
+
+## Reference
 
 ### Config
 
