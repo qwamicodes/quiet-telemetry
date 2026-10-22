@@ -6,10 +6,21 @@ import { ReceiverBadge } from '@/components/receiver-badge'
 import { SourceItem } from '@/components/source-item'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { useHealth, useSources } from '@/lib/api'
+import { fmtWindow } from '@/lib/format'
 import { useRates } from '@/lib/use-rates'
 import { cn } from '@/lib/utils'
 
-function NavItem({ to, icon, children }: { to: '/' | '/settings'; icon: ReactNode; children: ReactNode }) {
+function NavItem({
+  to,
+  icon,
+  badge,
+  children,
+}: {
+  to: '/' | '/search' | '/settings'
+  icon: ReactNode
+  badge?: string
+  children: ReactNode
+}) {
   return (
     <Link
       to={to}
@@ -17,7 +28,8 @@ function NavItem({ to, icon, children }: { to: '/' | '/settings'; icon: ReactNod
       className="flex h-7 items-center gap-2.5 px-3 text-sidebar-foreground outline-none hover:bg-sidebar-accent focus-visible:bg-sidebar-accent data-[status=active]:bg-sidebar-accent data-[status=active]:text-foreground [&_svg]:size-3.5"
     >
       {icon}
-      {children}
+      <span className="flex-1">{children}</span>
+      {badge && <span className="font-mono text-[11px] text-muted-foreground">{badge}</span>}
     </Link>
   )
 }
@@ -55,6 +67,9 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
       <nav className="mt-4 flex flex-col gap-0.5 px-3">
         <NavItem to="/" icon={<RowsIcon />}>
           Stream
+        </NavItem>
+        <NavItem to="/search" icon={<SearchIcon />} badge={health ? fmtWindow(health.retention_ms) : undefined}>
+          Search
         </NavItem>
         <NavItem to="/settings" icon={<SettingsIcon />}>
           Settings
