@@ -23,6 +23,7 @@ export default defineConfig({
       '/api/stream': { target: server.replace(/^http/, 'ws'), ws: true },
       '/api': server,
       '/ingest': server,
+      '/v1': server,
     },
   },
   test: {

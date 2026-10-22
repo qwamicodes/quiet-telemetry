@@ -17,6 +17,9 @@ const node = (index: number, name: string, extra: Partial<FlowNode> = {}): FlowN
   warn: false,
   attempt: null,
   children: [],
+  span_id: null,
+  parent: null,
+  depth: 0,
   ...extra,
 })
 

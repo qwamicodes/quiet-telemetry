@@ -54,3 +54,24 @@ export function fmtWindow(ms: number): string {
   const h = Math.round(ms / 3_600_000)
   return h % 24 === 0 ? `${h / 24 === 1 ? 24 : h / 24}${h / 24 === 1 ? 'h' : 'd'}` : `${h}h`
 }
+
+/** `just now`, `42s ago`, `3m ago`, `18h ago`, `2d ago`. */
+export function fmtAgo(ts: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - ts) / 1000))
+  if (s < 5) return 'just now'
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86_400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86_400)}d ago`
+}
+
+/** `Oct 22` in the viewer's locale. */
+export function fmtDay(ts: number): string {
+  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+/** `00:42` elapsed. */
+export function fmtElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`
+}

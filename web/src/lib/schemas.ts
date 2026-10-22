@@ -4,6 +4,7 @@ import type {
   ChildStep,
   CloseMatch,
   CorrId,
+  CreatedIngestToken,
   DockerStatus,
   ExportTokenResponse,
   Flow,
@@ -14,6 +15,9 @@ import type {
   FlowSummariesResponse,
   FlowSummary,
   Health,
+  IngestInfo,
+  IngestToken,
+  IngestTokensResponse,
   Level,
   LogLine,
   SearchResponse,
@@ -57,6 +61,14 @@ export const dockerStatus = z.discriminatedUnion('state', [
   z.object({ state: z.literal('unavailable'), error: z.string() }),
 ]) satisfies z.ZodType<DockerStatus>
 
+export const ingestInfo = z.object({
+  auth: z.enum(['token', 'open']),
+  loopback: z.boolean(),
+  max_body: z.number(),
+  rate: z.number(),
+  tokens: z.number(),
+}) satisfies z.ZodType<IngestInfo>
+
 export const health = z.object({
   ok: z.boolean(),
   version: z.string(),
@@ -67,11 +79,12 @@ export const health = z.object({
   disk_bytes: z.number(),
   stored_lines: z.number(),
   oldest: z.number().nullable(),
+  ingest: ingestInfo,
 }) satisfies z.ZodType<Health>
 
 export const sourceInfo = z.object({
   name: z.string(),
-  kind: z.enum(['docker', 'http']),
+  kind: z.enum(['docker', 'http', 'vector', 'fluentbit', 'otlp']),
   containers: z.array(z.string()),
   group: z.string().nullable(),
   lines: z.number(),
@@ -128,12 +141,15 @@ export const flowNode = z.object({
   warn: z.boolean(),
   attempt: z.number().nullable(),
   children: z.array(childStep),
+  span_id: z.string().nullable(),
+  parent: z.number().nullable(),
+  depth: z.number(),
 }) satisfies z.ZodType<FlowNode>
 
 export const flowEdge = z.object({
   from: z.number(),
   to: z.number(),
-  kind: z.enum(['next', 'retry', 'handoff']),
+  kind: z.enum(['next', 'retry', 'handoff', 'child']),
   via: corrId.nullable(),
   gap_ms: z.number(),
 }) satisfies z.ZodType<FlowEdge>
@@ -163,6 +179,7 @@ export const flow = flowSummary.extend({
   lines: z.array(logLine),
   missing_parent: corrId.nullable(),
   partial: z.boolean(),
+  span_tree: z.boolean(),
 }) satisfies z.ZodType<Flow>
 
 export const flowResponse = z.object({
@@ -191,3 +208,20 @@ export const flowNotFound = z.object({
 export const flowSummariesResponse = z.object({
   flows: z.array(z.object({ id: z.string(), flow: flowSummary.nullable() })),
 }) satisfies z.ZodType<FlowSummariesResponse>
+
+export const ingestToken = z.object({
+  id: z.number(),
+  name: z.string(),
+  preview: z.string(),
+  source: z.string().nullable(),
+  created: z.number(),
+  last_used: z.number().nullable(),
+  revoked: z.number().nullable(),
+}) satisfies z.ZodType<IngestToken>
+
+export const ingestTokensResponse = z.object({ tokens: z.array(ingestToken) }) satisfies z.ZodType<IngestTokensResponse>
+
+export const createdIngestToken = z.object({
+  token: ingestToken,
+  secret: z.string().startsWith('qi_'),
+}) satisfies z.ZodType<CreatedIngestToken>
