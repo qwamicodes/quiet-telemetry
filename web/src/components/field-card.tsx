@@ -1,14 +1,27 @@
 import { useNavigate } from '@tanstack/react-router'
-import { ChevronLeftIcon, ChevronRightIcon, CopyIcon, FilterIcon, GitForkIcon, XIcon } from 'lucide-react'
-import { useState } from 'react'
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  DownloadIcon,
+  FilterIcon,
+  GitForkIcon,
+  ListIcon,
+  WrapTextIcon,
+  XIcon,
+} from 'lucide-react'
+import { type ReactNode, useState } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { LogLine } from '@/gen'
+import { useSources } from '@/lib/api'
+import { kindLabel } from '@/lib/connect'
 import { bytes, fmtTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
+import { useHotkeys } from '@/lib/use-hotkeys'
 import { cn } from '@/lib/utils'
 
 type Tab = 'fields' | 'json' | 'raw'
@@ -102,6 +115,78 @@ function IconButton({ label, onClick, children }: { label: string; onClick: () =
 
 const asText = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v))
 
+/** One JSON line, coloured: keys periwinkle, strings, numbers amber, literals green. */
+function JsonLine({ text }: { text: string }) {
+  const parts: ReactNode[] = []
+  const re = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false|null)\b/g
+  let last = 0
+  let i = 0
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    if (m[1] && m[2]) {
+      parts.push(
+        <span key={i++} className="text-syntax-key">
+          {m[1]}
+        </span>,
+        m[2],
+      )
+    } else if (m[1]) {
+      parts.push(
+        <span key={i++} className="text-syntax-string">
+          {m[1]}
+        </span>,
+      )
+    } else if (m[3]) {
+      parts.push(
+        <span key={i++} className="text-syntax-number">
+          {m[3]}
+        </span>,
+      )
+    } else {
+      parts.push(
+        <span key={i++} className="text-syntax-literal">
+          {m[4]}
+        </span>,
+      )
+    }
+    last = m.index + m[0].length
+  }
+  parts.push(text.slice(last))
+  return <>{parts}</>
+}
+
+export function JsonView({ json }: { json: string }) {
+  const lines = json.split('\n')
+  return (
+    <pre data-testid="json-view" className="bg-code py-3 font-mono text-xs leading-relaxed">
+      {lines.map((l, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: lines of one document
+        <div key={i} className="flex">
+          <span className="w-9 shrink-0 select-none pr-3 text-right text-muted-foreground/60">{i + 1}</span>
+          <span className="whitespace-pre-wrap break-all pr-3">
+            <JsonLine text={l} />
+          </span>
+        </div>
+      ))}
+    </pre>
+  )
+}
+
+function save(text: string, file: string, type = 'application/json') {
+  const url = URL.createObjectURL(new Blob([text], { type }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = file
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
+/** `· level 50 → error` when the line's level came from a number. */
+function levelNote(l: LogLine): string {
+  const v = l.fields?.level ?? l.fields?.severity ?? l.fields?.lvl
+  return l.level && v != null && String(v) !== l.level ? ` · level ${String(v)} → ${l.level}` : ''
+}
+
 /**
  * One line: Fields (by section), JSON and Raw. The stream shows it beside the
  * table; a flow shows it for the selected step node.
@@ -113,6 +198,8 @@ export function FieldCard({
   onPrev,
   onNext,
   onOpenFlow,
+  onOpenInStream,
+  hotkeys,
   subtitle,
   title,
   className,
@@ -126,12 +213,18 @@ export function FieldCard({
   onNext?: () => void
   /** Shown as "Open flow" when the line belongs to one. */
   onOpenFlow?: () => void
+  /** A third action: the line in the stream (one-node flows, design 04.4). */
+  onOpenInStream?: () => void
+  /** Listen for C / F (design 08.2): only the card that owns the page. */
+  hotkeys?: boolean
   /** Replaces the source in the header (`attempt 2`, `row 28`). */
   subtitle?: string
   className?: string
 }) {
   const navigate = useNavigate()
+  const sources = useSources().data
   const [tab, setTab] = useState<Tab>(line.fields ? 'fields' : 'raw')
+  const [wrap, setWrap] = useState(true)
   const [picked, setPicked] = useState<string | null>(null)
   const active: Tab = !line.fields && tab !== 'raw' ? 'raw' : tab
   const json = line.fields ? JSON.stringify(line.fields, null, 2) : ''
@@ -146,6 +239,16 @@ export function FieldCard({
     setShownId(line.id)
     setPicked(null)
   }
+
+  const copyJson = () => copy(line.fields ? json : JSON.stringify({ raw: line.raw }), 'line as JSON')
+  useHotkeys(
+    hotkeys
+      ? {
+          c: copyJson,
+          f: () => filter(),
+        }
+      : {},
+  )
 
   const filter = () => {
     if (picked == null) return
@@ -249,43 +352,87 @@ export function FieldCard({
           ))}
         </TabsContent>
         <TabsContent value="json" className="min-h-0 overflow-auto">
-          <pre className="bg-code p-3 font-mono text-xs leading-relaxed">{json}</pre>
+          <JsonView json={json} />
         </TabsContent>
         <TabsContent value="raw" className="min-h-0 overflow-auto">
-          <pre className="whitespace-pre-wrap break-all bg-code p-3 font-mono text-xs leading-relaxed">{line.raw}</pre>
+          <pre
+            data-testid="raw-view"
+            className={cn(
+              'bg-code p-3 font-mono text-xs leading-relaxed',
+              wrap ? 'whitespace-pre-wrap break-all' : 'overflow-x-auto whitespace-pre',
+            )}
+          >
+            {line.raw}
+          </pre>
           <dl className="mt-3 font-mono text-xs">
-            <div className="grid grid-cols-[96px_1fr] border-border/60 border-b py-1.5">
-              <dt className="text-syntax-key">received</dt>
-              <dd>
-                {fmtTime(line.received)} · {line.received - line.ts >= 0 ? '+' : ''}
-                {line.received - line.ts}ms
-              </dd>
-            </div>
-            <div className="grid grid-cols-[96px_1fr] border-border/60 border-b py-1.5">
-              <dt className="text-syntax-key">parsed</dt>
-              <dd>{line.fields ? `json · ${Object.keys(line.fields).length} keys` : 'text'}</dd>
-            </div>
-            {line.ids.map((i) => (
-              <div key={i.key + i.value} className="grid grid-cols-[96px_1fr] border-border/60 border-b py-1.5">
-                <dt className="text-syntax-key">{i.key}</dt>
-                <dd>{i.value}</dd>
+            {(
+              [
+                [
+                  'received',
+                  `${fmtTime(line.received)} · ${line.received - line.ts >= 0 ? '+' : ''}${line.received - line.ts}ms`,
+                ],
+                ['via', `${kindLabel(sources?.find((x) => x.name === line.source)?.kind ?? 'http')} · ${line.source}`],
+                ['size', `${bytes(line.raw).toLocaleString()} bytes`],
+                [
+                  'parsed',
+                  line.fields
+                    ? `json · ${Object.keys(line.fields).length} keys${levelNote(line)}`
+                    : 'text · kept as a raw line',
+                ],
+                ...line.ids.map((i) => [i.key, i.value]),
+              ] as [string, string][]
+            ).map(([k, v]) => (
+              <div key={k + v} className="grid grid-cols-[96px_1fr] border-border/60 border-b py-1.5">
+                <dt className="text-syntax-key">{k}</dt>
+                <dd className="break-all">{v}</dd>
               </div>
             ))}
           </dl>
         </TabsContent>
       </Tabs>
-      <footer className="grid grid-cols-2 gap-2 border-t p-3">
-        <Button variant="outline" disabled={picked == null} onClick={filter}>
-          <FilterIcon />
-          {picked ? `Filter by ${picked}` : 'Filter by value'}
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => copy(line.fields ? json : JSON.stringify({ raw: line.raw }), 'line as JSON')}
-        >
-          <CopyIcon />
-          Copy as JSON
-        </Button>
+      <footer
+        className={cn('grid gap-2 border-t p-3', onOpenInStream && active === 'fields' ? 'grid-cols-3' : 'grid-cols-2')}
+      >
+        {active === 'json' ? (
+          <>
+            <Button variant="outline" onClick={copyJson}>
+              <CopyIcon />
+              Copy as JSON
+            </Button>
+            <Button variant="outline" onClick={() => save(json, `quiet-line-${line.id}.json`)}>
+              <DownloadIcon />
+              Download .json
+            </Button>
+          </>
+        ) : active === 'raw' ? (
+          <>
+            <Button variant="outline" onClick={() => copy(line.raw, 'raw line')}>
+              <CopyIcon />
+              Copy raw line
+            </Button>
+            <Button variant="outline" aria-pressed={wrap} onClick={() => setWrap((w) => !w)}>
+              <WrapTextIcon />
+              {wrap ? 'Wrap' : 'No wrap'}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="outline" disabled={picked == null} onClick={filter}>
+              <FilterIcon />
+              {picked ? `Filter by ${picked}` : 'Filter by value'}
+            </Button>
+            <Button variant="outline" onClick={copyJson}>
+              <CopyIcon />
+              Copy as JSON
+            </Button>
+            {onOpenInStream && (
+              <Button variant="outline" onClick={onOpenInStream}>
+                <ListIcon />
+                Open in stream
+              </Button>
+            )}
+          </>
+        )}
       </footer>
     </section>
   )

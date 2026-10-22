@@ -1,15 +1,14 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { PlugIcon, PlusIcon, RowsIcon, SearchIcon, SettingsIcon } from 'lucide-react'
+import { KeyboardIcon, PlugIcon, PlusIcon, RowsIcon, SearchIcon, SettingsIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Logo } from '@/components/logo'
-import { ReceiverBadge } from '@/components/receiver-badge'
 import { SourceItem } from '@/components/source-item'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { UserMenu } from '@/components/user-menu'
 import { useHealth, useSources } from '@/lib/api'
+import { useConnection } from '@/lib/connection'
 import { fmtWindow } from '@/lib/format'
 import { useRates } from '@/lib/use-rates'
-import { cn } from '@/lib/utils'
 
 function NavItem({
   to,
@@ -35,8 +34,18 @@ function NavItem({
   )
 }
 
-export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string | null; onOpenPalette: () => void }) {
+export function Sidebar({
+  activeSource,
+  onOpenPalette,
+  onOpenShortcuts,
+}: {
+  activeSource: string | null
+  onOpenPalette: () => void
+  onOpenShortcuts?: () => void
+}) {
   const health = useHealth().data
+  // Server unreachable: rates would be stale, so they read "—" (design 08.7).
+  const down = useConnection().down
   const sources = useSources().data
   const rates = useRates(sources)
   // Hidden sources stay under Sources and in search, not here (unless open now).
@@ -48,7 +57,7 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
       <div className="flex h-14 items-center justify-between px-4">
         <Logo />
         <span className="border border-sidebar-border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-          v{health?.version ?? '…'}
+          v{health ? health.version.split('.').slice(0, 2).join('.') : '…'}
         </span>
       </div>
 
@@ -98,7 +107,7 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
             key={s.name}
             source={s}
             active={onStream && s.name === activeSource}
-            rate={rates[s.name] ?? null}
+            rate={down ? null : (rates[s.name] ?? null)}
           />
         ))}
         <Link
@@ -109,15 +118,20 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
         </Link>
       </div>
 
-      <div
-        className={cn(
-          'flex h-11 items-center justify-between border-sidebar-border border-t px-4 font-mono text-[11px] text-muted-foreground',
+      <div className="relative">
+        <UserMenu />
+        {onOpenShortcuts && (
+          <button
+            type="button"
+            aria-label="Keyboard shortcuts (?)"
+            title="Keyboard shortcuts (?)"
+            onClick={onOpenShortcuts}
+            className="absolute top-1/2 right-3 flex size-7 -translate-y-1/2 items-center justify-center text-muted-foreground hover:text-foreground [&_svg]:size-4"
+          >
+            <KeyboardIcon />
+          </button>
         )}
-      >
-        <ReceiverBadge health={health} />
-        <span>{health ? `${health.store} store` : ''}</span>
       </div>
-      <UserMenu />
     </aside>
   )
 }
