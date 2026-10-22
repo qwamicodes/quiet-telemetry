@@ -10,7 +10,17 @@ const sources: SourceInfo[] = [
   { name: 'api', kind: 'http', containers: [], group: null, lines: 2, last_ts: Date.now() },
   { name: 'worker', kind: 'docker', containers: ['proj-worker-1'], group: 'proj', lines: 0, last_ts: null },
 ]
-const health: Health = { ok: true, version: '0.1.0', started: 0, docker: { state: 'disabled' }, store: 'memory' }
+const health: Health = {
+  ok: true,
+  version: '0.1.0',
+  started: 0,
+  docker: { state: 'disabled' },
+  store: 'memory',
+  retention_ms: 86_400_000,
+  disk_bytes: 0,
+  stored_lines: 0,
+  oldest: null,
+}
 
 const lines: LogLine[] = [
   {
@@ -154,6 +164,23 @@ describe('popups (every Base UI popup the app uses opens without crashing)', () 
     await user.unhover(screen.getByRole('button', { name: 'error and above' }))
     await user.hover(screen.getByRole('button', { name: 'Copy raw line' }))
     expect(await screen.findByText('Copy raw line')).toBeInTheDocument()
+  })
+
+  it('stream export (Dialog + RadioGroup + Switch) opens from the top bar for this source', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await screen.findByText('slow query')
+    await user.click(screen.getByRole('button', { name: 'Export these lines' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Export lines')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('radio', { name: 'JSON array' }))
+    await user.click(within(dialog).getByRole('switch', { name: 'Include raw line' }))
+    const href = within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? ''
+    expect(href).toContain('source=api')
+    expect(href).toContain('format=json')
+    expect(href).toContain('raw=1')
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
   it('settings toggles the theme', async () => {

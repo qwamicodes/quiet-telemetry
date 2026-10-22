@@ -1,5 +1,16 @@
 import { z } from 'zod'
-import type { CorrId, DockerStatus, Health, Level, LogLine, SourceInfo, SourcesResponse } from '@/gen'
+import type {
+  Bucket,
+  CorrId,
+  DockerStatus,
+  ExportTokenResponse,
+  Health,
+  Level,
+  LogLine,
+  SearchResponse,
+  SourceInfo,
+  SourcesResponse,
+} from '@/gen'
 
 /**
  * Runtime checks for what the server sends over REST. The TypeScript types are
@@ -43,6 +54,10 @@ export const health = z.object({
   started: z.number(),
   docker: dockerStatus,
   store: z.string(),
+  retention_ms: z.number(),
+  disk_bytes: z.number(),
+  stored_lines: z.number(),
+  oldest: z.number().nullable(),
 }) satisfies z.ZodType<Health>
 
 export const sourceInfo = z.object({
@@ -55,3 +70,28 @@ export const sourceInfo = z.object({
 }) satisfies z.ZodType<SourceInfo>
 
 export const sourcesResponse = z.object({ sources: z.array(sourceInfo) }) satisfies z.ZodType<SourcesResponse>
+
+export const bucket = z.object({
+  start: z.number(),
+  count: z.number(),
+  warn: z.number(),
+  error: z.number(),
+}) satisfies z.ZodType<Bucket>
+
+export const searchResponse = z.object({
+  lines: z.array(logLine),
+  next_cursor: z.string().nullable(),
+  total: z.number().nullable(),
+  bytes: z.number().nullable(),
+  histogram: z.array(bucket).nullable(),
+  searched: z.number(),
+  took_ms: z.number(),
+  since: z.number(),
+  until: z.number(),
+}) satisfies z.ZodType<SearchResponse>
+
+export const exportTokenResponse = z.object({
+  token: z.string().startsWith('qx_'),
+  expires_at: z.number(),
+  path: z.string().startsWith('/api/export?'),
+}) satisfies z.ZodType<ExportTokenResponse>

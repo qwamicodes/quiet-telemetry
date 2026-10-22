@@ -1,5 +1,6 @@
 import { getRouteApi } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ExportDialog } from '@/components/export-dialog'
 import { FieldCard } from '@/components/field-card'
 import { ConnectionBanner, GapBanner } from '@/components/stream/connection-banner'
 import { FilterBar } from '@/components/stream/filter-bar'
@@ -40,6 +41,7 @@ export function StreamPage() {
   const [follow, setFollow] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const filterRef = useRef<HTMLInputElement>(null)
+  const [exporting, setExporting] = useState(false)
 
   // A new source starts fresh: nothing selected, following the live edge.
   const [shownSource, setShownSource] = useState(source)
@@ -99,6 +101,7 @@ export function StreamPage() {
         state={live}
         rate={source ? (rates[source] ?? null) : null}
         onTogglePause={() => setFollow((f) => !f)}
+        onExport={source ? () => setExporting(true) : undefined}
       />
       <FilterBar
         text={text}
@@ -136,6 +139,36 @@ export function StreamPage() {
         )}
       </div>
       <StreamFooter state={live} count={lines.length} />
+      {source && exporting && (
+        <ExportDialog
+          open={exporting}
+          onOpenChange={setExporting}
+          title="Export lines"
+          description="What you see in the stream: this source, these filters, this time range."
+          params={{
+            source,
+            level: level || undefined,
+            q: search.q,
+            since: lines[0]?.ts ?? Date.now() - 15 * 60_000,
+            until: Date.now(),
+          }}
+          summary={
+            <>
+              <div className="flex min-h-7 items-center gap-3 border-border/60 border-b py-1">
+                <span className="w-24 shrink-0 font-mono text-muted-foreground text-xs">source</span>
+                <span className="border px-1.5 font-mono text-xs">{source}</span>
+                <span className="font-mono text-muted-foreground text-xs">{info?.kind}</span>
+              </div>
+              <div className="flex min-h-7 items-center gap-3 border-border/60 border-b py-1">
+                <span className="w-24 shrink-0 font-mono text-muted-foreground text-xs">filters</span>
+                <span className="truncate font-mono text-xs">
+                  {[level && `level ≥${level}`, search.q && `“${search.q}”`].filter(Boolean).join(' · ') || 'none'}
+                </span>
+              </div>
+            </>
+          }
+        />
+      )}
     </div>
   )
 }
