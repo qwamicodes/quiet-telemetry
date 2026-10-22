@@ -34,4 +34,10 @@ keep_non_json: boolean,
 /**
  * Settings → About checks GitHub releases from the browser when on.
  */
-check_updates: boolean, };
+check_updates: boolean, 
+/**
+ * Include muted lines in search results (dimmed, tagged `muted`) for
+ * sources that don't decide for themselves. `null` = the
+ * `--search-include-muted` flag, else off. In effect: [`MutedSearch`].
+ */
+search_include_muted: boolean | null, };
