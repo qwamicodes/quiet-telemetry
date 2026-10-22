@@ -15,8 +15,9 @@ use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fmt;
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Trace,
@@ -55,16 +56,27 @@ impl Level {
     }
 }
 
+/// Canonical correlation-id key. Order is display priority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)] // they mirror the wire keys
+pub enum IdKey {
+    RequestId,
+    JobId,
+    TraceId,
+    CorrelationId,
+}
+
 /// One correlation id found on a line, with its canonical key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 pub struct CorrId {
-    pub key: &'static str,
+    pub key: IdKey,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct LogLine {
-    /// Monotonic per server process; assigned by the hub.
+    /// Monotonic per server process; assigned by the pipeline.
     pub id: u64,
     /// Event time, unix ms.
     pub ts: i64,
@@ -80,10 +92,12 @@ pub struct LogLine {
     pub msg: String,
     /// Parsed JSON object, when the line was JSON.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "Record<string, unknown>")]
     pub fields: Option<Value>,
     pub raw: String,
     /// Oddities worth showing in the Raw view, e.g. `duplicate_key:timestamp`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
     pub flags: Vec<String>,
 }
 
@@ -92,9 +106,9 @@ const LEVEL_KEYS: &[&str] = &["level", "lvl", "severity", "log.level", "levelnam
 const MSG_KEYS: &[&str] = &["msg", "message", "event"];
 
 /// Canonical id key and the spellings that map to it, in display priority.
-const ID_KEYS: &[(&str, &[&str])] = &[
+const ID_KEYS: &[(IdKey, &[&str])] = &[
     (
-        "request_id",
+        IdKey::RequestId,
         &[
             "request_id",
             "requestId",
@@ -105,10 +119,13 @@ const ID_KEYS: &[(&str, &[&str])] = &[
             "x_request_id",
         ],
     ),
-    ("job_id", &["job_id", "jobId", "jobID"]),
-    ("trace_id", &["trace_id", "traceId", "traceID", "trace.id"]),
+    (IdKey::JobId, &["job_id", "jobId", "jobID"]),
     (
-        "correlation_id",
+        IdKey::TraceId,
+        &["trace_id", "traceId", "traceID", "trace.id"],
+    ),
+    (
+        IdKey::CorrelationId,
         &[
             "correlation_id",
             "correlationId",
@@ -213,7 +230,7 @@ fn collect_ids(map: &Map<String, Value>, depth: usize, out: &mut Vec<CorrId>) {
                     _ => continue,
                 };
                 if !out.iter().any(|i| i.key == *canon && i.value == value) {
-                    out.push(CorrId { key: canon, value });
+                    out.push(CorrId { key: *canon, value });
                 }
             }
         }
@@ -416,10 +433,10 @@ mod tests {
             NOW,
         );
         let keys: Vec<_> = l.ids.iter().map(|i| (i.key, i.value.as_str())).collect();
-        assert!(keys.contains(&("job_id", "42")));
-        assert!(keys.contains(&("request_id", "req_1")));
-        assert!(keys.contains(&("trace_id", "t1")));
-        assert_eq!(l.display_id.unwrap().key, "request_id");
+        assert!(keys.contains(&(IdKey::JobId, "42")));
+        assert!(keys.contains(&(IdKey::RequestId, "req_1")));
+        assert!(keys.contains(&(IdKey::TraceId, "t1")));
+        assert_eq!(l.display_id.unwrap().key, IdKey::RequestId);
     }
 
     #[test]

@@ -11,6 +11,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+rust-embed = { version = "8", features = ["mime-guess"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 axum = { version = "0.7", features = ["ws"] }
 bollard = "0.17"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
@@ -18,7 +23,7 @@ futures-util = "0.3"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
-tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "trace", "compression-gzip", "compression-br", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1"
