@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 use std::fmt;
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Trace,
@@ -70,7 +70,7 @@ impl Level {
 }
 
 /// Canonical correlation-id key. Order is display priority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[allow(clippy::enum_variant_names)] // they mirror the wire keys
 pub enum IdKey {
@@ -212,9 +212,13 @@ pub fn normalize(raw: &str, source: &str, collector_ts: Option<i64>, received: i
 
     let mut ids = Vec::new();
     collect_ids(&map, 0, &mut ids);
-    let display_id = ID_KEYS
+    // Which keys count for this source, and in what order (Settings → Flow id
+    // order, per-source override). The default keeps every key, request_id first.
+    let order = crate::idpolicy::order_for(source);
+    ids.retain(|i| order.contains(&i.key));
+    let display_id = order
         .iter()
-        .find_map(|(canon, _)| ids.iter().find(|i| i.key == *canon).cloned());
+        .find_map(|canon| ids.iter().find(|i| i.key == *canon).cloned());
 
     let msg = summarize(&map).unwrap_or_else(|| truncate(&raw, 400));
 
