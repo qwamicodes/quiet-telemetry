@@ -15,7 +15,8 @@ use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/../web/dist"]
+// Relative to server/Cargo.toml.
+#[folder = "../web/dist"]
 #[allow_missing = true]
 struct Assets;
 
@@ -140,9 +141,12 @@ mod tests {
 
     #[tokio::test]
     async fn hashed_assets_are_immutable_and_etag_revalidates() {
-        // Only meaningful when the UI was built before the server.
+        // Only meaningful when the UI was built before the server. CI builds it
+        // first and sets QUIET_EXPECT_UI=1 so a broken embed fails loudly.
+        let expect = std::env::var("QUIET_EXPECT_UI").is_ok_and(|v| v == "1");
         let Some(asset) = Assets::iter().find(|p| p.starts_with("assets/") && p.ends_with(".js"))
         else {
+            assert!(!expect, "web/dist is not embedded");
             return;
         };
         let res = get(&format!("/{asset}"), None).await;

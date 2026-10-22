@@ -25,6 +25,16 @@ pub enum Command {
     Server(ServerArgs),
     /// Ship this host's container logs to a quiet server (v0.2).
     Agent(AgentArgs),
+    /// Exit 0 when the local server answers /ready (for container healthchecks).
+    #[command(hide = true)]
+    Healthcheck(HealthcheckArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct HealthcheckArgs {
+    /// The server's listen address; 0.0.0.0 is checked on loopback.
+    #[arg(long, env = "QUIET_ADDR", default_value = "127.0.0.1:7070")]
+    pub addr: SocketAddr,
 }
 
 #[derive(Debug, Clone, Args)]
