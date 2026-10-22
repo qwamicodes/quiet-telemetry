@@ -70,15 +70,27 @@ jobs:
         run: |
           docker run -d --name quiet-smoke -e QUIET_DOCKER=0 -p 7070:7070 quiet:ci
           for i in $(seq 1 20); do curl -fs localhost:7070/ready && break; sleep 1; done
-          curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci' --data-binary '{"msg":"hello"}'
+          # Ingest needs a qi_ token: none → 401; create one through the API.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:7070/ingest/ndjson --data-binary x)" = 401 ]
+          TOKEN=$(curl -fs -X POST localhost:7070/api/ingest-tokens -H 'content-type: application/json' -d '{"name":"ci"}' | sed -E 's/.*"secret":"([^"]+)".*/\1/')
+          case "$TOKEN" in qi_*) ;; *) echo "no token: $TOKEN"; exit 1 ;; esac
+          AUTH="Authorization: Bearer $TOKEN"
+          curl -fs -X POST localhost:7070/ingest/ndjson -H "$AUTH" -H 'X-Quiet-Source: ci' --data-binary '{"msg":"hello"}'
           curl -fs localhost:7070/api/sources/ci/lines | grep -q hello
           # SQLite search + export (the writer commits within milliseconds).
           sleep 1
           curl -fs 'localhost:7070/api/search?q=hello' | grep -q hello
           curl -fs 'localhost:7070/api/export?format=csv&columns=msg' | grep -q hello
+          # Vector (envelope unwrapped, gzip) and OTLP/HTTP JSON land as their own sources.
+          printf '%s\n' '{"container_name":"/ci-edge","message":"{\"msg\":\"via vector\"}","source_type":"docker_logs"}' | gzip | curl -fs -X POST localhost:7070/ingest/vector -H "$AUTH" -H 'Content-Encoding: gzip' --data-binary @-
+          curl -fs -X POST localhost:7070/v1/logs -H "$AUTH" -H 'Content-Type: application/json' --data-binary '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"ci-otlp"}}]},"scopeLogs":[{"logRecords":[{"severityNumber":9,"body":{"stringValue":"via otlp"}}]}]}]}'
+          sleep 1
+          curl -fs 'localhost:7070/api/search?q=via' | grep -q '"source":"ci-edge"'
+          curl -fs 'localhost:7070/api/search?q=via' | grep -q '"source":"ci-otlp"'
+          curl -fs localhost:7070/api/ingest-tokens | grep -q '"last_used":1'
           # Flows: a request and its job stitch by request_id.
-          curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci-api' --data-binary '{"msg":"POST /orders","request_id":"req_ci"}'
-          curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci-worker' --data-binary '{"msg":"job done","job_id":"job_ci","data":{"request_id":"req_ci"}}'
+          curl -fs -X POST localhost:7070/ingest/ndjson -H "$AUTH" -H 'X-Quiet-Source: ci-api' --data-binary '{"msg":"POST /orders","request_id":"req_ci"}'
+          curl -fs -X POST localhost:7070/ingest/ndjson -H "$AUTH" -H 'X-Quiet-Source: ci-worker' --data-binary '{"msg":"job done","job_id":"job_ci","data":{"request_id":"req_ci"}}'
           curl -fs 'localhost:7070/api/flow?id=job_ci' | grep -q '"line_count":2'
           curl -fs localhost:7070/ | grep -q '<div id="root">'
           for i in $(seq 1 40); do [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ] && break; sleep 1; done
