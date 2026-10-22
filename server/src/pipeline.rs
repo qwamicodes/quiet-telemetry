@@ -3,7 +3,9 @@
 
 use crate::hub::{Hub, Line, SourceKind};
 use crate::normalize::normalize;
+use crate::settings::Settings;
 use crate::store::Store;
+use crate::system::SystemState;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -32,18 +34,41 @@ impl RawLine {
 pub struct Pipeline {
     store: Arc<dyn Store>,
     hub: Arc<Hub>,
+    /// Live instance settings (paused sources, retention, id policy).
+    settings: Arc<Settings>,
+    /// Counters the system status reads: rejected requests, paused drops, store errors.
+    system: Arc<SystemState>,
     /// Next line id. Held across store + broadcast so ids reach subscribers in
     /// order; the stream dedupes its backlog against live lines by id.
     next_id: Mutex<u64>,
 }
 
 impl Pipeline {
+    /// With in-memory settings (tests, and anything that never changes them).
     pub fn new(store: Arc<dyn Store>, hub: Arc<Hub>) -> Arc<Self> {
+        Self::with_settings(store, hub, Arc::new(Settings::memory()))
+    }
+
+    pub fn with_settings(
+        store: Arc<dyn Store>,
+        hub: Arc<Hub>,
+        settings: Arc<Settings>,
+    ) -> Arc<Self> {
         Arc::new(Pipeline {
             store,
             hub,
+            settings,
+            system: Arc::new(SystemState::default()),
             next_id: Mutex::new(1),
         })
+    }
+
+    pub fn settings(&self) -> &Arc<Settings> {
+        &self.settings
+    }
+
+    pub fn system(&self) -> &Arc<SystemState> {
+        &self.system
     }
 
     /// Carry on after a restart: ids continue past the last stored one and
@@ -75,6 +100,25 @@ impl Pipeline {
         kind: SourceKind,
         raws: impl IntoIterator<Item = RawLine>,
     ) -> anyhow::Result<Vec<Line>> {
+        // Paused sources (Sources → Settings → Pause ingest) are dropped and
+        // counted before any parsing.
+        let mut paused: Vec<(String, u64)> = Vec::new();
+        let raws: Vec<RawLine> = raws
+            .into_iter()
+            .filter(|r| {
+                if !self.settings.paused(&r.source) {
+                    return true;
+                }
+                match paused.iter_mut().find(|(s, _)| *s == r.source) {
+                    Some((_, n)) => *n += 1,
+                    None => paused.push((r.source.clone(), 1)),
+                }
+                false
+            })
+            .collect();
+        for (source, n) in paused {
+            self.system.paused_drop(&source, n);
+        }
         // Parse outside the lock; it is the expensive part.
         let mut lines: Vec<_> = raws
             .into_iter()
@@ -92,7 +136,10 @@ impl Pipeline {
                 Arc::new(l)
             })
             .collect();
-        self.store.append(kind, &lines).await?;
+        if let Err(e) = self.store.append(kind, &lines).await {
+            self.system.store_error(&e);
+            return Err(e);
+        }
         for line in &lines {
             self.hub.broadcast(line, kind);
         }
@@ -122,5 +169,35 @@ mod tests {
         assert_eq!(tail.iter().map(|l| l.id).collect::<Vec<_>>(), vec![3, 4, 5]);
         assert_eq!(hub.source("api").unwrap().meta().lines, 5);
         assert_eq!(rx.recv().await.unwrap().id, 1);
+    }
+
+    #[tokio::test]
+    async fn paused_sources_are_dropped_and_counted() {
+        let p = Pipeline::new(Arc::new(MemoryStore::new(10)), Hub::new());
+        p.settings()
+            .put_source(
+                "noisy",
+                crate::settings::SourceSettings {
+                    paused: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let got = p
+            .ingest(
+                SourceKind::Http,
+                [
+                    RawLine::new("a", "noisy", 1),
+                    RawLine::new("b", "api", 1),
+                    RawLine::new("c", "noisy", 1),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source, "api");
+        assert!(p.store().tail("noisy", 10).await.unwrap().is_empty());
+        assert_eq!(p.system().paused_dropped("noisy"), 2);
     }
 }
