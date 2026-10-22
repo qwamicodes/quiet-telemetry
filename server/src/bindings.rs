@@ -39,6 +39,7 @@ fn export_into(dir: &Path) {
     StreamStats::export_all(&cfg).unwrap();
     SourceFields::export_all(&cfg).unwrap();
     IdCoverageReport::export_all(&cfg).unwrap();
+    crate::lint::LintReport::export_all(&cfg).unwrap();
     Health::export_all(&cfg).unwrap();
     About::export_all(&cfg).unwrap();
     GroupingPreview::export_all(&cfg).unwrap();

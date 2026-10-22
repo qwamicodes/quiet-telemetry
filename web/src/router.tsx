@@ -17,6 +17,7 @@ import { connectSearch } from '@/lib/connect'
 import {
   flowParams,
   flowSearch,
+  guideSearch,
   lineParams,
   searchSearch,
   sourceParams,
@@ -143,6 +144,13 @@ export const connectRoute = createRoute({
   component: ConnectPage,
 })
 
+export const guideRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/guide',
+  validateSearch: guideSearch,
+  component: lazyRouteComponent(() => import('@/routes/guide'), 'GuidePage'),
+})
+
 const sourcesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sources',
@@ -215,6 +223,7 @@ export const routeTree = rootRoute.addChildren([
   flowRoute,
   lineRoute,
   connectRoute,
+  guideRoute,
   sourcesRoute,
   sourceDetailRoute,
   settingsRoute.addChildren([

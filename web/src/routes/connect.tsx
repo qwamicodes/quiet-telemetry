@@ -1,6 +1,7 @@
 import { getRouteApi, Link } from '@tanstack/react-router'
 import {
   ArrowRightIcon,
+  BookOpenIcon,
   CheckIcon,
   ClockIcon,
   EyeIcon,
@@ -422,6 +423,9 @@ export function ConnectPage() {
               Running on Dokploy, Coolify or plain compose? Pick Docker. Already have a log pipeline? Point Vector or
               Fluent Bit at quiet.
             </p>
+            <Link to="/guide" className="text-brand text-xs hover:underline">
+              How quiet works · get your app's logs flow-ready →
+            </Link>
           </div>
         </div>
         {/* A new kind starts a fresh panel (its own token, its own wait). */}
@@ -479,6 +483,19 @@ export function Welcome() {
           <CopyButton text={pipe} variant="ghost" what="Command" />
         </div>
       </div>
+      <Link
+        to="/guide"
+        className="flex max-w-155 items-center gap-3 border border-brand/60 bg-brand/5 px-4 py-3 text-sm hover:bg-brand/10"
+      >
+        <BookOpenIcon className="size-4 text-brand" />
+        <span className="flex-1">
+          New to quiet?{' '}
+          <span className="text-muted-foreground">
+            How it works, and one prompt that makes your app's logs flow-ready.
+          </span>
+        </span>
+        <span className="text-brand">Read the guide →</span>
+      </Link>
       <p className="font-mono text-[11px] text-muted-foreground">
         self-hosted · {window.location.host} · {health ? `${Math.round(health.retention_ms / 3_600_000)}h` : '24h'}{' '}
         searchable window

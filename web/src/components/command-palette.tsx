@@ -1,7 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import {
+  BookOpenIcon,
+  CopyIcon,
   CornerDownLeftIcon,
+  GaugeIcon,
   GitForkIcon,
   KeyboardIcon,
   MoonIcon,
@@ -30,6 +33,7 @@ import { fetchJson, useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, isRecent } from '@/lib/format'
+import { copyPrompt, stackNow } from '@/lib/guide'
 import { searchResponse } from '@/lib/schemas'
 import { groupSources, KIND_TAG } from '@/lib/source-groups'
 import { useTheme } from '@/lib/theme'
@@ -259,6 +263,30 @@ export function CommandPalette({
                 <CommandShortcut>?</CommandShortcut>
               </CommandItem>
             )}
+            <CommandItem
+              value="guide how to use quiet help docs"
+              onSelect={() => run(() => navigate({ to: '/guide' }))}
+            >
+              <BookOpenIcon />
+              Guide · how to use quiet
+              <CommandShortcut>G H</CommandShortcut>
+            </CommandItem>
+            <CommandItem
+              value="check my logs lint scorecard guide"
+              onSelect={() => run(() => navigate({ to: '/guide', search: { tab: 'check' } }))}
+            >
+              <GaugeIcon />
+              Check my logs
+              <CommandShortcut>G L</CommandShortcut>
+            </CommandItem>
+            <CommandItem
+              value="copy agent prompt logging instrument"
+              onSelect={() => run(() => void copyPrompt(stackNow()))}
+            >
+              <CopyIcon />
+              Copy the agent logging prompt
+              <CommandShortcut>⌘⇧C</CommandShortcut>
+            </CommandItem>
             <CommandItem value="settings" onSelect={() => run(() => navigate({ to: '/settings' }))}>
               <SettingsIcon />
               Settings

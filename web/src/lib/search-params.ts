@@ -90,3 +90,12 @@ export type SourcesSearch = z.infer<typeof sourcesSearch>
 export const sourceSearch = z.object({
   tab: z.enum(['rejected', 'malformed', 'settings']).optional().catch(undefined),
 })
+
+/** `/guide?tab=&source=` (boards v0.1-11.x). */
+export const guideTab = z.enum(['overview', 'agent', 'canonical', 'ids', 'check'])
+export type GuideTab = z.infer<typeof guideTab>
+export const guideSearch = z.object({
+  tab: guideTab.optional().catch(undefined),
+  source: z.string().max(300).optional().catch(undefined),
+})
+export type GuideSearch = z.infer<typeof guideSearch>

@@ -133,6 +133,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stream", get(stream))
         .merge(crate::search_api::routes())
         .merge(crate::stream_api::routes())
+        .merge(crate::lint::routes())
         .merge(crate::flow_api::routes())
         .merge(crate::tokens_api::routes())
         .merge(crate::settings_api::routes())

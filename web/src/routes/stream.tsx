@@ -402,7 +402,13 @@ export function StreamPage() {
             !source ? (
               <span className="text-muted-foreground">Waiting for the first source…</span>
             ) : quiet ? (
-              <QuietState name={sourceName} last={newest} onShow={() => setShowOld(true)} hasLines={lines.length > 0} />
+              <QuietState
+                name={sourceName}
+                source={source ?? ''}
+                last={newest}
+                onShow={() => setShowOld(true)}
+                hasLines={lines.length > 0}
+              />
             ) : filtered ? (
               <NoMatches
                 source={sourceName}
@@ -414,7 +420,12 @@ export function StreamPage() {
                 onRemove={removeChip}
               />
             ) : (
-              <span className="text-muted-foreground">No lines yet. New lines appear here as they arrive.</span>
+              <span className="flex flex-col items-center gap-2 text-muted-foreground">
+                No lines yet. New lines appear here as they arrive.
+                <Link to="/guide" className="text-brand text-xs hover:underline">
+                  New here? How quiet works and the agent prompt →
+                </Link>
+              </span>
             )
           }
         />
@@ -528,11 +539,13 @@ function NoMatches({
 /** Connected and healthy, just nothing new (design 08.5). */
 function QuietState({
   name,
+  source,
   last,
   hasLines,
   onShow,
 }: {
   name: string
+  source: string
   last: number | null
   hasLines: boolean
   onShow: () => void
@@ -558,6 +571,9 @@ function QuietState({
           </>
         )}
       </p>
+      <Link to="/guide" search={{ tab: 'check', source }} className="text-brand text-xs hover:underline">
+        Check {name}'s logs against the canonical line →
+      </Link>
     </div>
   )
 }

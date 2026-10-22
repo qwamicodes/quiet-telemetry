@@ -8,9 +8,10 @@ import { ServerUnreachableBanner } from '@/components/stream/connection-banner'
 import { SystemBanners } from '@/components/system-banners'
 import { useAuth } from '@/lib/auth-api'
 import { setDisplayTimeZone, setPublicUrl, setTimestampStyle } from '@/lib/format'
+import { copyPrompt, stackNow } from '@/lib/guide'
 import { useSettings } from '@/lib/settings-api'
 import { useTheme } from '@/lib/theme'
-import { useHotkeys } from '@/lib/use-hotkeys'
+import { useHotkeys, useKeySequences } from '@/lib/use-hotkeys'
 
 /** Instance-wide display settings: tab title and timezone. */
 function useInstanceDisplay() {
@@ -40,6 +41,12 @@ export function AppShell() {
     'mod+/': () => navigate({ to: '/search' }),
     s: () => navigate({ to: '/sources' }),
     t: toggle,
+    // ⌘⇧C copies the agent logging prompt anywhere (Guide boards 11.x).
+    'mod+shift+c': () => void copyPrompt(stackNow()),
+  })
+  useKeySequences({
+    'g h': () => navigate({ to: '/guide' }),
+    'g l': () => navigate({ to: '/guide', search: { tab: 'check' } }),
   })
   useInstanceDisplay()
 

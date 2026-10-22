@@ -10,6 +10,7 @@ mod flow_api;
 mod grouping;
 mod hub;
 mod idpolicy;
+mod lint;
 mod normalize;
 mod pipe;
 mod pipeline;

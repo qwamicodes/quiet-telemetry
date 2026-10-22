@@ -2,5 +2,6 @@
 
 /**
  * A built-in correlation-id key (the TypeScript side's `BuiltinIdKey`).
+ * Only exported to TypeScript; Rust code uses [`IdKey`] directly.
  */
 export type BuiltinIdKey = "request_id" | "job_id" | "trace_id" | "correlation_id";

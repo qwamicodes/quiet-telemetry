@@ -1,5 +1,14 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { ChevronsDownUpIcon, KeyboardIcon, PlugIcon, PlusIcon, RowsIcon, SearchIcon, SettingsIcon } from 'lucide-react'
+import {
+  BookOpenIcon,
+  ChevronsDownUpIcon,
+  KeyboardIcon,
+  PlugIcon,
+  PlusIcon,
+  RowsIcon,
+  SearchIcon,
+  SettingsIcon,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Logo } from '@/components/logo'
 import { SourceGroupHeader } from '@/components/source-group-header'
@@ -18,7 +27,7 @@ function NavItem({
   badge,
   children,
 }: {
-  to: '/' | '/search' | '/sources' | '/settings'
+  to: '/' | '/search' | '/sources' | '/settings' | '/guide'
   icon: ReactNode
   badge?: string
   children: ReactNode
@@ -26,7 +35,7 @@ function NavItem({
   return (
     <Link
       to={to}
-      activeOptions={{ exact: to !== '/settings', includeSearch: false }}
+      activeOptions={{ exact: to !== '/settings' && to !== '/guide', includeSearch: false }}
       className="flex h-7 items-center gap-2.5 px-3 text-sidebar-foreground outline-none hover:bg-sidebar-accent focus-visible:bg-sidebar-accent data-[status=active]:bg-sidebar-accent data-[status=active]:text-foreground [&_svg]:size-3.5"
     >
       {icon}
@@ -95,6 +104,9 @@ export function Sidebar({
         </NavItem>
         <NavItem to="/settings" icon={<SettingsIcon />}>
           Settings
+        </NavItem>
+        <NavItem to="/guide" icon={<BookOpenIcon />}>
+          Guide
         </NavItem>
       </nav>
 
