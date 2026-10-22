@@ -12,8 +12,8 @@ Built in slices. Each slice is one PR to `main`, tested locally first, then prom
 |---|---|---|
 | 1 | Docker receiver → normalize → per-source ring → WebSocket → stream view | merged |
 | — | Foundation: CLI, Receiver/Store traits, embedded UI, shared types, UI kit | merged |
-| 2 | SQLite (WAL, hourly partitions) + FTS5 search over the window, export (NDJSON/JSON/CSV, Copy curl), retention + disk cap job | this PR |
-| 3 | Flows: stitch lines by every correlation id, field card | |
+| 2 | SQLite (WAL, hourly partitions) + FTS5 search over the window, export (NDJSON/JSON/CSV, Copy curl), retention + disk cap job | PR #4 |
+| 3 | Flows: stitch lines by every correlation id (request ↔ job), step nodes + timeline, field card per node, search grouped by flow | this PR |
 | 4 | HTTP ingest: Vector / Fluent Bit NDJSON, OTLP/HTTP logs + spans, ingest tokens | |
 | 5 | Accounts: owner first-run, members, copy-link invites | |
 | 6 | Settings UI for retention / disk cap (the job itself ships in 2), storage + per-source settings | |
@@ -56,7 +56,7 @@ Open http://127.0.0.1:7070. The first build takes a few minutes (Rust); later on
 What you should see:
 - Sources on the left: `sample-api`, `sample-worker`, plus every other container running on your machine.
 - Pick `sample-api`: new lines arrive every second, newest at the bottom.
-- Click a line: the field card opens (Fields / JSON / Raw). Lines sharing a `request_id` with `sample-worker` are what flows will stitch (slice 3).
+- Click a line: the field card opens (Fields / JSON / Raw). Press **Enter** (or the fork icon on the card) to open it as a flow: the API request, the `sample-worker` job it enqueued (same `request_id`) and the job's retries, as step nodes with a timeline.
 - **Search** (sidebar): try `payout level:>=warn`, click a `request_id` value to narrow, switch *Group by flow* / *Lines*, then **Export** (CSV, gzip, Copy curl).
 - Restart (`make down && make up`): the sources, ids and search history are still there (the `quiet-data` volume).
 
@@ -168,6 +168,7 @@ Server (`server/src`, one crate):
 - `receiver/`: the `Receiver` trait. Pull receivers (`docker.rs`) run a loop; push receivers (`http.rs`) mount routes. OTLP and the v0.2 agent are new impls here.
 - `pipeline.rs`: the only path a line takes: normalize → `Store::append` → hub broadcast, ids assigned in order.
 - `store/`: the `Store` trait (`append`, `query` live tail, `search`, `expire`, `enforce_cap`, `flush`, `restore`, `usage`), `MemoryStore` (bounded ring per source; tests and `--store memory`) and `SqliteStore` (hourly partitions, FTS5, id index, ring in front). Per-minute rollups become another pipeline stage.
+- `flow.rs`: stitching (a bounded walk over the id index) and shaping lines into step nodes + edges; `flow_api.rs`: `/api/flow`, `/api/flow-summaries`.
 - `search.rs`: the query language and `SearchQuery`; `search_api.rs`: `/api/search`, `/api/export`, export tokens; `export.rs`: formats, PII masking, `qx_` tokens; `retention.rs`: the hourly drop job.
 - `hub.rs`: source registry + per-source broadcast channel.
 - `api.rs`: `/health`, `/ready`, `/api/*`, the stream WebSocket.
@@ -175,9 +176,9 @@ Server (`server/src`, one crate):
 - `server.rs`: wiring and graceful shutdown (SIGTERM → `/ready` 503 → drain → close streams with 1012 → stop receivers → timeout).
 - `bindings.rs`: ts-rs exports the wire types to `web/src/gen/`; a test fails when they are stale (`make types` regenerates).
 
-Web (`web/src`): React 19 + Vite + TypeScript, Tailwind v4 and shadcn/ui (Lyra) on Base UI, TanStack Router (`/`, `/search`, `/flow/$id`, `/settings`; search params are zod schemas), TanStack Query, TanStack Virtual, cmdk (⌘K), sileo (toasts), zod, lucide. `routes/` are pages, `components/` small pieces (`components/ui/` is the shadcn kit), `lib/` hooks and helpers (`use-stream.ts` is the WebSocket with jittered backoff). Biome lints and formats; Vitest + Testing Library test.
+Web (`web/src`): React 19 + Vite + TypeScript, Tailwind v4 and shadcn/ui (Lyra) on Base UI, TanStack Router (`/`, `/search`, `/flow/$id`, `/line/$lineId`, `/settings`; search params are zod schemas), TanStack Query, TanStack Virtual, cmdk (⌘K), sileo (toasts), zod, lucide. `routes/` are pages, `components/` small pieces (`components/ui/` is the shadcn kit), `lib/` hooks and helpers (`use-stream.ts` is the WebSocket with jittered backoff). Biome lints and formats; Vitest + Testing Library test.
 
-Keys: `/` filter · `j`/`k` move · `esc` close · `space` pause · `G` latest · `⌘K` jump.
+Keys: `/` filter · `j`/`k` move · `enter` open flow · `esc` close · `space` pause · `G` latest · `⌘K` jump.
 
 ## Releases
 
@@ -195,6 +196,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - Timestamp: `timestamp` / `time` / `ts` / `@timestamp` (ISO preferred, epoch s/ms/µs/ns ok), else Docker's timestamp, else arrival. Duplicate keys are tolerated and flagged.
 - Level: pino numbers (10–60) or names.
 - Every correlation id on the line is indexed (up to 4 levels deep, so a job's `data.request_id` counts). The row shows one by priority `request_id → job_id → trace_id → correlation_id`.
+
+## Flows
+
+A flow is every line that shares a correlation id (`request_id`, `job_id`, `trace_id`, `correlation_id`, any spelling the normalizer knows, up to 4 levels deep so `data.request_id` counts), stitched across ids:
+
+- Opening an id finds every line carrying it (the id index, all sources, the retention window), then follows the *other* ids on those lines. A worker line with `job_id` + `request_id` joins the request to its job, and the job's retry lines (which may carry only `job_id`) come along. Pass `request_id` into your BullMQ job data and log it on the worker.
+- The walk is bounded: 2 hops past the opened id, 64 ids, 1000 lines. Hitting a limit marks the flow "cut at the flow size limit" instead of failing, so a hot id (a constant `trace_id`) can't pull in the whole window.
+- Each line is a step node, ordered by when its work started (`time − duration_ms`; a canonical line is written when the work ends). `wideEvents.calls` / `wideEvents.steps` (`{name | provider+action, at_ms, duration_ms, ok, status, error}`) become child steps.
+- Edges: `next` within a source, `retry` between attempts of one job (`attempt` / `retry_attempt` rising; the gap is the backoff), `handoff` across sources labelled with the shared id.
+- A step is an error at level ≥ error, status ≥ 500 or `outcome: failed`; a warning at level warn, 4xx or `outcome: retry|timeout|partial|…`. The flow failed when the last step of any source (or the request) failed.
+- A line with one id and nothing else sharing it is a one-node flow: just its field card. A line with no ids opens the same way (`/line/<id>`).
+
+UI: `/flow/<id>?line=<line id>` (the step whose card is open) and `/line/<line id>`. `j`/`k` move between steps. The stream's **Steps** column and search's **Group by flow** use `/api/flow-summaries`, so a request and its job's retry lines land in one group ("2 of 5 lines match · 6 steps").
 
 ## Search
 
@@ -225,5 +239,7 @@ From the stream (top bar) or a search (Export): NDJSON (the raw lines; plain-tex
 - `GET /api/search?q=&source=a,b&level=&since=&until=&id=&order=newest|oldest&cursor=&limit=&buckets=` → `{ lines, next_cursor, total, bytes, histogram, searched, took_ms, since, until }`. Times are unix ms; missing bounds = the retention window ending now. `total`/`histogram` come with the first page when `buckets` is set.
 - `GET /api/export?<search params>&format=ndjson|json|csv&gzip=1&mask=pii&raw=1&columns=a,b` streams a file (oldest first). Optional `Authorization: Bearer qx_…`.
 - `POST /api/export/token {"query":"<export query string>"}` → `{ token, expires_at, path }`: a read-only `qx_` token for that one query, reusable for 15 minutes; only its SHA-256 is kept (in memory).
+- `GET /api/flow?id=<any id>` or `?line=<line id>` → `{ flow, since, until, took_ms }`: `flow` has the header numbers (`title`, `status`, `line_count`, `steps`, `sources`, `duration_ms`, `retries`, `stitched_by`, `truncated`), `nodes`, `edges`, the `lines` themselves, `missing_parent` (a request id the jobs carry whose own line isn't in the window) and `partial`. Unknown id → 404 `{ error, id, close: [{ key, value, msg, ts, source }] }` (ids with the same prefix). Ids go in the query string, so any id works.
+- `POST /api/flow-summaries {"ids":[…]}` (≤ 100) → `{ flows: [{ id, flow: <header numbers> | null }] }`; ids of one flow share its `key`.
 - `WS /api/stream?source=&backlog=&level=&q=` → frames `backlog`, `lines` (batched every 75 ms), `gap` (client fell behind)
 - `POST /ingest/ndjson` with `X-Quiet-Source`
