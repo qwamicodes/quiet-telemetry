@@ -17,6 +17,12 @@
 //! canonical line is written when the work ends), with child steps from
 //! `wideEvents.calls` / `wideEvents.steps`, edges inside a source (`next`,
 //! `retry`) and across sources (`handoff`, labelled with the shared id).
+//!
+//! Lines that carry OTLP span ids (spans from `/v1/traces`, or any line with
+//! `span_id` + `parent_span_id`) also form a span tree: each such node points
+//! at its parent span (`parent`, `depth`), and a `child` edge replaces the
+//! time-order edge into it. Log records carrying a `span_id` hang under that
+//! span.
 
 use crate::hub::Line;
 use crate::normalize::{CorrId, IdKey, Level, LogLine};
@@ -175,6 +181,8 @@ pub enum EdgeKind {
     Retry,
     /// Work moving to another source (request → worker), via a shared id.
     Handoff,
+    /// A span (or a log record) inside its parent span (trace_id span tree).
+    Child,
 }
 
 /// A step inside a line (`wideEvents.calls` / `wideEvents.steps`).
@@ -212,6 +220,12 @@ pub struct FlowNode {
     /// `attempt` / `retry_attempt` when the line carries one.
     pub attempt: Option<u32>,
     pub children: Vec<ChildStep>,
+    /// The OTLP span this line is (or was logged in), hex.
+    pub span_id: Option<String>,
+    /// The node of the parent span, when the flow has a span tree.
+    pub parent: Option<u32>,
+    /// Depth in the span tree (0 = a root, or no span tree).
+    pub depth: u32,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -271,6 +285,9 @@ pub struct Flow {
     /// Retention has been dropping hours and the flow starts within a minute
     /// of the oldest line still stored, so earlier lines may have expired.
     pub partial: bool,
+    /// Some nodes have a parent span: the flow reads as a span tree
+    /// (`parent` / `depth` on nodes, `child` edges).
+    pub span_tree: bool,
 }
 
 const DURATION_KEYS: &[&str] = &[
@@ -281,6 +298,27 @@ const DURATION_KEYS: &[&str] = &[
     "response_time_ms",
     "responseTime",
     "duration",
+];
+const METHOD_KEYS: &[&str] = &[
+    "method",
+    "http_method",
+    "http.request.method",
+    "http.method",
+];
+const PATH_KEYS: &[&str] = &[
+    "path",
+    "url",
+    "route",
+    "http.route",
+    "url.path",
+    "http.target",
+];
+const STATUS_KEYS: &[&str] = &[
+    "status",
+    "status_code",
+    "statusCode",
+    "http.response.status_code",
+    "http.status_code",
 ];
 const NAME_KEYS: &[&str] = &["operation", "step", "phase", "event", "name", "job_name"];
 const ATTEMPT_KEYS: &[&str] = &["attempt", "retry_attempt", "attemptsMade", "attempts"];
@@ -314,22 +352,19 @@ fn text(fields: Option<&Value>, keys: &[&str]) -> Option<String> {
 
 fn is_request(l: &LogLine) -> bool {
     let f = l.fields.as_ref();
-    text(f, &["method", "http_method"]).is_some() && text(f, &["path", "route", "url"]).is_some()
+    text(f, METHOD_KEYS).is_some() && text(f, PATH_KEYS).is_some()
 }
 
 fn step_name(l: &LogLine) -> String {
     let f = l.fields.as_ref();
-    if let (Some(m), Some(p)) = (
-        text(f, &["method", "http_method"]),
-        text(f, &["path", "url", "route"]),
-    ) {
+    if let (Some(m), Some(p)) = (text(f, METHOD_KEYS), text(f, PATH_KEYS)) {
         return format!("{m} {p}");
     }
     text(f, NAME_KEYS).unwrap_or_else(|| l.msg.clone())
 }
 
 fn status_of(l: &LogLine) -> Option<i64> {
-    num(l.fields.as_ref(), &["status", "status_code", "statusCode"]).map(|n| n as i64)
+    num(l.fields.as_ref(), STATUS_KEYS).map(|n| n as i64)
 }
 
 fn outcome_of(l: &LogLine) -> Option<String> {
@@ -478,6 +513,9 @@ pub fn build(st: Stitched, opened: Option<&str>, expiry_edge: Option<i64>) -> Fl
                 warn,
                 attempt,
                 children: children_of(l),
+                span_id: text(l.fields.as_ref(), &["span_id", "spanId"]),
+                parent: None,
+                depth: 0,
             }
         })
         .collect();
@@ -541,6 +579,8 @@ pub fn build(st: Stitched, opened: Option<&str>, expiry_edge: Option<i64>) -> Fl
         }
         last_in.insert(nodes[i].source.as_str(), i);
     }
+
+    let span_tree = span_tree(&mut nodes, &lines, &mut edges);
 
     // Title: the request, else the step name that repeats most (a job's
     // operation across its attempts), else the first step.
@@ -638,7 +678,67 @@ pub fn build(st: Stitched, opened: Option<&str>, expiry_edge: Option<i64>) -> Fl
         lines,
         missing_parent,
         partial: expiry_edge.is_some_and(|o| started - o < 60_000),
+        span_tree,
     }
+}
+
+/// Hang span nodes under their parent span and log records under their span;
+/// a `child` edge replaces the time-order edge into each. Returns whether
+/// any node found a parent.
+fn span_tree(nodes: &mut [FlowNode], lines: &[Line], edges: &mut Vec<FlowEdge>) -> bool {
+    let info: Vec<(Option<String>, Option<String>, bool)> = lines
+        .iter()
+        .map(|l| {
+            let f = l.fields.as_ref();
+            let span = text(f, &["span_id", "spanId"]);
+            let parent = text(f, &["parent_span_id", "parentSpanId"]);
+            let is_span = parent.is_some() || text(f, &["otel.type"]).as_deref() == Some("span");
+            (span, parent, is_span)
+        })
+        .collect();
+    let mut by_span: HashMap<&str, usize> = HashMap::new();
+    for (i, (span, _, is_span)) in info.iter().enumerate() {
+        if let (Some(s), true) = (span, is_span) {
+            by_span.entry(s.as_str()).or_insert(i);
+        }
+    }
+    if by_span.is_empty() {
+        return false;
+    }
+    let mut any = false;
+    for (i, (span, parent, is_span)) in info.iter().enumerate() {
+        let up = if *is_span { parent } else { span };
+        let p = up
+            .as_deref()
+            .and_then(|s| by_span.get(s).copied())
+            .filter(|&p| p != i);
+        if let Some(p) = p {
+            any = true;
+            nodes[i].parent = Some(p as u32);
+            edges.retain(|e| e.to != i as u32);
+            edges.push(FlowEdge {
+                from: p as u32,
+                to: i as u32,
+                kind: EdgeKind::Child,
+                via: None,
+                gap_ms: nodes[i].start - nodes[p].start,
+            });
+        }
+    }
+    // Depth by walking up; a cycle (bad data) stops at the node count.
+    for i in 0..nodes.len() {
+        let (mut d, mut at) = (0u32, nodes[i].parent);
+        while let Some(p) = at {
+            d += 1;
+            if d as usize >= nodes.len() {
+                break;
+            }
+            at = nodes[p as usize].parent;
+        }
+        nodes[i].depth = d;
+    }
+    edges.sort_by_key(|e| (e.to, e.from));
+    any
 }
 
 #[cfg(test)]
@@ -738,6 +838,90 @@ mod tests {
 
     fn ids(st: &Stitched) -> Vec<u64> {
         st.lines.iter().map(|l| l.id).collect()
+    }
+
+    #[test]
+    fn otlp_spans_form_a_span_tree() {
+        let span = |id: u64, sid: &str, parent: Option<&str>, name: &str, start: i64, dur: i64| {
+            let p = parent
+                .map(|p| format!(r#","parent_span_id":"{p}""#))
+                .unwrap_or_default();
+            line(
+                id,
+                "api",
+                &format!(
+                    r#"{{"otel.type":"span","name":"{name}","msg":"{name}","trace_id":"t1","span_id":"{sid}"{p},"duration_ms":{dur}}}"#
+                ),
+                start + dur,
+            )
+        };
+        let lines = vec![
+            span(1, "a", None, "GET /orders", T0, 100),
+            span(2, "b", Some("a"), "SELECT orders", T0 + 10, 20),
+            span(3, "c", Some("b"), "pg.connect", T0 + 12, 5),
+            // A log record inside span b.
+            line(
+                4,
+                "api",
+                r#"{"msg":"slow query","trace_id":"t1","span_id":"b"}"#,
+                T0 + 25,
+            ),
+        ];
+        let f = build(
+            Stitched {
+                lines,
+                ids: vec![CorrId {
+                    key: IdKey::TraceId,
+                    value: "t1".into(),
+                }],
+                truncated: false,
+            },
+            Some("t1"),
+            None,
+        );
+        assert!(f.span_tree);
+        let by_name = |n: &str| f.nodes.iter().find(|x| x.name == n).unwrap();
+        assert_eq!(by_name("GET /orders").depth, 0);
+        assert_eq!(by_name("SELECT orders").depth, 1);
+        assert_eq!(by_name("pg.connect").depth, 2);
+        assert_eq!(by_name("slow query").depth, 2);
+        assert_eq!(
+            by_name("slow query").parent,
+            Some(by_name("SELECT orders").index)
+        );
+        assert_eq!(
+            f.edges.iter().filter(|e| e.kind == EdgeKind::Child).count(),
+            3
+        );
+        // One edge into each child: the child edges replaced the time-order ones.
+        for n in &f.nodes[1..] {
+            assert_eq!(f.edges.iter().filter(|e| e.to == n.index).count(), 1);
+        }
+
+        // Plain request/job flows are not span trees.
+        let f = build(
+            Stitched {
+                lines: fixture().into_iter().map(|(_, l)| l).collect(),
+                ..Default::default()
+            },
+            None,
+            None,
+        );
+        assert!(!f.span_tree);
+        assert!(f.nodes.iter().all(|n| n.parent.is_none() && n.depth == 0));
+    }
+
+    #[test]
+    fn semconv_http_keys_name_and_status() {
+        let l = line(
+            1,
+            "api",
+            r#"{"http.request.method":"GET","http.route":"/orders","http.response.status_code":503}"#,
+            T0,
+        );
+        assert_eq!(step_name(&l), "GET /orders");
+        assert_eq!(status_of(&l), Some(503));
+        assert!(node_flags(&l).0);
     }
 
     #[tokio::test]
