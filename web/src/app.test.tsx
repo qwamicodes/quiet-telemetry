@@ -76,21 +76,28 @@ const lines: LogLine[] = [
 
 class FakeSocket {
   static all: FakeSocket[] = []
+  /** Sockets whose url matches open but hold their backlog until `backlog()`. */
+  static hold: (url: string) => boolean = () => false
   onopen: (() => void) | null = null
   onmessage: ((e: { data: string }) => void) | null = null
   onclose: (() => void) | null = null
   constructor(public url: string) {
     FakeSocket.all.push(this)
+    const held = FakeSocket.hold(url)
     queueMicrotask(() => {
       this.onopen?.()
-      this.onmessage?.({ data: JSON.stringify({ type: 'backlog', lines }) })
+      if (!held) this.backlog(lines)
     })
+  }
+  backlog(ls: LogLine[]) {
+    this.onmessage?.({ data: JSON.stringify({ type: 'backlog', lines: ls }) })
   }
   close() {}
 }
 
 beforeEach(() => {
   FakeSocket.all = []
+  FakeSocket.hold = () => false
   vi.stubGlobal('WebSocket', FakeSocket)
   vi.stubGlobal(
     'fetch',
@@ -155,6 +162,43 @@ describe('stream page', () => {
 
     await user.type(screen.getByRole('textbox', { name: 'Filter text' }), 'slow')
     await waitFor(() => expect(FakeSocket.all.at(-1)?.url).toContain('q=slow'))
+  })
+
+  it('a filter change never flashes "No lines match" before its backlog lands', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await screen.findByText('slow query', {}, { timeout: 5000 })
+    // The new filter's socket opens (live) but its backlog is slow to come.
+    FakeSocket.hold = (url) => url.includes('q=nothing')
+    await user.type(screen.getByRole('textbox', { name: 'Filter text' }), 'nothing')
+    await waitFor(() => expect(FakeSocket.all.at(-1)?.url).toContain('q=nothing'))
+    const held = FakeSocket.all.at(-1) as FakeSocket
+    await new Promise((r) => setTimeout(r, 50))
+
+    // Pending: the previous rows stay, dimmed, with a spinner; no empty state.
+    expect(screen.queryByText('No lines match')).not.toBeInTheDocument()
+    expect(screen.queryByText(/No lines yet/)).not.toBeInTheDocument()
+    expect(screen.getByText('slow query')).toBeInTheDocument()
+    expect(screen.getByTestId('table-refreshing')).toHaveTextContent('Updating')
+    expect(screen.getByRole('region', { name: 'Log lines' })).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByTestId('stream-footer')).toHaveTextContent('loading matching lines')
+
+    // Settled with zero rows: now (and only now) the empty state.
+    held.backlog([])
+    expect(await screen.findByText('No lines match')).toBeInTheDocument()
+    expect(screen.queryByText('slow query')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('table-refreshing')).not.toBeInTheDocument()
+  })
+
+  it('first load with a filter shows skeletons, not the empty state, until the backlog lands', async () => {
+    FakeSocket.hold = () => true
+    renderApp('/?source=api&q=nothing')
+    await waitFor(() => expect(FakeSocket.all.at(-1)?.url).toContain('q=nothing'))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByText('No lines match')).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Log lines' })).toHaveAttribute('aria-busy', 'true')
+    ;(FakeSocket.all.at(-1) as FakeSocket).backlog([])
+    expect(await screen.findByText('No lines match')).toBeInTheDocument()
   })
 })
 
