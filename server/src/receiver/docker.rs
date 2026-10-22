@@ -4,8 +4,10 @@
 //!   swarm service label → compose service label → container name.
 //! Containers that share a name (replicas, restarts) merge into one source.
 
-use crate::hub::{Hub, SourceKind};
-use crate::normalize::normalize;
+use super::Receiver;
+use crate::hub::SourceKind;
+use crate::pipeline::{Pipeline, RawLine};
+use async_trait::async_trait;
 use bollard::container::{ListContainersOptions, LogOutput, LogsOptions};
 use bollard::system::EventsOptions;
 use bollard::Docker;
@@ -15,6 +17,8 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+use ts_rs::TS;
 
 const SWARM_SERVICE: &str = "com.docker.swarm.service.name";
 const SWARM_STACK: &str = "com.docker.stack.namespace";
@@ -71,7 +75,7 @@ pub fn name_for(container_name: &str, labels: &HashMap<String, String>) -> Optio
     })
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum DockerStatus {
     Disabled,
@@ -81,24 +85,25 @@ pub enum DockerStatus {
 }
 
 pub struct DockerReceiver {
-    hub: Arc<Hub>,
+    pipeline: Arc<Pipeline>,
     pub status: Arc<Mutex<DockerStatus>>,
     following: Arc<Mutex<HashSet<String>>>,
 }
 
-impl DockerReceiver {
-    pub fn new(hub: Arc<Hub>) -> Self {
-        DockerReceiver {
-            hub,
-            status: Arc::new(Mutex::new(DockerStatus::Connecting)),
-            following: Arc::new(Mutex::new(HashSet::new())),
-        }
+#[async_trait]
+impl Receiver for DockerReceiver {
+    fn name(&self) -> &'static str {
+        "docker"
     }
 
-    /// Runs forever; reconnects every 5s if the socket goes away.
-    pub async fn run(self) {
+    /// Runs until shutdown; reconnects every 5s if the socket goes away.
+    async fn run(self: Arc<Self>, shutdown: CancellationToken) -> anyhow::Result<()> {
         loop {
-            match self.session().await {
+            let result = tokio::select! {
+                r = self.session(&shutdown) => r,
+                _ = shutdown.cancelled() => return Ok(()),
+            };
+            match result {
                 Ok(()) => tracing::warn!("docker event stream ended; reconnecting"),
                 Err(e) => {
                     tracing::warn!(error = %e, "docker unavailable");
@@ -107,11 +112,24 @@ impl DockerReceiver {
                     };
                 }
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                _ = shutdown.cancelled() => return Ok(()),
+            }
+        }
+    }
+}
+
+impl DockerReceiver {
+    pub fn new(pipeline: Arc<Pipeline>) -> Self {
+        DockerReceiver {
+            pipeline,
+            status: Arc::new(Mutex::new(DockerStatus::Connecting)),
+            following: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
-    async fn session(&self) -> anyhow::Result<()> {
+    async fn session(&self, shutdown: &CancellationToken) -> anyhow::Result<()> {
         let docker = Docker::connect_with_local_defaults()?;
         docker.ping().await?;
 
@@ -137,7 +155,14 @@ impl DockerReceiver {
                     .and_then(|n| n.into_iter().next())
                     .unwrap_or_else(|| id[..12].to_string());
                 // Attach with a short tail so the stream has context.
-                self.follow(&docker, id, name, c.labels.unwrap_or_default(), Some(200));
+                self.follow(
+                    &docker,
+                    id,
+                    name,
+                    c.labels.unwrap_or_default(),
+                    Some(200),
+                    shutdown,
+                );
             }
         }
         self.update_status();
@@ -152,7 +177,7 @@ impl DockerReceiver {
                 .cloned()
                 .unwrap_or_else(|| id.chars().take(12).collect());
             // `tail: None` = everything since it started, which is what we want for a fresh container.
-            self.follow(&docker, id, name, attrs, None);
+            self.follow(&docker, id, name, attrs, None, shutdown);
             self.update_status();
         }
         Ok(())
@@ -170,6 +195,7 @@ impl DockerReceiver {
         container_name: String,
         labels: HashMap<String, String>,
         tail: Option<u32>,
+        shutdown: &CancellationToken,
     ) {
         let Some(naming) = name_for(&container_name, &labels) else {
             return;
@@ -178,7 +204,10 @@ impl DockerReceiver {
             return;
         }
         let short = container_name.trim_start_matches('/').to_string();
-        let source = self.hub.ensure_source(&naming.source, SourceKind::Docker);
+        let source = self
+            .pipeline
+            .hub()
+            .ensure_source(&naming.source, SourceKind::Docker);
         source.update_meta(|m| {
             if !m.containers.contains(&short) {
                 m.containers.push(short.clone());
@@ -189,7 +218,8 @@ impl DockerReceiver {
         });
 
         let docker = docker.clone();
-        let hub = self.hub.clone();
+        let pipeline = self.pipeline.clone();
+        let shutdown = shutdown.clone();
         let following = self.following.clone();
         let status = self.status.clone();
         tokio::spawn(async move {
@@ -204,7 +234,11 @@ impl DockerReceiver {
             };
             let mut stream = docker.logs(&id, Some(opts));
             let mut splitter = LineSplitter::default();
-            while let Some(frame) = stream.next().await {
+            loop {
+                let frame = tokio::select! {
+                    f = stream.next() => match f { Some(f) => f, None => break },
+                    _ = shutdown.cancelled() => break,
+                };
                 let bytes = match frame {
                     Ok(LogOutput::StdOut { message })
                     | Ok(LogOutput::StdErr { message })
@@ -215,15 +249,22 @@ impl DockerReceiver {
                         break;
                     }
                 };
-                for raw in splitter.push(&bytes) {
-                    let received = Utc::now().timestamp_millis();
+                let received = Utc::now().timestamp_millis();
+                let raws = splitter.push(&bytes).into_iter().map(|raw| {
                     let (docker_ts, text) = split_docker_ts(&raw);
-                    let line = normalize(text, &naming.source, docker_ts, received);
-                    hub.publish(line, SourceKind::Docker);
+                    RawLine {
+                        text: text.to_string(),
+                        source: naming.source.clone(),
+                        collector_ts: docker_ts,
+                        received,
+                    }
+                });
+                if let Err(e) = pipeline.ingest(SourceKind::Docker, raws).await {
+                    tracing::warn!(error = %e, container = %short, "dropping lines");
                 }
             }
             following.lock().unwrap().remove(&id);
-            if let Some(s) = hub.source(&naming.source) {
+            if let Some(s) = pipeline.hub().source(&naming.source) {
                 s.update_meta(|m| m.containers.retain(|c| c != &short));
             }
             let n = following.lock().unwrap().len();
