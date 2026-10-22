@@ -61,7 +61,7 @@ function Option({
 /**
  * Export what is on screen: these filters, this time range. Download streams
  * the file from `/api/export`; Copy curl mints a read-only `qx_` token for this
- * exact query (single use, 15 minutes) and copies a ready curl.
+ * exact query (reusable for 15 minutes) and copies a ready curl.
  */
 export function ExportDialog({
   open,
@@ -243,7 +243,7 @@ export function ExportDialog({
             <p className="flex items-center gap-1.5 font-mono text-status-ok text-xs">
               <CheckIcon className="size-3.5" /> curl copied
               <span className="text-muted-foreground">
-                · qx_ token: read-only, this query only, single use, expires in 15 min
+                · qx_ token: read-only, this query only, reusable, expires in 15 min
               </span>
             </p>
             <pre

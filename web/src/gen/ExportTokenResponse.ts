@@ -2,7 +2,7 @@
 
 export type ExportTokenResponse = { 
 /**
- * `qx_…`, shown once. Read-only, this query only, single use.
+ * `qx_…`, shown once. Read-only, this query only, reusable for 15 minutes.
  */
 token: string, 
 /**

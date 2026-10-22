@@ -241,7 +241,6 @@ async fn export(
             let msg = match err {
                 TokenError::Unknown => "unknown token",
                 TokenError::Expired => "token expired; copy a new curl",
-                TokenError::Used => "token already used; copy a new curl",
                 TokenError::WrongQuery => "token was issued for a different query",
             };
             return (StatusCode::UNAUTHORIZED, Json(json!({ "error": msg }))).into_response();
@@ -372,7 +371,7 @@ pub struct ExportTokenRequest {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct ExportTokenResponse {
-    /// `qx_…`, shown once. Read-only, this query only, single use.
+    /// `qx_…`, shown once. Read-only, this query only, reusable for 15 minutes.
     pub token: String,
     /// Unix ms.
     pub expires_at: i64,
@@ -543,7 +542,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn copy_curl_token_is_read_only_scoped_and_single_use() {
+    async fn copy_curl_token_is_read_only_scoped_and_reusable() {
         let (_, app) = app().await;
         let res = app
             .clone()
@@ -562,7 +561,7 @@ mod tests {
         assert_eq!(v["path"], "/api/export?format=ndjson&source=api");
         let bearer = format!("Bearer {token}");
 
-        // A different query is refused, and doesn't burn the token.
+        // A different query is refused.
         assert_eq!(
             get(&app, "/api/export?source=worker", Some(&bearer))
                 .await
@@ -572,12 +571,12 @@ mod tests {
         let (st, _, body) = get(&app, "/api/export?format=ndjson&source=api", Some(&bearer)).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(String::from_utf8(body).unwrap().lines().count(), 2);
-        // Single use.
+        // Reusable within its 15 minutes.
         assert_eq!(
             get(&app, "/api/export?format=ndjson&source=api", Some(&bearer))
                 .await
                 .0,
-            StatusCode::UNAUTHORIZED
+            StatusCode::OK
         );
         // Not a qx_ token (e.g. an ingest token): refused.
         assert_eq!(

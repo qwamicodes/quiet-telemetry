@@ -306,11 +306,10 @@ struct Entry {
     /// The exact export query string the token was issued for.
     query: String,
     expires: i64,
-    used: bool,
 }
 
 /// Read-only export tokens. Only the SHA-256 of a token is kept; a token
-/// works once, for one query, for 15 minutes. Kept in memory: a restart
+/// works for one query, as many times as needed, for 15 minutes. Kept in memory: a restart
 /// simply invalidates outstanding tokens.
 #[derive(Default)]
 pub struct ExportTokens {
@@ -321,7 +320,6 @@ pub struct ExportTokens {
 pub enum TokenError {
     Unknown,
     Expired,
-    Used,
     WrongQuery,
 }
 
@@ -354,32 +352,27 @@ impl ExportTokens {
         );
         let expires = now + TOKEN_TTL_MS;
         let mut map = self.by_hash.lock().unwrap();
-        map.retain(|_, e| e.expires > now && !e.used);
+        map.retain(|_, e| e.expires > now);
         map.insert(
             hash_token(&token),
             Entry {
                 query: canonical_query(query),
                 expires,
-                used: false,
             },
         );
         (token, expires)
     }
 
-    /// Check and consume a token for this query.
+    /// Check a token for this query. Reusable until it expires.
     pub fn redeem(&self, token: &str, query: &str, now: i64) -> Result<(), TokenError> {
-        let mut map = self.by_hash.lock().unwrap();
-        let e = map.get_mut(&hash_token(token)).ok_or(TokenError::Unknown)?;
-        if e.used {
-            return Err(TokenError::Used);
-        }
+        let map = self.by_hash.lock().unwrap();
+        let e = map.get(&hash_token(token)).ok_or(TokenError::Unknown)?;
         if e.expires <= now {
             return Err(TokenError::Expired);
         }
         if e.query != canonical_query(query) {
             return Err(TokenError::WrongQuery);
         }
-        e.used = true;
         Ok(())
     }
 }
@@ -480,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn tokens_are_hashed_single_use_scoped_and_short_lived() {
+    fn tokens_are_hashed_reusable_scoped_and_short_lived() {
         let t = ExportTokens::default();
         let (tok, exp) = t.issue("format=csv&q=dealer", 1_000);
         assert!(tok.starts_with("qx_") && tok.len() == 3 + 48);
@@ -497,10 +490,8 @@ mod tests {
         );
         // Order of params doesn't matter.
         assert_eq!(t.redeem(&tok, "q=dealer&format=csv", 2_000), Ok(()));
-        assert_eq!(
-            t.redeem(&tok, "q=dealer&format=csv", 2_001),
-            Err(TokenError::Used)
-        );
+        // Reusable within the 15 minutes.
+        assert_eq!(t.redeem(&tok, "q=dealer&format=csv", 2_001), Ok(()));
         let (tok2, _) = t.issue("q=x", 0);
         assert_eq!(
             t.redeem(&tok2, "q=x", TOKEN_TTL_MS),

@@ -216,7 +216,7 @@ SQLite (bundled, WAL) in `--data-dir`. One set of tables per hour: the lines (on
 
 ## Export
 
-From the stream (top bar) or a search (Export): NDJSON (the raw lines; plain-text lines are wrapped as `{"time","source","level","message"}` so every row is JSON), a JSON array of parsed lines, or CSV with chosen columns (dot paths work). Options: gzip, **mask PII** (on by default: `email`, `phone`, `*_name`, `ip`/`ip_address`/`client_ip`/`x-forwarded-for`, `user_agent` keys, plus emails and IPv4 addresses inside any text), include the raw line. **Download** streams the file; **Copy curl** copies a command with a `qx_` token (read-only, this query only, single use, 15 min). Ingest tokens stay send-only.
+From the stream (top bar) or a search (Export): NDJSON (the raw lines; plain-text lines are wrapped as `{"time","source","level","message"}` so every row is JSON), a JSON array of parsed lines, or CSV with chosen columns (dot paths work). Options: gzip, **mask PII** (on by default: `email`, `phone`, `*_name`, `ip`/`ip_address`/`client_ip`/`x-forwarded-for`, `user_agent` keys, plus emails and IPv4 addresses inside any text), include the raw line. **Download** streams the file; **Copy curl** copies a command with a `qx_` token (read-only, this query only, reusable for 15 min). Ingest tokens stay send-only.
 
 ## API
 
@@ -224,6 +224,6 @@ From the stream (top bar) or a search (Export): NDJSON (the raw lines; plain-tex
 - `GET /api/health` (now also `retention_ms`, `disk_bytes`, `stored_lines`, `oldest`) · `GET /api/sources` · `GET /api/sources/:name/lines?limit=`
 - `GET /api/search?q=&source=a,b&level=&since=&until=&id=&order=newest|oldest&cursor=&limit=&buckets=` → `{ lines, next_cursor, total, bytes, histogram, searched, took_ms, since, until }`. Times are unix ms; missing bounds = the retention window ending now. `total`/`histogram` come with the first page when `buckets` is set.
 - `GET /api/export?<search params>&format=ndjson|json|csv&gzip=1&mask=pii&raw=1&columns=a,b` streams a file (oldest first). Optional `Authorization: Bearer qx_…`.
-- `POST /api/export/token {"query":"<export query string>"}` → `{ token, expires_at, path }`: a read-only `qx_` token for that one query, single use, 15 minutes; only its SHA-256 is kept (in memory).
+- `POST /api/export/token {"query":"<export query string>"}` → `{ token, expires_at, path }`: a read-only `qx_` token for that one query, reusable for 15 minutes; only its SHA-256 is kept (in memory).
 - `WS /api/stream?source=&backlog=&level=&q=` → frames `backlog`, `lines` (batched every 75 ms), `gap` (client fell behind)
 - `POST /ingest/ndjson` with `X-Quiet-Source`

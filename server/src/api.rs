@@ -42,7 +42,7 @@ pub struct AppState {
     pub shutdown: CancellationToken,
     /// How far back search reaches by default (the retention window), ms.
     pub retention_ms: i64,
-    /// Read-only `qx_` export tokens (hashed, 15 min, single use).
+    /// Read-only `qx_` export tokens (hashed, 15 min, reusable).
     pub tokens: Arc<ExportTokens>,
 }
 
