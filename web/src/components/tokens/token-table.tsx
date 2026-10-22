@@ -16,7 +16,7 @@ import type { CreatedIngestToken, IngestToken } from '@/gen'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { fmtAgo, fmtDay } from '@/lib/format'
 import { toast } from '@/lib/toast'
-import { useCreateToken, useRevokeToken, useTokens } from '@/lib/tokens-api'
+import { useCreateToken, useRestoreToken, useRevokeToken, useTokens } from '@/lib/tokens-api'
 import { cn } from '@/lib/utils'
 
 function CreateDialog({
@@ -113,11 +113,23 @@ function CreateDialog({
 
 function RevokeDialog({ token, onOpenChange }: { token: IngestToken | null; onOpenChange: (o: boolean) => void }) {
   const revoke = useRevokeToken()
+  const restore = useRestoreToken()
+  const undo = (t: IngestToken) =>
+    restore.mutate(t.id, {
+      onSuccess: () => toast.success('Token restored', { description: `${t.name} can send lines again.` }),
+      onError: (err) => toast.error('Could not undo', { description: (err as Error).message }),
+    })
   const confirm = async () => {
     if (!token) return
+    const t = token
     try {
-      await revoke.mutateAsync(token.id)
-      toast.success(`Token “${token.name}” revoked`, { description: 'Shippers using it now get 401.' })
+      await revoke.mutateAsync(t.id)
+      // Board 08.3: the error toast carries Undo (the server allows it for a minute).
+      toast.error('Token revoked', {
+        description: `${t.name} can no longer send lines.`,
+        duration: 15_000,
+        button: { title: 'Undo', onClick: () => undo(t) },
+      })
       onOpenChange(false)
     } catch (err) {
       toast.error('Could not revoke the token', { description: (err as Error).message })
@@ -129,8 +141,8 @@ function RevokeDialog({ token, onOpenChange }: { token: IngestToken | null; onOp
         <DialogHeader>
           <DialogTitle>Revoke “{token?.name}”?</DialogTitle>
           <DialogDescription>
-            Anything sending with {token?.preview} gets 401 from its next request. Lines already received stay. This
-            can't be undone; create a new token instead.
+            Anything sending with {token?.preview} gets 401 from its next request. Lines already received stay. You can
+            undo it for a minute; after that, create a new token instead.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

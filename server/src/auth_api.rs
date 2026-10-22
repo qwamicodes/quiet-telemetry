@@ -1416,6 +1416,7 @@ mod tests {
                 Some(json!({"name":"x"})),
             ),
             (Method::DELETE, "/api/ingest-tokens/1".into(), None),
+            (Method::POST, "/api/ingest-tokens/1/restore".into(), None),
             (
                 Method::PATCH,
                 format!("/api/members/{oid}"),
@@ -1510,6 +1511,7 @@ mod tests {
                 Some(json!({"name":"x"})),
             ),
             (Method::DELETE, "/api/ingest-tokens/99", None),
+            (Method::POST, "/api/ingest-tokens/99/restore", None),
             (Method::GET, "/api/account", None),
             (
                 Method::PATCH,

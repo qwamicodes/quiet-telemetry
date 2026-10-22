@@ -3,17 +3,19 @@
 //! GET    /api/ingest-tokens        → { tokens }
 //! POST   /api/ingest-tokens        { name, source? } → { token, secret }   (201)
 //! DELETE /api/ingest-tokens/:id    → the revoked token
+//! POST   /api/ingest-tokens/:id/restore → the token, working again
+//!        (Undo; only within `UNDO_REVOKE_MS` of the revoke, else 409)
 //!
 //! Needs a session like the rest of `/api`. Anyone signed in can list tokens
 //! (previews only, never secrets); only owners can create or revoke them.
 
 use crate::api::AppState;
 use crate::auth::{require_owner, Viewer};
-use crate::tokens::{CreateIngestToken, IngestTokensResponse};
+use crate::tokens::{CreateIngestToken, IngestTokensResponse, Restore};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use serde_json::json;
 
@@ -21,6 +23,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/ingest-tokens", get(list).post(create))
         .route("/api/ingest-tokens/:id", delete(revoke))
+        .route("/api/ingest-tokens/:id/restore", post(restore))
 }
 
 fn bad(status: StatusCode, msg: &str) -> Response {
@@ -99,6 +102,32 @@ async fn revoke(
     }
 }
 
+async fn restore(
+    State(s): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(r) = require_owner(&v) {
+        return r;
+    }
+    let Ok(id) = id.parse::<i64>() else {
+        return bad(StatusCode::BAD_REQUEST, "token id must be a number");
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    match s.ingest_tokens.restore(id, now) {
+        Ok(Restore::Restored(t)) => {
+            tracing::info!(id, by = v.user.id, "ingest token restored (undo revoke)");
+            Json(t).into_response()
+        }
+        Ok(Restore::TooLate) => bad(
+            StatusCode::CONFLICT,
+            "too late to undo: revoked more than a minute ago",
+        ),
+        Ok(Restore::NotFound) => bad(StatusCode::NOT_FOUND, "no such token"),
+        Err(e) => store_error(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +199,37 @@ mod tests {
         assert_eq!(s, StatusCode::NOT_FOUND);
         let (s, _) = call(&app, del("/api/ingest-tokens/x".into())).await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
+
+        // Undo within the window brings it back.
+        let restore = |p: String| Request::post(p).body(Body::empty()).unwrap();
+        let (s, v) = call(&app, restore(format!("/api/ingest-tokens/{id}/restore"))).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["revoked"], serde_json::Value::Null);
+        let (s, _) = call(&app, restore("/api/ingest-tokens/999/restore".into())).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(&app, restore("/api/ingest-tokens/x/restore".into())).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn restore_after_the_window_is_409() {
+        let st = AppState::new(
+            Pipeline::new(Arc::new(MemoryStore::new(10)), Hub::new()),
+            Arc::new(Mutex::new(DockerStatus::Disabled)),
+        )
+        .auth_off();
+        let c = st.ingest_tokens.create("old", None, 0).unwrap();
+        // Revoked long ago (well before now).
+        st.ingest_tokens.revoke(c.token.id, 1_000).unwrap();
+        let app = crate::api::router(st);
+        let (s, v) = call(
+            &app,
+            Request::post(format!("/api/ingest-tokens/{}/restore", c.token.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT);
+        assert!(v["error"].as_str().unwrap().contains("too late"));
     }
 }

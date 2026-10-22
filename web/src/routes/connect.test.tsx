@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CreatedIngestToken, Health, IngestToken, SourceInfo } from '@/gen'
 import { firstArrival, maskToken, snippets } from '@/lib/connect'
+import { toast } from '@/lib/toast'
 import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
 import { seedAuth } from '@/test/auth'
@@ -66,6 +67,12 @@ beforeEach(() => {
         posts.push({ url, body: null, method })
         tokens = tokens.map((t) => (t.id === Number(del[1]) ? { ...t, revoked: Date.now() } : t))
         return json(tokens.find((t) => t.id === Number(del[1])))
+      }
+      const restore = url.match(/^\/api\/ingest-tokens\/(\d+)\/restore$/)
+      if (restore && method === 'POST') {
+        posts.push({ url, body: null, method })
+        tokens = tokens.map((t) => (t.id === Number(restore[1]) ? { ...t, revoked: null } : t))
+        return json(tokens.find((t) => t.id === Number(restore[1])))
       }
       return json({ error: 'nope' }, 404)
     }),
@@ -231,6 +238,30 @@ describe('ingest tokens settings', () => {
     await user.click(within(confirm).getByRole('button', { name: 'Revoke token' }))
     await waitFor(() => expect(posts.some((p) => p.method === 'DELETE' && p.url === '/api/ingest-tokens/9')).toBe(true))
     expect(await within(section).findByText('revoked')).toBeInTheDocument()
+  })
+
+  it('revoke raises "Token revoked" with Undo, which restores the token', async () => {
+    const user = userEvent.setup()
+    const err = vi.spyOn(toast, 'error')
+    const ok = vi.spyOn(toast, 'success')
+    tokens = [token({ id: 4, name: 'payments-svc otlp' })]
+    renderAt('/settings/ingest-tokens')
+    const section = await screen.findByRole('region', { name: 'Ingest tokens' })
+    await user.click(await within(section).findByRole('button', { name: 'Revoke payments-svc otlp' }))
+    const confirm = await screen.findByRole('dialog')
+    expect(confirm).toHaveTextContent('undo it for a minute')
+    await user.click(within(confirm).getByRole('button', { name: 'Revoke token' }))
+    await waitFor(() => expect(err).toHaveBeenCalled())
+    const [title, opts] = err.mock.calls[0]
+    expect(title).toBe('Token revoked')
+    expect(opts?.description).toBe('payments-svc otlp can no longer send lines.')
+    expect(opts?.button?.title).toBe('Undo')
+    expect(await within(section).findByText('revoked')).toBeInTheDocument()
+
+    act(() => opts?.button?.onClick())
+    await waitFor(() => expect(posts.some((p) => p.method === 'POST' && p.url === '/api/ingest-tokens/4/restore')).toBe(true))
+    await waitFor(() => expect(ok).toHaveBeenCalledWith('Token restored', expect.anything()))
+    await waitFor(() => expect(within(section).queryByText('revoked')).not.toBeInTheDocument())
   })
 })
 
