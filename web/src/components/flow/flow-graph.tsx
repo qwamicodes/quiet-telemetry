@@ -1,5 +1,6 @@
 import { ArrowDownIcon, ArrowRightIcon, ChevronsUpDownIcon, CornerDownRightIcon, RotateCwIcon } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import { FlowMinimap } from '@/components/flow/minimap'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -147,6 +148,8 @@ export function FlowGraph({
   const [expandAll, setExpandAll] = useState(false)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const [zoom, setZoom] = useState(1)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const gridRef = useRef<HTMLDivElement>(null)
   const items = useMemo(
     () => flowItems(flow.nodes, { problemsOnly, expanded, expandAll }),
     [flow.nodes, problemsOnly, expanded, expandAll],
@@ -175,9 +178,11 @@ export function FlowGraph({
           </Button>
         </div>
       )}
-      <div className={cn('min-h-0 flex-1 overflow-auto p-6', foldable && 'pt-14')}>
+      {foldable && <FlowMinimap items={items} lanes={lanes} scrollRef={scrollRef} gridRef={gridRef} zoom={zoom} />}
+      <div ref={scrollRef} className={cn('relative min-h-0 flex-1 overflow-auto p-6', foldable && 'pt-14 pr-14')}>
         <div
-          className="grid origin-top-left gap-x-10 gap-y-2"
+          ref={gridRef}
+          className="relative grid origin-top-left gap-x-10 gap-y-2"
           style={{
             gridTemplateColumns: `repeat(${lanes.length}, minmax(240px, 320px))`,
             transform: zoom === 1 ? undefined : `scale(${zoom})`,
@@ -191,7 +196,7 @@ export function FlowGraph({
           {items.map((it) => {
             if (it.kind === 'run') {
               return (
-                <div key={it.key} style={{ gridColumn: lanes.indexOf(it.nodes[0].source) + 1 }}>
+                <div key={it.key} data-mm={it.key} style={{ gridColumn: lanes.indexOf(it.nodes[0].source) + 1 }}>
                   <RunCard item={it} onExpand={() => setExpanded((s) => new Set([...s, it.key]))} />
                 </div>
               )
@@ -201,6 +206,7 @@ export function FlowGraph({
               edge && <Connector key={`e${it.node.index}`} edge={edge} lanes={lanes} nodes={flow.nodes} />,
               <div
                 key={`n${it.node.index}`}
+                data-mm={`n${it.node.index}`}
                 style={{ gridColumn: lanes.indexOf(it.node.source) + 1, paddingLeft: `${it.node.depth * 16}px` }}
               >
                 <NodeCard
