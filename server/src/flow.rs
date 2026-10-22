@@ -42,6 +42,9 @@ pub struct Limits {
     pub ids: usize,
     /// Lines in one flow.
     pub lines: usize,
+    /// Settings → Flow id order → "match ids by key": an id only links lines
+    /// that carry it under the same key (the opened id matches any key).
+    pub by_key: bool,
 }
 
 impl Default for Limits {
@@ -50,6 +53,7 @@ impl Default for Limits {
             hops: 2,
             ids: 64,
             lines: 1000,
+            by_key: false,
         }
     }
 }
@@ -85,13 +89,18 @@ pub async fn stitch(
     let mut lines: HashMap<u64, Line> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut frontier: Vec<String> = Vec::new();
+    // Ids followed with the key they were found under (used when matching by key).
+    let mut keyed: HashSet<(IdKey, String)> = HashSet::new();
+    let mut opened_any: Option<String> = None;
     match seed {
         Seed::Id(v) => {
             seen.insert(v.to_string());
             frontier.push(v.to_string());
+            opened_any = Some(v.to_string());
         }
         Seed::Line(l) => {
             for i in &l.ids {
+                keyed.insert((i.key, i.value.clone()));
                 if seen.insert(i.value.clone()) {
                     frontier.push(i.value.clone());
                 }
@@ -112,8 +121,21 @@ pub async fn stitch(
             .with_ids(&frontier, since, until, room + lines.len() + 1)
             .await?;
         let mut next: Vec<String> = Vec::new();
+        let asked: HashSet<&String> = frontier.iter().collect();
         for l in got {
             if lines.contains_key(&l.id) {
+                continue;
+            }
+            // The index can hold ids a source no longer counts (its id keys
+            // changed after the line was stored; `normalize` re-derives ids
+            // with the current policy), and by key only same-key ids link.
+            let links = l.ids.iter().any(|i| {
+                asked.contains(&i.value)
+                    && (!limits.by_key
+                        || opened_any.as_ref() == Some(&i.value)
+                        || keyed.contains(&(i.key, i.value.clone())))
+            });
+            if !links {
                 continue;
             }
             if lines.len() >= limits.lines {
@@ -121,6 +143,7 @@ pub async fn stitch(
                 break;
             }
             for i in &l.ids {
+                keyed.insert((i.key, i.value.clone()));
                 if !seen.contains(&i.value) {
                     if seen.len() >= limits.ids {
                         out.truncated = true;
@@ -827,6 +850,7 @@ mod tests {
         let s = SqliteStore::open(SqliteOptions {
             path: dir.join("quiet.db"),
             ring: 100,
+            ring_memory: crate::store::DEFAULT_RING_MEMORY,
         })
         .unwrap();
         for (k, l) in fixture() {
@@ -1003,6 +1027,7 @@ mod tests {
             WIDE.0,
             WIDE.1,
             Limits {
+                by_key: false,
                 hops: 0,
                 ..Default::default()
             },
@@ -1125,5 +1150,50 @@ mod tests {
         let got = s.similar_ids("payout:12", WIDE.0, WIDE.1, 5).await.unwrap();
         assert_eq!(got[0].0.value, "payout:1");
         assert_eq!(got[0].1, 4, "newest line carrying it");
+    }
+
+    #[tokio::test]
+    async fn matching_by_key_keeps_unrelated_numeric_ids_apart() {
+        let s = MemoryStore::new(100);
+        s.append(
+            SourceKind::Http,
+            &[
+                line(1, "api", r#"{"msg":"GET /a","request_id":"42"}"#, T0),
+                line(2, "worker", r#"{"msg":"job","job_id":"42"}"#, T0 + 10),
+                line(
+                    3,
+                    "worker",
+                    r#"{"msg":"retry","job_id":"42","attempt":1}"#,
+                    T0 + 20,
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        // By value (default): the same "42" merges a request and a job.
+        let st = stitch(&s, Seed::Id("42"), WIDE.0, WIDE.1, Limits::default())
+            .await
+            .unwrap();
+        assert_eq!(ids(&st), vec![1, 2, 3]);
+        // By key: opening the request's line keeps to request_id 42.
+        let by_key = Limits {
+            by_key: true,
+            ..Default::default()
+        };
+        let seed = s.line(1).await.unwrap().unwrap();
+        let st = stitch(&s, Seed::Line(seed), WIDE.0, WIDE.1, by_key)
+            .await
+            .unwrap();
+        assert_eq!(ids(&st), vec![1]);
+        let seed = s.line(2).await.unwrap().unwrap();
+        let st = stitch(&s, Seed::Line(seed), WIDE.0, WIDE.1, by_key)
+            .await
+            .unwrap();
+        assert_eq!(ids(&st), vec![2, 3]);
+        // An id typed in (no key) still matches any key at the start.
+        let st = stitch(&s, Seed::Id("42"), WIDE.0, WIDE.1, by_key)
+            .await
+            .unwrap();
+        assert_eq!(ids(&st), vec![1, 2, 3]);
     }
 }

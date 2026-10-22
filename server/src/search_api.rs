@@ -138,7 +138,7 @@ fn unavailable(e: anyhow::Error) -> Response {
 fn bound(s: &AppState, q: &mut SearchQuery) {
     let now = chrono::Utc::now().timestamp_millis();
     q.until.get_or_insert(now);
-    q.since.get_or_insert(now - s.retention_ms);
+    q.since.get_or_insert(now - s.retention_ms());
 }
 
 async fn search(State(s): State<AppState>, Query(p): Query<SearchParams>) -> Response {
@@ -275,6 +275,7 @@ async fn export(
             .filter(|c| !c.is_empty())
             .map(String::from)
             .collect(),
+        rules: Some(s.pipeline.settings().clone()),
     };
     let name = file_name(&q, format, gzip);
     // Lines appended a moment ago should be in the file.
