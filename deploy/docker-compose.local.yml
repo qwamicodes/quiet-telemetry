@@ -28,8 +28,8 @@ services:
   # retries, carrying the request_id that enqueued them) is POSTed to
   # /ingest/ndjson. Both receivers get exercised.
   sample:
-    image: node:22-alpine
-    command: ["node", "/sample/generate.mjs", "both"]
+    image: oven/bun:1.4.4-alpine
+    command: ["bun", "/sample/generate.mjs", "both"]
     volumes: ["./sample:/sample:ro"]
     environment:
       RATE: "4"

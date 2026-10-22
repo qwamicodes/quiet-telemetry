@@ -1,7 +1,7 @@
 //! TypeScript bindings for the wire types, generated with ts-rs into
 //! `web/src/gen/`. This test fails when they are stale.
 //!
-//! Regenerate: `QUIET_UPDATE_TS=1 cargo test bindings` (or `npm run gen:types` in web/).
+//! Regenerate: `QUIET_UPDATE_TS=1 cargo test bindings` (or `bun run gen:types` in web/).
 
 use crate::api::{Frame, Health, LinesResponse, SourcesResponse};
 use std::collections::BTreeMap;
@@ -76,6 +76,6 @@ fn ts_bindings_are_fresh() {
     assert!(
         stale.is_empty(),
         "web/src/gen is stale ({stale:?}). Run `QUIET_UPDATE_TS=1 cargo test bindings` in server/ \
-         (or `npm run gen:types` in web/) and commit the result."
+         (or `bun run gen:types` in web/) and commit the result."
     );
 }

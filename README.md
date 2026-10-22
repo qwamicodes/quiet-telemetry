@@ -30,7 +30,7 @@ Follow these steps top to bottom. You should see live logs in about 10 minutes.
 |---|---|---|---|
 | Docker Desktop (macOS) or Docker Engine + Compose v2 (Linux) | runs quiet and reads container logs | https://docs.docker.com/get-docker/ | `docker compose version` |
 | Git | clone the repo | already on most machines | `git --version` |
-| Node 22+ | the web UI (only for `make dev` / `make check`) | https://nodejs.org or `nvm install 22` | `node -v` |
+| Bun 1.4+ | the web UI and the sample generator (only for `make dev` / `make check` / `make sample`) | `curl -fsSL https://bun.sh/install \| bash` | `bun -v` |
 | Rust stable | the server (only for `make dev` / `make check`) | `curl https://sh.rustup.rs -sSf \| sh` | `cargo -V` |
 | make | the shortcuts below | macOS: `xcode-select --install` | `make -v` |
 | cargo-watch (optional) | restarts the server when you save | `cargo install cargo-watch` | |
@@ -68,7 +68,7 @@ make down    # stop and remove the stack
 ### 3B. Run it for development (hot reload)
 
 ```sh
-npm --prefix web ci   # once, and after package.json changes
+(cd web && bun install)   # once, and after package.json changes
 make dev              # server on :7070 + UI on :5173 with hot reload
 make sample           # second terminal: sample lines over HTTP
 ```
@@ -117,7 +117,7 @@ make build   # optional: one release binary at server/target/release/quiet with 
 | No containers in the source list | Docker isn't reachable. Check `docker ps` works. On Linux add yourself to the `docker` group (`sudo usermod -aG docker $USER`, then log out/in). With Colima/OrbStack/rootless Docker, set `DOCKER_HOST` (e.g. `export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock`) for `make dev`; for `make up`, change the socket path in `deploy/docker-compose.local.yml`. |
 | `port 7070 is already allocated` / `address in use` | Something else is on 7070: `make down`, or run with `QUIET_ADDR=127.0.0.1:7171 make dev`. |
 | UI shows "Reconnecting…" forever | The server isn't running or crashed: check the `make dev` terminal or `make logs`. |
-| Blank page at :7070 after `cargo run` | The binary embeds the UI at build time: run `npm --prefix web run build` first (or use `make build` / `make dev`). |
+| Blank page at :7070 after `cargo run` | The binary embeds the UI at build time: run `cd web && bun run build` first (or use `make build` / `make dev`). |
 | `make check` fails on stale types | Run `make types` and commit `web/src/gen`. |
 | `cargo fmt`/`clippy` errors | `cd server && cargo fmt` then fix what clippy prints; CI uses `-D warnings`. |
 | First `make up` is slow | Normal: Rust compiles everything once. Later builds reuse the cache. |

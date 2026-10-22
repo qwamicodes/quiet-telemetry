@@ -32,7 +32,7 @@ pub fn attach(app: Router, dir: Option<PathBuf>) -> Router {
         return app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
     }
     if Assets::get("index.html").is_none() {
-        tracing::warn!("web ui not built into this binary; run `npm run build` in web/");
+        tracing::warn!("web ui not built into this binary; run `bun run build` in web/");
     }
     app.fallback(serve).layer(CompressionLayer::new())
 }
@@ -93,8 +93,8 @@ fn not_built() -> Response {
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         "<!doctype html><title>quiet</title><body style=\"font:14px ui-monospace,monospace;padding:2rem\">\
          <p>quiet is running, but this build has no web UI.</p>\
-         <p>Build it with <code>cd web &amp;&amp; npm ci &amp;&amp; npm run build</code>, then rebuild the server, \
-         or use <code>npm run dev</code>.</p></body>",
+         <p>Build it with <code>cd web &amp;&amp; bun install &amp;&amp; bun run build</code>, then rebuild the server, \
+         or use <code>bun run dev</code>.</p></body>",
     )
         .into_response()
 }

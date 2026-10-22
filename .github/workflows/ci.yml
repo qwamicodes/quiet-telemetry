@@ -14,13 +14,20 @@ jobs:
     defaults: { run: { working-directory: web } }
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version-file: web/package.json }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('web/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # bun.lock lists every platform's optional binaries (rolldown, lightningcss,
+      # tailwind oxide, biome, tsgo); --frozen-lockfile fails if it drifts.
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build
       - uses: actions/upload-artifact@v4
         with: { name: web-dist, path: web/dist, retention-days: 1 }
 
