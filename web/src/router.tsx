@@ -6,8 +6,9 @@ import {
   type RouterHistory,
 } from '@tanstack/react-router'
 import { AppShell } from '@/components/app-shell'
-import { flowSearch, searchSearch, streamSearch } from '@/lib/search-params'
-import { FlowPage } from '@/routes/flow'
+import { BrokenLink } from '@/components/broken-link'
+import { flowParams, flowSearch, lineParams, searchSearch, streamSearch } from '@/lib/search-params'
+import { FlowPage, LineFlowPage } from '@/routes/flow'
 import { SettingsPage } from '@/routes/settings'
 import { StreamPage } from '@/routes/stream'
 
@@ -23,8 +24,19 @@ export const streamRoute = createRoute({
 export const flowRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/flow/$id',
+  params: { parse: (p) => flowParams.parse(p), stringify: ({ id }) => ({ id }) },
   validateSearch: flowSearch,
   component: FlowPage,
+  errorComponent: BrokenLink,
+})
+
+export const lineRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/line/$lineId',
+  params: { parse: (p) => lineParams.parse(p), stringify: ({ lineId }) => ({ lineId: String(lineId) }) },
+  validateSearch: flowSearch,
+  component: LineFlowPage,
+  errorComponent: BrokenLink,
 })
 
 export const searchRoute = createRoute({
@@ -41,7 +53,7 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 })
 
-export const routeTree = rootRoute.addChildren([streamRoute, searchRoute, flowRoute, settingsRoute])
+export const routeTree = rootRoute.addChildren([streamRoute, searchRoute, flowRoute, lineRoute, settingsRoute])
 
 /** `history` is for tests (memory history); the app uses the browser's. */
 export function makeRouter(history?: RouterHistory) {

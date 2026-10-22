@@ -150,7 +150,8 @@ describe('popups (every Base UI popup the app uses opens without crashing)', () 
     await user.type(await screen.findByRole('combobox'), 'req_123')
     await user.click(await screen.findByText('open flow'))
     await waitFor(() => expect(router.state.location.pathname).toBe('/flow/req_123'))
-    expect(await screen.findByText('Flows arrive in slice 3')).toBeInTheDocument()
+    // No line carries req_123 here (the mock 404s): the not-found flow page.
+    expect(await screen.findByText('No lines with this id')).toBeInTheDocument()
   })
 
   it('tooltips open on hover', async () => {

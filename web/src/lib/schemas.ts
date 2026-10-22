@@ -1,9 +1,18 @@
 import { z } from 'zod'
 import type {
   Bucket,
+  ChildStep,
+  CloseMatch,
   CorrId,
   DockerStatus,
   ExportTokenResponse,
+  Flow,
+  FlowEdge,
+  FlowNode,
+  FlowNotFound,
+  FlowResponse,
+  FlowSummariesResponse,
+  FlowSummary,
   Health,
   Level,
   LogLine,
@@ -95,3 +104,90 @@ export const exportTokenResponse = z.object({
   expires_at: z.number(),
   path: z.string().startsWith('/api/export?'),
 }) satisfies z.ZodType<ExportTokenResponse>
+
+export const childStep = z.object({
+  name: z.string(),
+  summary: z.string(),
+  at_ms: z.number().nullable(),
+  duration_ms: z.number().nullable(),
+  error: z.boolean(),
+}) satisfies z.ZodType<ChildStep>
+
+export const flowNode = z.object({
+  index: z.number(),
+  line_id: z.number(),
+  source: z.string(),
+  level: level.nullable(),
+  ts: z.number(),
+  start: z.number(),
+  duration_ms: z.number().nullable(),
+  offset_ms: z.number(),
+  name: z.string(),
+  summary: z.string(),
+  error: z.boolean(),
+  warn: z.boolean(),
+  attempt: z.number().nullable(),
+  children: z.array(childStep),
+}) satisfies z.ZodType<FlowNode>
+
+export const flowEdge = z.object({
+  from: z.number(),
+  to: z.number(),
+  kind: z.enum(['next', 'retry', 'handoff']),
+  via: corrId.nullable(),
+  gap_ms: z.number(),
+}) satisfies z.ZodType<FlowEdge>
+
+export const flowSummary = z.object({
+  key: z.string(),
+  title: z.string(),
+  status: z.enum(['ok', 'warn', 'error']),
+  line_count: z.number(),
+  steps: z.number(),
+  sources: z.array(z.string()),
+  started: z.number(),
+  ended: z.number(),
+  duration_ms: z.number(),
+  retries: z.number(),
+  errors: z.number(),
+  warnings: z.number(),
+  ids: z.array(corrId),
+  stitched_by: z.array(corrId.shape.key),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<FlowSummary>
+
+export const flow = flowSummary.extend({
+  opened: corrId.nullable(),
+  nodes: z.array(flowNode),
+  edges: z.array(flowEdge),
+  lines: z.array(logLine),
+  missing_parent: corrId.nullable(),
+  partial: z.boolean(),
+}) satisfies z.ZodType<Flow>
+
+export const flowResponse = z.object({
+  flow,
+  since: z.number(),
+  until: z.number(),
+  took_ms: z.number(),
+}) satisfies z.ZodType<FlowResponse>
+
+export const closeMatch = z.object({
+  key: corrId.shape.key,
+  value: z.string(),
+  msg: z.string(),
+  ts: z.number(),
+  source: z.string(),
+}) satisfies z.ZodType<CloseMatch>
+
+export const flowNotFound = z.object({
+  error: z.string(),
+  id: z.string(),
+  close: z.array(closeMatch),
+  since: z.number(),
+  until: z.number(),
+}) satisfies z.ZodType<FlowNotFound>
+
+export const flowSummariesResponse = z.object({
+  flows: z.array(z.object({ id: z.string(), flow: flowSummary.nullable() })),
+}) satisfies z.ZodType<FlowSummariesResponse>
