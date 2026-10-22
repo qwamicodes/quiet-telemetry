@@ -3,6 +3,7 @@
 // Env:
 //   RATE        requests per second (default 3)
 //   QUIET_URL   POST lines to <url>/ingest/ndjson (X-Quiet-Source: sample-api / sample-worker)
+//   QUIET_TOKEN an ingest token (qi_…); not needed when quiet runs with QUIET_INGEST_AUTH=open
 //   STDOUT_SOURCE  lines of this source go to stdout only (read by quiet's Docker
 //                  receiver); the rest are POSTed. Without QUIET_URL everything
 //                  goes to stdout.
@@ -12,6 +13,7 @@
 const mode = process.argv[2] ?? 'both'
 const rate = Number(process.env.RATE ?? 3)
 const url = process.env.QUIET_URL
+const token = process.env.QUIET_TOKEN
 const pick = (a) => a[Math.floor(Math.random() * a.length)]
 const ms = (lo, hi) => Math.round(lo + Math.random() * (hi - lo))
 const reqId = (n) => `req_${(n * 2654435761 % 0xfffff).toString(16).padStart(5, '0')}`
@@ -43,7 +45,7 @@ async function flush() {
     try {
       await fetch(`${url.replace(/\/$/, '')}/ingest/ndjson`, {
         method: 'POST',
-        headers: { 'x-quiet-source': source },
+        headers: { 'x-quiet-source': source, ...(token ? { authorization: `Bearer ${token}` } : {}) },
         body: lines.join('\n'),
       })
     } catch (e) {

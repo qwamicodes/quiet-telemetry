@@ -3,12 +3,17 @@
 
 COMPOSE := docker compose -f deploy/docker-compose.local.yml
 
-## dev: server (cargo watch if installed) + Vite with hot reload on :5173 (proxies /api, /ingest to :7070)
+## dev: server (cargo watch if installed) + Vite with hot reload on :5173 (proxies /api, /ingest, /v1 to :7070)
 dev:
 	@trap 'kill 0' EXIT INT TERM; \
 	$(MAKE) --no-print-directory server & \
 	(cd web && bun run dev) & \
 	wait
+
+# Dev server: ingest open so `make sample` works without a token
+# (QUIET_INGEST_AUTH=token make dev to try the token flow).
+QUIET_INGEST_AUTH ?= open
+export QUIET_INGEST_AUTH
 
 server:
 	@cd server && if command -v cargo-watch >/dev/null; then cargo watch -w src -x run; else cargo run; fi

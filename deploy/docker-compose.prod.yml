@@ -15,8 +15,15 @@ services:
       QUIET_DATA_DIR: /data
       QUIET_RETENTION: 24h   # 1h … 7d
       QUIET_MAX_DISK: 5GB    # oldest hour dropped first; keep below the volume's free space
-    # No auth until slice 5: publish on loopback only, or route through Dokploy's
-    # Traefik with access control in front.
+      # HTTP ingest (Vector, Fluent Bit, OTLP, curl) needs a qi_ token from
+      # Settings → Ingest tokens. Defaults shown.
+      QUIET_INGEST_AUTH: token
+      QUIET_INGEST_MAX_BODY: 16MB
+      QUIET_INGEST_RATE: "20000"  # lines/s per token
+    # No accounts until slice 5: publish on loopback only, or route through
+    # Dokploy's Traefik with access control in front. Shippers on other hosts
+    # need a route to /ingest/* and /v1/* (tokens gate those); keep /api and
+    # the UI behind access control until accounts land.
     ports: ["127.0.0.1:7070:7070"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
