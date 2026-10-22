@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDownIcon } from 'lucide-react'
+import { ArrowDownIcon, ArrowUpIcon } from 'lucide-react'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { Kbd } from '@/components/ui/kbd'
@@ -107,8 +107,9 @@ const LogRow = memo(function LogRow({
 })
 
 /**
- * Newest at the bottom, like a terminal tail. Follows the live edge until you
- * scroll up (or pause); then a pill counts what arrived since.
+ * Newest at the bottom like a terminal tail (default), or at the top. Follows
+ * the live edge until you scroll away from it (or pause); then a pill counts
+ * what arrived since.
  */
 export function LogTable({
   lines,
@@ -117,39 +118,47 @@ export function LogTable({
   follow,
   onFollow,
   emptyText,
+  direction = 'bottom',
 }: {
+  /** Oldest first, as the stream keeps them. */
   lines: LogLine[]
   selectedId: number | null
   onSelect: (l: LogLine) => void
   follow: boolean
   onFollow: (f: boolean) => void
   emptyText: string
+  direction?: 'bottom' | 'top'
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const lastSeen = useRef(0)
+  const top = direction === 'top'
+  const rows = useMemo(() => (top ? [...lines].reverse() : lines), [lines, top])
   const v = useVirtualizer({
-    count: lines.length,
+    count: rows.length,
     getScrollElement: () => ref.current,
     estimateSize: () => ROW,
     overscan: 20,
-    getItemKey: (i) => lines[i].id,
+    getItemKey: (i) => rows[i].id,
   })
 
   useLayoutEffect(() => {
-    if (follow && lines.length) v.scrollToIndex(lines.length - 1, { align: 'end' })
+    if (follow && rows.length) {
+      if (top) v.scrollToIndex(0, { align: 'start' })
+      else v.scrollToIndex(rows.length - 1, { align: 'end' })
+    }
     if (follow) lastSeen.current = lines.length ? lines[lines.length - 1].id : 0
-  }, [lines, follow, v])
+  }, [rows, lines, follow, top, v])
 
   // Keep the keyboard selection on screen.
   useEffect(() => {
     if (selectedId == null) return
-    const i = lines.findIndex((l) => l.id === selectedId)
+    const i = rows.findIndex((l) => l.id === selectedId)
     if (i >= 0 && !follow) v.scrollToIndex(i, { align: 'auto' })
-  }, [selectedId, lines, follow, v])
+  }, [selectedId, rows, follow, v])
 
   // Steps column: summaries for the rows on screen, once scrolling settles.
   const items = v.getVirtualItems()
-  const visibleIds = items.map((it) => lines[it.index]?.display_id?.value).filter((x): x is string => Boolean(x))
+  const visibleIds = items.map((it) => rows[it.index]?.display_id?.value).filter((x): x is string => Boolean(x))
   const settled = useDebounced(visibleIds.join('\n'), 400)
   const summaries = useFlowSummaries(useMemo(() => (settled ? settled.split('\n') : []), [settled]))
 
@@ -158,8 +167,8 @@ export function LogTable({
   const onScroll = () => {
     const el = ref.current
     if (!el) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW * 2
-    if (atBottom !== follow) onFollow(atBottom)
+    const atEdge = top ? el.scrollTop < ROW * 2 : el.scrollHeight - el.scrollTop - el.clientHeight < ROW * 2
+    if (atEdge !== follow) onFollow(atEdge)
   }
 
   return (
@@ -184,7 +193,7 @@ export function LogTable({
         )}
         <div style={{ height: v.getTotalSize(), position: 'relative' }}>
           {items.map((item) => {
-            const l = lines[item.index]
+            const l = rows[item.index]
             return (
               <LogRow
                 key={l.id}
@@ -202,9 +211,12 @@ export function LogTable({
         <button
           type="button"
           onClick={() => onFollow(true)}
-          className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-2 border border-brand/40 bg-popover px-3 py-1.5 font-mono text-brand text-xs shadow-lg hover:bg-accent"
+          className={cn(
+            'absolute left-1/2 flex -translate-x-1/2 items-center gap-2 border border-brand/40 bg-popover px-3 py-1.5 font-mono text-brand text-xs shadow-lg hover:bg-accent',
+            top ? 'top-11' : 'bottom-3',
+          )}
         >
-          <ArrowDownIcon className="size-3.5" />
+          {top ? <ArrowUpIcon className="size-3.5" /> : <ArrowDownIcon className="size-3.5" />}
           {unseen > 0 ? `${unseen.toLocaleString()} new lines` : 'Jump to latest'}
           <Kbd>G</Kbd>
         </button>

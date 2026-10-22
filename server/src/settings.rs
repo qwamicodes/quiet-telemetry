@@ -1,0 +1,796 @@
+//! Instance settings changed from the UI, persisted in `quiet.db`.
+//!
+//! One table, `settings (k, v, updated, by)`, with a JSON value per key:
+//! `general`, `storage`, `flow_ids` and `source:<name>` (one per source with
+//! settings). Everything is read into memory at startup; writes go to SQLite
+//! first, then to memory, so a failed write changes nothing.
+//!
+//! **Precedence** (storage): a value saved in the UI wins over the
+//! `--retention` / `--max-disk` flags (`QUIET_RETENTION` / `QUIET_MAX_DISK`),
+//! which win over the built-in defaults (24h, 5GB). "Use the flag value" in
+//! the UI deletes the saved value, so the flag applies again. Each value
+//! reports where it came from ([`Origin`]).
+//!
+//! Changes apply at runtime: the retention job is woken ([`Settings::changed`]),
+//! the pipeline reads `paused` per batch, and the correlation-id policy is
+//! re-installed for `normalize` (see `idpolicy.rs`).
+
+use crate::idpolicy::{self, IdPolicy};
+use crate::normalize::{IdKey, Level};
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+use std::sync::{Mutex, RwLock};
+use tokio::sync::Notify;
+use ts_rs::TS;
+
+pub const HOUR_MS: i64 = 3_600_000;
+pub const MIN_RETENTION_MS: i64 = HOUR_MS;
+pub const MAX_RETENTION_MS: i64 = 7 * 24 * HOUR_MS;
+pub const DEFAULT_RETENTION_MS: i64 = 24 * HOUR_MS;
+pub const DEFAULT_MAX_DISK: u64 = 5_000_000_000;
+pub const MIN_MAX_DISK: u64 = 10_000_000;
+/// Far beyond any disk quiet will see; keeps the number JSON-safe.
+pub const MAX_MAX_DISK: u64 = 100_000_000_000_000;
+
+// ---- wire types -------------------------------------------------------------------
+
+/// Where the newest line sits in the stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamDirection {
+    /// Like a terminal tail (the default).
+    #[default]
+    Bottom,
+    Top,
+}
+
+/// Settings → General.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct GeneralSettings {
+    /// Browser tab, user menu and "Join <name>" on invite links.
+    pub instance_name: String,
+    /// Default for everyone; each browser can still flip it in the stream.
+    pub stream_direction: StreamDirection,
+    /// `local` (each viewer's browser zone), `UTC`, or an IANA zone like `Africa/Accra`.
+    pub timezone: String,
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        GeneralSettings {
+            instance_name: "quiet".into(),
+            stream_direction: StreamDirection::Bottom,
+            timezone: "local".into(),
+        }
+    }
+}
+
+/// Where an effective storage value came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum Origin {
+    /// Saved in Settings → Storage.
+    Setting,
+    /// `--retention` / `--max-disk` (or their env vars).
+    Flag,
+    /// Built in (24h, 5GB).
+    Default,
+}
+
+/// Settings → Storage, as in effect now.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct StorageSettings {
+    /// How long lines stay searchable, ms (1h … 7d).
+    pub retention_ms: i64,
+    pub retention_origin: Origin,
+    /// Disk cap for the database, bytes.
+    pub max_disk: u64,
+    pub max_disk_origin: Origin,
+    /// What the flags (or built-in defaults) say, for "use the flag value".
+    pub flag_retention_ms: i64,
+    pub flag_max_disk: u64,
+    /// What happens at the cap. Only one behaviour in v0.1.
+    #[ts(type = "\"drop_oldest_hour\"")]
+    pub at_cap: String,
+}
+
+/// `PUT /api/settings/storage`. `null` clears the saved value (the flag applies).
+#[derive(Debug, Clone, Deserialize, TS)]
+pub struct UpdateStorage {
+    #[ts(optional, type = "number | null")]
+    #[serde(default, deserialize_with = "nullable")]
+    pub retention_ms: Option<Option<i64>>,
+    #[ts(optional, type = "number | null")]
+    #[serde(default, deserialize_with = "nullable")]
+    pub max_disk: Option<Option<u64>>,
+}
+
+/// Absent → `None` (leave as is); `null` → `Some(None)` (clear).
+fn nullable<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// How flows stitch (Settings → Flow id order).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct FlowIdSettings {
+    /// Keys that count as correlation ids, in display order. Keys left out
+    /// are ignored everywhere (rows, index, stitching).
+    pub order: Vec<IdKey>,
+    /// `value` (default): an id links lines whatever key carries it (a
+    /// `request_id` passed on as a job's `data.request_id` still links).
+    /// `key`: only lines carrying it under the same key link, so a numeric
+    /// `job_id` 42 never merges with an unrelated `request_id` 42.
+    pub match_by: MatchBy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchBy {
+    #[default]
+    Value,
+    Key,
+}
+
+impl Default for FlowIdSettings {
+    fn default() -> Self {
+        FlowIdSettings {
+            order: idpolicy::ALL.to_vec(),
+            match_by: MatchBy::Value,
+        }
+    }
+}
+
+/// Built-in PII groups masked in exports (and, per source, switchable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PiiKind {
+    Email,
+    Phone,
+    Name,
+    Ip,
+    UserAgent,
+}
+
+/// Sources → a source → Settings. Every field is optional/empty by default,
+/// meaning "as the instance does".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+pub struct SourceSettings {
+    /// Shown in the sidebar, stream and flows; stored lines keep the real name.
+    pub display_name: Option<String>,
+    /// Hidden from the sidebar and the stream's source list (still stored).
+    pub hidden: bool,
+    /// Ingest paused: new lines from this source are dropped (and counted).
+    pub paused: bool,
+    /// Shorter window for this source, ms; never longer than the instance's.
+    pub retention_ms: Option<i64>,
+    /// Correlation-id keys for this source, in order; `null` = instance order.
+    pub id_keys: Option<Vec<IdKey>>,
+    /// Level filter the stream opens with for this source.
+    pub default_level: Option<Level>,
+    /// Extra field keys masked for this source (e.g. `customer.address`).
+    pub mask_fields: Vec<String>,
+    /// Built-in PII groups NOT masked for this source.
+    pub unmasked: Vec<PiiKind>,
+}
+
+/// `GET /api/settings`: everything at once (any signed-in user).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct SettingsResponse {
+    pub general: GeneralSettings,
+    pub storage: StorageSettings,
+    pub flow_ids: FlowIdSettings,
+    pub sources: BTreeMap<String, SourceSettings>,
+}
+
+// ---- store ---------------------------------------------------------------------------
+
+/// The flag/env values, the layer under saved settings.
+#[derive(Debug, Clone, Copy)]
+pub struct Defaults {
+    pub retention_ms: i64,
+    pub max_disk: u64,
+}
+
+impl Default for Defaults {
+    fn default() -> Self {
+        Defaults {
+            retention_ms: DEFAULT_RETENTION_MS,
+            max_disk: DEFAULT_MAX_DISK,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct StorageOverride {
+    retention_ms: Option<i64>,
+    max_disk: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct State {
+    general: GeneralSettings,
+    storage: StorageOverride,
+    flow_ids: FlowIdSettings,
+    sources: BTreeMap<String, SourceSettings>,
+}
+
+/// A settings write failed: bad input (400) or storage (503).
+#[derive(Debug)]
+pub enum SettingsError {
+    Invalid(String),
+    Store(anyhow::Error),
+}
+
+impl From<rusqlite::Error> for SettingsError {
+    fn from(e: rusqlite::Error) -> Self {
+        SettingsError::Store(e.into())
+    }
+}
+
+impl From<serde_json::Error> for SettingsError {
+    fn from(e: serde_json::Error) -> Self {
+        SettingsError::Store(e.into())
+    }
+}
+
+fn invalid<T>(msg: impl Into<String>) -> Result<T, SettingsError> {
+    Err(SettingsError::Invalid(msg.into()))
+}
+
+pub struct Settings {
+    db: Mutex<Connection>,
+    defaults: RwLock<Defaults>,
+    state: RwLock<State>,
+    /// Install the id policy process-wide (the server does; tests don't).
+    publish: bool,
+    /// Woken on every storage-affecting change (the retention job waits on
+    /// it; `notify_one` keeps a permit if the job is mid-sweep).
+    pub changed: Notify,
+}
+
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings").finish_non_exhaustive()
+    }
+}
+
+impl Settings {
+    /// Open the table in `path` (the main `quiet.db`) or in memory, and load it.
+    pub fn open(path: Option<&Path>, defaults: Defaults, publish: bool) -> anyhow::Result<Self> {
+        let db = match path {
+            Some(p) => {
+                if let Some(dir) = p.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                Connection::open(p)?
+            }
+            None => Connection::open_in_memory()?,
+        };
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS settings (
+                 k TEXT PRIMARY KEY,
+                 v TEXT NOT NULL,
+                 updated INTEGER NOT NULL,
+                 by INTEGER);",
+        )?;
+        let mut state = State::default();
+        {
+            let mut st = db.prepare("SELECT k, v FROM settings")?;
+            let rows =
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (k, v) = row?;
+                // A value this version can't read is skipped (and logged), never fatal.
+                let ok = match k.as_str() {
+                    "general" => serde_json::from_str(&v).map(|x| state.general = x),
+                    "storage" => serde_json::from_str(&v).map(|x| state.storage = x),
+                    "flow_ids" => serde_json::from_str(&v).map(|x| state.flow_ids = x),
+                    k => match k.strip_prefix("source:") {
+                        Some(name) => serde_json::from_str(&v).map(|x| {
+                            state.sources.insert(name.to_string(), x);
+                        }),
+                        None => Ok(()),
+                    },
+                };
+                if let Err(e) = ok {
+                    tracing::warn!(key = k, error = %e, "ignoring unreadable setting");
+                }
+            }
+        }
+        let me = Settings {
+            db: Mutex::new(db),
+            defaults: RwLock::new(defaults),
+            state: RwLock::new(state),
+            publish,
+            changed: Notify::new(),
+        };
+        me.install_policy();
+        Ok(me)
+    }
+
+    /// In memory with built-in defaults; never installs the id policy (tests).
+    #[cfg(test)]
+    pub fn memory() -> Self {
+        Settings::open(None, Defaults::default(), false).expect("in-memory sqlite")
+    }
+
+    fn save(&self, key: &str, value: Option<String>, by: Option<i64>) -> Result<(), SettingsError> {
+        let db = self.db.lock().unwrap();
+        match value {
+            Some(v) => db.execute(
+                "INSERT INTO settings (k, v, updated, by) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (k) DO UPDATE SET v = ?2, updated = ?3, by = ?4",
+                params![key, v, chrono::Utc::now().timestamp_millis(), by],
+            )?,
+            None => db.execute("DELETE FROM settings WHERE k = ?", [key])?,
+        };
+        Ok(())
+    }
+
+    fn install_policy(&self) {
+        if !self.publish {
+            return;
+        }
+        let st = self.state.read().unwrap();
+        idpolicy::install(IdPolicy {
+            global: st.flow_ids.order.clone(),
+            sources: st
+                .sources
+                .iter()
+                .filter_map(|(k, v)| v.id_keys.clone().map(|o| (k.clone(), o)))
+                .collect::<HashMap<_, _>>(),
+        });
+    }
+
+    // ---- reads ----
+
+    pub fn general(&self) -> GeneralSettings {
+        self.state.read().unwrap().general.clone()
+    }
+
+    pub fn storage(&self) -> StorageSettings {
+        let d = *self.defaults.read().unwrap();
+        let o = self.state.read().unwrap().storage.clone();
+        let flag_origin = |is_default: bool| {
+            if is_default {
+                Origin::Default
+            } else {
+                Origin::Flag
+            }
+        };
+        StorageSettings {
+            retention_ms: o.retention_ms.unwrap_or(d.retention_ms),
+            retention_origin: if o.retention_ms.is_some() {
+                Origin::Setting
+            } else {
+                flag_origin(d.retention_ms == DEFAULT_RETENTION_MS)
+            },
+            max_disk: o.max_disk.unwrap_or(d.max_disk),
+            max_disk_origin: if o.max_disk.is_some() {
+                Origin::Setting
+            } else {
+                flag_origin(d.max_disk == DEFAULT_MAX_DISK)
+            },
+            flag_retention_ms: d.retention_ms,
+            flag_max_disk: d.max_disk,
+            at_cap: "drop_oldest_hour".into(),
+        }
+    }
+
+    /// The searchable window now, ms.
+    pub fn retention_ms(&self) -> i64 {
+        self.storage().retention_ms
+    }
+
+    pub fn flow_ids(&self) -> FlowIdSettings {
+        self.state.read().unwrap().flow_ids.clone()
+    }
+
+    pub fn source(&self, name: &str) -> SourceSettings {
+        self.state
+            .read()
+            .unwrap()
+            .sources
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn sources(&self) -> BTreeMap<String, SourceSettings> {
+        self.state.read().unwrap().sources.clone()
+    }
+
+    pub fn paused(&self, name: &str) -> bool {
+        self.state
+            .read()
+            .unwrap()
+            .sources
+            .get(name)
+            .is_some_and(|s| s.paused)
+    }
+
+    /// Sources with a shorter window than the instance's: `(name, window ms)`.
+    pub fn source_windows(&self) -> Vec<(String, i64)> {
+        let global = self.retention_ms();
+        self.state
+            .read()
+            .unwrap()
+            .sources
+            .iter()
+            .filter_map(|(k, v)| v.retention_ms.map(|r| (k.clone(), r)))
+            .filter(|(_, r)| *r < global)
+            .collect()
+    }
+
+    pub fn all(&self) -> SettingsResponse {
+        SettingsResponse {
+            general: self.general(),
+            storage: self.storage(),
+            flow_ids: self.flow_ids(),
+            sources: self.sources(),
+        }
+    }
+
+    // ---- writes (callers check the owner role) ----
+
+    pub fn put_general(
+        &self,
+        mut g: GeneralSettings,
+        by: Option<i64>,
+    ) -> Result<GeneralSettings, SettingsError> {
+        g.instance_name = g.instance_name.trim().to_string();
+        if g.instance_name.is_empty()
+            || g.instance_name.chars().count() > 40
+            || g.instance_name.chars().any(char::is_control)
+        {
+            return invalid("instance_name: 1–40 characters");
+        }
+        g.timezone = g.timezone.trim().to_string();
+        if !valid_timezone(&g.timezone) {
+            return invalid("timezone: `local`, `UTC` or an IANA zone like Africa/Accra");
+        }
+        self.save("general", Some(serde_json::to_string(&g)?), by)?;
+        self.state.write().unwrap().general = g.clone();
+        Ok(g)
+    }
+
+    pub fn put_storage(
+        &self,
+        u: UpdateStorage,
+        by: Option<i64>,
+    ) -> Result<StorageSettings, SettingsError> {
+        let mut o = self.state.read().unwrap().storage.clone();
+        if let Some(r) = u.retention_ms {
+            if let Some(ms) = r {
+                if !(MIN_RETENTION_MS..=MAX_RETENTION_MS).contains(&ms) || ms % HOUR_MS != 0 {
+                    return invalid("retention_ms: whole hours between 1h and 7d");
+                }
+            }
+            o.retention_ms = r;
+        }
+        if let Some(m) = u.max_disk {
+            if let Some(b) = m {
+                if !(MIN_MAX_DISK..=MAX_MAX_DISK).contains(&b) {
+                    return invalid("max_disk: at least 10 MB");
+                }
+            }
+            o.max_disk = m;
+        }
+        let value = (o.retention_ms.is_some() || o.max_disk.is_some())
+            .then(|| serde_json::to_string(&o))
+            .transpose()?;
+        self.save("storage", value, by)?;
+        self.state.write().unwrap().storage = o;
+        self.changed.notify_one();
+        Ok(self.storage())
+    }
+
+    pub fn put_flow_ids(
+        &self,
+        f: FlowIdSettings,
+        by: Option<i64>,
+    ) -> Result<FlowIdSettings, SettingsError> {
+        check_order(&f.order)?;
+        self.save("flow_ids", Some(serde_json::to_string(&f)?), by)?;
+        self.state.write().unwrap().flow_ids = f.clone();
+        self.install_policy();
+        Ok(f)
+    }
+
+    pub fn put_source(
+        &self,
+        name: &str,
+        mut s: SourceSettings,
+        by: Option<i64>,
+    ) -> Result<SourceSettings, SettingsError> {
+        if let Some(d) = &s.display_name {
+            let d = d.trim();
+            if d.chars().count() > 64 || d.chars().any(char::is_control) {
+                return invalid("display_name: up to 64 characters");
+            }
+            s.display_name = (!d.is_empty() && d != name).then(|| d.to_string());
+        }
+        if let Some(r) = s.retention_ms {
+            let global = self.retention_ms();
+            if r < MIN_RETENTION_MS || r % HOUR_MS != 0 {
+                return invalid("retention_ms: whole hours, at least 1h");
+            }
+            if r > global {
+                return invalid(format!(
+                    "retention_ms: a source can't keep lines longer than the instance ({}h)",
+                    global / HOUR_MS
+                ));
+            }
+        }
+        if let Some(o) = &s.id_keys {
+            check_order(o)?;
+        }
+        let mut fields: Vec<String> = Vec::new();
+        for f in &s.mask_fields {
+            let f = f.trim();
+            if f.is_empty() {
+                continue;
+            }
+            if f.chars().count() > 128 || f.chars().any(char::is_control) {
+                return invalid("mask_fields: keys up to 128 characters");
+            }
+            if !fields.iter().any(|x| x == f) {
+                fields.push(f.to_string());
+            }
+        }
+        if fields.len() > 64 {
+            return invalid("mask_fields: at most 64 keys");
+        }
+        s.mask_fields = fields;
+        s.unmasked.sort_by_key(|k| *k as u8);
+        s.unmasked.dedup();
+
+        let key = format!("source:{name}");
+        let value = (s != SourceSettings::default())
+            .then(|| serde_json::to_string(&s))
+            .transpose()?;
+        self.save(&key, value, by)?;
+        {
+            let mut st = self.state.write().unwrap();
+            if s == SourceSettings::default() {
+                st.sources.remove(name);
+            } else {
+                st.sources.insert(name.to_string(), s.clone());
+            }
+        }
+        self.install_policy();
+        self.changed.notify_one();
+        Ok(s)
+    }
+
+    /// Forget a source's settings (Reset / remove source).
+    pub fn reset_source(&self, name: &str, by: Option<i64>) -> Result<(), SettingsError> {
+        self.put_source(name, SourceSettings::default(), by)
+            .map(|_| ())
+    }
+
+    /// Whether `key` (a field key, compared lowercase with `-` as `_`) is
+    /// masked for `source` on export.
+    pub fn masker(&self, source: &str) -> Masker {
+        let s = self.source(source);
+        Masker {
+            extra: s
+                .mask_fields
+                .iter()
+                .map(|f| f.to_ascii_lowercase().replace('-', "_"))
+                .collect(),
+            unmasked: s.unmasked,
+        }
+    }
+}
+
+/// The per-source masking rule for exports.
+#[derive(Debug, Clone, Default)]
+pub struct Masker {
+    /// Extra keys, full dotted paths or last segments, normalised.
+    pub extra: Vec<String>,
+    pub unmasked: Vec<PiiKind>,
+}
+
+fn check_order(o: &[IdKey]) -> Result<(), SettingsError> {
+    if o.is_empty() {
+        return invalid("order: keep at least one id key");
+    }
+    let mut seen = Vec::new();
+    for k in o {
+        if seen.contains(k) {
+            return invalid("order: each key once");
+        }
+        seen.push(*k);
+    }
+    Ok(())
+}
+
+/// `local`, `UTC`, or something shaped like an IANA zone. The browser checks
+/// the zone really exists (Intl); the server only refuses junk.
+pub fn valid_timezone(tz: &str) -> bool {
+    if tz == "local" || tz == "UTC" {
+        return true;
+    }
+    let parts: Vec<&str> = tz.split('/').collect();
+    tz.len() <= 64
+        && (2..=3).contains(&parts.len())
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+'))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp() -> std::path::PathBuf {
+        std::env::temp_dir()
+            .join(format!("quiet-settings-{}", rand::random::<u64>()))
+            .join("quiet.db")
+    }
+
+    #[test]
+    fn saved_storage_beats_flags_which_beat_defaults_and_survives_restart() {
+        let path = tmp();
+        let flags = Defaults {
+            retention_ms: 3 * 24 * HOUR_MS,
+            max_disk: DEFAULT_MAX_DISK,
+        };
+        let s = Settings::open(Some(&path), flags, false).unwrap();
+        let st = s.storage();
+        assert_eq!(st.retention_ms, 3 * 24 * HOUR_MS);
+        assert_eq!(st.retention_origin, Origin::Flag);
+        assert_eq!(st.max_disk_origin, Origin::Default);
+
+        s.put_storage(
+            UpdateStorage {
+                retention_ms: Some(Some(HOUR_MS)),
+                max_disk: Some(Some(2_000_000_000)),
+            },
+            Some(1),
+        )
+        .unwrap();
+        drop(s);
+        let s = Settings::open(Some(&path), flags, false).unwrap();
+        let st = s.storage();
+        assert_eq!(
+            (st.retention_ms, st.retention_origin),
+            (HOUR_MS, Origin::Setting)
+        );
+        assert_eq!(
+            (st.max_disk, st.max_disk_origin),
+            (2_000_000_000, Origin::Setting)
+        );
+        assert_eq!(st.flag_retention_ms, 3 * 24 * HOUR_MS);
+
+        // null clears: the flag applies again.
+        s.put_storage(
+            UpdateStorage {
+                retention_ms: Some(None),
+                max_disk: None,
+            },
+            None,
+        )
+        .unwrap();
+        let st = s.storage();
+        assert_eq!(
+            (st.retention_ms, st.retention_origin),
+            (3 * 24 * HOUR_MS, Origin::Flag)
+        );
+        assert_eq!(st.max_disk, 2_000_000_000);
+    }
+
+    #[test]
+    fn storage_and_general_are_validated() {
+        let s = Settings::memory();
+        let bad = |r: i64| {
+            s.put_storage(
+                UpdateStorage {
+                    retention_ms: Some(Some(r)),
+                    max_disk: None,
+                },
+                None,
+            )
+            .is_err()
+        };
+        assert!(bad(30 * 60_000) && bad(8 * 24 * HOUR_MS) && bad(HOUR_MS + 1));
+        assert!(s
+            .put_storage(
+                UpdateStorage {
+                    retention_ms: None,
+                    max_disk: Some(Some(1_000))
+                },
+                None
+            )
+            .is_err());
+        let g = |name: &str, tz: &str| GeneralSettings {
+            instance_name: name.into(),
+            stream_direction: StreamDirection::Top,
+            timezone: tz.into(),
+        };
+        assert!(s.put_general(g("", "local"), None).is_err());
+        assert!(s.put_general(g("legivent", "Mars/../x"), None).is_err());
+        let saved = s
+            .put_general(g("  legivent ", "Africa/Accra"), None)
+            .unwrap();
+        assert_eq!(saved.instance_name, "legivent");
+        assert_eq!(s.general().stream_direction, StreamDirection::Top);
+        assert!(valid_timezone("America/Argentina/Buenos_Aires") && valid_timezone("UTC"));
+    }
+
+    #[test]
+    fn source_overrides_are_capped_by_the_instance_and_reset_cleanly() {
+        let s = Settings::memory();
+        let mut src = SourceSettings {
+            retention_ms: Some(48 * HOUR_MS),
+            ..Default::default()
+        };
+        assert!(matches!(
+            s.put_source("api", src.clone(), None),
+            Err(SettingsError::Invalid(_))
+        ));
+        src.retention_ms = Some(6 * HOUR_MS);
+        src.display_name = Some(" API ".into());
+        src.mask_fields = vec![
+            "customer.address".into(),
+            " ".into(),
+            "customer.address".into(),
+        ];
+        src.id_keys = Some(vec![IdKey::JobId, IdKey::JobId]);
+        assert!(s.put_source("api", src.clone(), None).is_err());
+        src.id_keys = Some(vec![IdKey::JobId, IdKey::RequestId]);
+        let saved = s.put_source("api", src, None).unwrap();
+        assert_eq!(saved.display_name.as_deref(), Some("API"));
+        assert_eq!(saved.mask_fields, vec!["customer.address"]);
+        assert_eq!(s.source_windows(), vec![("api".to_string(), 6 * HOUR_MS)]);
+
+        // Same name as the source → no display name.
+        let saved = s
+            .put_source(
+                "api",
+                SourceSettings {
+                    display_name: Some("api".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(saved.display_name, None);
+        assert!(s.sources().is_empty(), "all-default settings are not kept");
+
+        s.put_source(
+            "worker",
+            SourceSettings {
+                paused: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert!(s.paused("worker") && !s.paused("api"));
+        s.reset_source("worker", None).unwrap();
+        assert!(!s.paused("worker"));
+    }
+
+    #[test]
+    fn flow_id_order_needs_a_key_and_no_repeats() {
+        let s = Settings::memory();
+        let mut f = FlowIdSettings {
+            order: vec![],
+            match_by: MatchBy::Key,
+        };
+        assert!(s.put_flow_ids(f.clone(), None).is_err());
+        f.order = vec![IdKey::TraceId, IdKey::RequestId];
+        assert_eq!(s.put_flow_ids(f, None).unwrap().match_by, MatchBy::Key);
+        assert_eq!(s.flow_ids().order[0], IdKey::TraceId);
+    }
+}

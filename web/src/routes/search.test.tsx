@@ -8,8 +8,28 @@ import { makeRouter } from '@/router'
 import { seedAuth } from '@/test/auth'
 
 const sources: SourceInfo[] = [
-  { name: 'api', kind: 'docker', containers: [], group: null, lines: 3, last_ts: Date.now() },
-  { name: 'worker', kind: 'http', containers: [], group: null, lines: 1, last_ts: Date.now() },
+  {
+    name: 'api',
+    kind: 'docker',
+    containers: [],
+    group: null,
+    lines: 3,
+    last_ts: Date.now(),
+    display_name: null,
+    hidden: false,
+    paused: false,
+  },
+  {
+    name: 'worker',
+    kind: 'http',
+    containers: [],
+    group: null,
+    lines: 1,
+    last_ts: Date.now(),
+    display_name: null,
+    hidden: false,
+    paused: false,
+  },
 ]
 const health: Health = {
   ok: true,

@@ -49,8 +49,6 @@ pub struct AppState {
     pub ready: Arc<AtomicBool>,
     /// Cancelled when the drain period ends; open streams close then.
     pub shutdown: CancellationToken,
-    /// How far back search reaches by default (the retention window), ms.
-    pub retention_ms: i64,
     /// Read-only `qx_` export tokens (hashed, 15 min, reusable).
     pub tokens: Arc<ExportTokens>,
     /// Send-only `qi_` ingest tokens (hashed, persisted).
@@ -70,7 +68,6 @@ pub struct AppState {
 #[derive(Clone, Debug, Default)]
 pub struct HostInfo {
     pub data_dir: Option<PathBuf>,
-    pub max_disk: u64,
 }
 
 impl AppState {
@@ -81,7 +78,6 @@ impl AppState {
             started: chrono::Utc::now().timestamp_millis(),
             ready: Arc::new(AtomicBool::new(true)),
             shutdown: CancellationToken::new(),
-            retention_ms: 24 * 3_600_000,
             tokens: Arc::new(ExportTokens::default()),
             ingest_tokens: Arc::new(IngestTokens::memory()),
             ingest: IngestConfig::default(),
@@ -116,9 +112,9 @@ impl AppState {
         self
     }
 
-    pub fn with_retention(mut self, ms: i64) -> Self {
-        self.retention_ms = ms;
-        self
+    /// How far back search and flows reach (the live retention window), ms.
+    pub fn retention_ms(&self) -> i64 {
+        self.pipeline.settings().retention_ms()
     }
 }
 
@@ -132,6 +128,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::search_api::routes())
         .merge(crate::flow_api::routes())
         .merge(crate::tokens_api::routes())
+        .merge(crate::settings_api::routes())
         .merge(crate::auth_api::session_routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -196,7 +193,7 @@ async fn health(State(s): State<AppState>) -> Json<Health> {
         started: s.started,
         docker: s.docker.lock().unwrap().clone(),
         store: s.pipeline.store().kind().to_string(),
-        retention_ms: s.retention_ms,
+        retention_ms: s.retention_ms(),
         disk_bytes: usage.bytes,
         stored_lines: usage.lines,
         oldest: usage.oldest,
@@ -210,9 +207,16 @@ pub struct SourcesResponse {
 }
 
 async fn sources(State(s): State<AppState>) -> Json<SourcesResponse> {
-    Json(SourcesResponse {
-        sources: s.pipeline.hub().list(),
-    })
+    let settings = s.pipeline.settings().sources();
+    let mut sources = s.pipeline.hub().list();
+    for src in &mut sources {
+        if let Some(st) = settings.get(&src.name) {
+            src.display_name = st.display_name.clone();
+            src.hidden = st.hidden;
+            src.paused = st.paused;
+        }
+    }
+    Json(SourcesResponse { sources })
 }
 
 #[derive(Deserialize)]

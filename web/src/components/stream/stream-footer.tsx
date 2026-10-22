@@ -2,13 +2,21 @@ import { StatusDot } from '@/components/status-dot'
 import { Kbd } from '@/components/ui/kbd'
 import type { LiveState } from './top-bar'
 
-export function StreamFooter({ state, count }: { state: LiveState; count: number }) {
+export function StreamFooter({
+  state,
+  count,
+  direction = 'bottom',
+}: {
+  state: LiveState
+  count: number
+  direction?: 'bottom' | 'top'
+}) {
   const label = state === 'live' ? 'streaming' : state === 'paused' ? 'paused' : 'offline'
   return (
     <footer className="flex h-9 shrink-0 items-center gap-2 border-t px-3 font-mono text-[11px] text-muted-foreground">
       <StatusDot status={state === 'live' ? 'ok' : state === 'paused' ? 'warn' : 'err'} />
       <span>
-        {label} · newest at bottom · {count.toLocaleString()} lines in view
+        {label} · newest at {direction} · {count.toLocaleString()} lines in view
       </span>
       <span className="flex-1" />
       <span className="hidden items-center gap-1.5 md:flex">

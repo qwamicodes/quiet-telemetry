@@ -8,8 +8,28 @@ import { makeRouter } from '@/router'
 import { seedAuth } from '@/test/auth'
 
 const sources: SourceInfo[] = [
-  { name: 'api', kind: 'http', containers: [], group: null, lines: 2, last_ts: Date.now() },
-  { name: 'worker', kind: 'docker', containers: ['proj-worker-1'], group: 'proj', lines: 0, last_ts: null },
+  {
+    name: 'api',
+    kind: 'http',
+    containers: [],
+    group: null,
+    lines: 2,
+    last_ts: Date.now(),
+    display_name: null,
+    hidden: false,
+    paused: false,
+  },
+  {
+    name: 'worker',
+    kind: 'docker',
+    containers: ['proj-worker-1'],
+    group: 'proj',
+    lines: 0,
+    last_ts: null,
+    display_name: null,
+    hidden: false,
+    paused: false,
+  },
 ]
 const health: Health = {
   ok: true,
@@ -188,9 +208,9 @@ describe('popups (every Base UI popup the app uses opens without crashing)', () 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
-  it('settings toggles the theme', async () => {
+  it('settings → appearance toggles the theme', async () => {
     const user = userEvent.setup()
-    renderApp('/settings')
+    renderApp('/settings/appearance')
     await user.click(await screen.findByRole('button', { name: 'Light' }))
     await waitFor(() => expect(document.documentElement).toHaveClass('light'))
     await user.click(screen.getByRole('button', { name: 'Dark' }))

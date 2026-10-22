@@ -22,7 +22,8 @@
 //! each search in one read transaction so a concurrent drop can't tear it.
 
 use super::{
-    rank_similar, similar_prefix, MemoryStore, Query, Restored, Store, StoredSource, Usage,
+    rank_similar, similar_prefix, HourUsage, MemoryStore, Query, Restored, SourceUsage,
+    StorageUsage, Store, StoreHealth, StoredSource, Usage,
 };
 use crate::hub::{Line, SourceKind};
 use crate::normalize::{normalize, CorrId, IdKey, Level};
@@ -52,6 +53,8 @@ pub struct SqliteOptions {
     pub path: PathBuf,
     /// Live lines kept in memory per source (the stream backlog).
     pub ring: usize,
+    /// Memory budget for every ring together (estimated bytes).
+    pub ring_memory: usize,
 }
 
 enum Msg {
@@ -59,12 +62,17 @@ enum Msg {
     Flush(oneshot::Sender<()>),
     Expire(i64, oneshot::Sender<anyhow::Result<u64>>),
     Cap(u64, oneshot::Sender<anyhow::Result<u64>>),
+    /// Lines of one source older than the cutoff (`i64::MAX` = all of them).
+    ExpireSource(String, i64, oneshot::Sender<anyhow::Result<u64>>),
+    /// Every hour, newest included.
+    PurgeAll(oneshot::Sender<anyhow::Result<u64>>),
 }
 
 pub struct SqliteStore {
     ring: MemoryStore,
     tx: mpsc::Sender<Msg>,
     readers: Arc<Readers>,
+    health: Arc<Mutex<StoreHealth>>,
 }
 
 struct Readers {
@@ -118,7 +126,11 @@ fn open_writer(path: &PathBuf) -> anyhow::Result<Connection> {
          CREATE TABLE IF NOT EXISTS sources (
              name TEXT PRIMARY KEY, kind TEXT NOT NULL,
              lines INTEGER NOT NULL DEFAULT 0, last_ts INTEGER);
-         CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);",
+         CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS source_hours (
+             hour INTEGER NOT NULL, source TEXT NOT NULL,
+             lines INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
+             PRIMARY KEY (hour, source));",
     )?;
     Ok(c)
 }
@@ -134,7 +146,7 @@ impl SqliteStore {
         });
 
         // Warm the ring so the stream has a backlog right after a restart.
-        let ring = MemoryStore::new(opts.ring);
+        let ring = MemoryStore::with_budget(opts.ring, opts.ring_memory);
         let sources: Vec<String> = readers.with(|c| {
             let mut st = c.prepare("SELECT name FROM sources ORDER BY name")?;
             let names = st
@@ -153,11 +165,19 @@ impl SqliteStore {
             ring.push_many(&page.lines);
         }
 
+        let health = Arc::new(Mutex::new(StoreHealth::default()));
+        let mut w = Writer::new(writer, health.clone());
+        w.backfill_source_hours()?;
         let (tx, rx) = mpsc::channel(1024);
         std::thread::Builder::new()
             .name("quiet-sqlite-writer".into())
-            .spawn(move || Writer::new(writer).run(rx))?;
-        Ok(SqliteStore { ring, tx, readers })
+            .spawn(move || w.run(rx))?;
+        Ok(SqliteStore {
+            ring,
+            tx,
+            readers,
+            health,
+        })
     }
 
     async fn read<T: Send + 'static>(
@@ -297,6 +317,60 @@ impl Store for SqliteStore {
         self.ask(|tx| Msg::Cap(max_bytes, tx)).await?
     }
 
+    async fn expire_source(&self, source: &str, cutoff: i64) -> anyhow::Result<u64> {
+        self.ring.expire_source_sync(source, cutoff);
+        let source = source.to_string();
+        self.ask(|tx| Msg::ExpireSource(source, cutoff, tx)).await?
+    }
+
+    async fn purge(&self, source: Option<&str>) -> anyhow::Result<u64> {
+        match source {
+            Some(s) => {
+                self.ring.remove_source(s);
+                let s = s.to_string();
+                self.ask(|tx| Msg::ExpireSource(s, i64::MAX, tx)).await?
+            }
+            None => {
+                self.ring.clear();
+                self.ask(Msg::PurgeAll).await?
+            }
+        }
+    }
+
+    fn health(&self) -> StoreHealth {
+        self.health.lock().unwrap().clone()
+    }
+
+    async fn storage(&self) -> anyhow::Result<StorageUsage> {
+        self.read(|c| {
+            let mut st = c.prepare("SELECT hour, lines, bytes FROM partitions ORDER BY hour")?;
+            let hours = st
+                .query_map([], |r| {
+                    Ok(HourUsage {
+                        start: r.get::<_, i64>(0)? * HOUR,
+                        lines: r.get::<_, i64>(1)?.max(0) as u64,
+                        bytes: r.get::<_, i64>(2)?.max(0) as u64,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut st = c.prepare(
+                "SELECT source, SUM(lines), SUM(bytes) FROM source_hours
+                 GROUP BY source HAVING SUM(lines) > 0 ORDER BY SUM(bytes) DESC",
+            )?;
+            let sources = st
+                .query_map([], |r| {
+                    Ok(SourceUsage {
+                        source: r.get(0)?,
+                        lines: r.get::<_, i64>(1)?.max(0) as u64,
+                        bytes: r.get::<_, i64>(2)?.max(0) as u64,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(StorageUsage { hours, sources })
+        })
+        .await
+    }
+
     async fn flush(&self) -> anyhow::Result<()> {
         self.ask(Msg::Flush).await
     }
@@ -373,15 +447,55 @@ fn t(prefix: char, hour: i64) -> String {
 struct Writer {
     conn: Connection,
     known: HashSet<i64>,
+    health: Arc<Mutex<StoreHealth>>,
 }
 
 impl Writer {
-    fn new(conn: Connection) -> Self {
+    fn new(conn: Connection, health: Arc<Mutex<StoreHealth>>) -> Self {
         let known = conn
             .prepare("SELECT hour FROM partitions")
             .and_then(|mut st| st.query_map([], |r| r.get(0))?.collect())
             .unwrap_or_default();
-        Writer { conn, known }
+        Writer {
+            conn,
+            known,
+            health,
+        }
+    }
+
+    /// Databases from before slice 6 have no per-source volume table: count
+    /// it once from the stored hours.
+    fn backfill_source_hours(&mut self) -> anyhow::Result<()> {
+        let have: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM source_hours", [], |r| r.get(0))?;
+        if have > 0 || self.known.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        for h in &self.known {
+            tx.execute(
+                &format!(
+                    "INSERT OR REPLACE INTO source_hours (hour, source, lines, bytes)
+                     SELECT {h}, source, COUNT(*), SUM(length(CAST(raw AS BLOB))) FROM {}
+                     GROUP BY source",
+                    t('l', *h)
+                ),
+                [],
+            )?;
+        }
+        tx.commit()?;
+        tracing::info!(
+            hours = self.known.len(),
+            "counted per-source volume for existing hours"
+        );
+        Ok(())
+    }
+
+    fn failed(&self, e: &anyhow::Error) {
+        let mut h = self.health.lock().unwrap();
+        h.write_errors += 1;
+        h.last_error = Some((chrono::Utc::now().timestamp_millis(), e.to_string()));
     }
 
     fn run(mut self, mut rx: mpsc::Receiver<Msg>) {
@@ -403,6 +517,7 @@ impl Writer {
             if !batch.is_empty() {
                 if let Err(e) = self.write(&batch) {
                     tracing::error!(error = %e, lines = n, "sqlite write failed");
+                    self.failed(&e);
                 }
             }
             match next {
@@ -414,6 +529,12 @@ impl Writer {
                 }
                 Some(Msg::Cap(max, done)) => {
                     let _ = done.send(self.cap(max));
+                }
+                Some(Msg::ExpireSource(source, cutoff, done)) => {
+                    let _ = done.send(self.expire_source(&source, cutoff));
+                }
+                Some(Msg::PurgeAll(done)) => {
+                    let _ = done.send(self.purge_all());
                 }
                 Some(Msg::Lines(..)) | None => {}
             }
@@ -454,6 +575,7 @@ impl Writer {
         // (lines, bytes, min_ts, max_ts) per hour; (kind, lines, last_ts) per source.
         let mut parts: HashMap<i64, (i64, i64, i64, i64)> = HashMap::new();
         let mut srcs: HashMap<&str, (SourceKind, i64, i64)> = HashMap::new();
+        let mut per: HashMap<(i64, &str), (i64, i64)> = HashMap::new();
         let mut last_id = 0u64;
         for (kind, lines) in batch {
             for line in lines {
@@ -489,6 +611,9 @@ impl Writer {
                 p.1 += line.raw.len() as i64;
                 p.2 = p.2.min(line.ts);
                 p.3 = p.3.max(line.ts);
+                let ph = per.entry((h, &line.source)).or_insert((0, 0));
+                ph.0 += 1;
+                ph.1 += line.raw.len() as i64;
                 let s = srcs.entry(&line.source).or_insert((*kind, 0, i64::MIN));
                 s.1 += 1;
                 s.2 = s.2.max(line.ts);
@@ -502,6 +627,13 @@ impl Writer {
                  WHERE hour = ?5",
             )?
             .execute(params![n, bytes, lo, hi, h])?;
+        }
+        for ((h, name), (n, bytes)) in per {
+            tx.prepare_cached(
+                "INSERT INTO source_hours (hour, source, lines, bytes) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (hour, source) DO UPDATE SET lines = lines + ?3, bytes = bytes + ?4",
+            )?
+            .execute(params![h, name, n, bytes])?;
         }
         for (name, (kind, n, last)) in srcs {
             let kind = kind.as_str();
@@ -542,7 +674,8 @@ impl Writer {
         }
         tx.execute_batch(&format!(
             "DROP TABLE IF EXISTS {}; DROP TABLE IF EXISTS {}; DROP TABLE IF EXISTS {};
-             DELETE FROM partitions WHERE hour = {hour};",
+             DELETE FROM partitions WHERE hour = {hour};
+             DELETE FROM source_hours WHERE hour = {hour};",
             t('f', hour),
             t('l', hour),
             t('i', hour)
@@ -579,6 +712,87 @@ impl Writer {
         if dropped > 0 {
             self.reclaim();
         }
+        Ok(dropped)
+    }
+
+    /// Delete one source's lines older than `cutoff` from every hour that can
+    /// hold them (FTS rows need the original text to be deleted from a
+    /// contentless index). An hour left empty is dropped whole.
+    fn expire_source(&mut self, source: &str, cutoff: i64) -> anyhow::Result<u64> {
+        let mut dropped = 0u64;
+        for h in self.hours()? {
+            if cutoff != i64::MAX && h * HOUR - MAX_SKEW > cutoff {
+                break;
+            }
+            let (l, f, i) = (t('l', h), t('f', h), t('i', h));
+            let tx = self.conn.transaction()?;
+            let gone: Vec<(i64, String)> = {
+                let mut st = tx.prepare(&format!(
+                    "SELECT id, raw FROM {l} WHERE source = ? AND ts < ?"
+                ))?;
+                let v = st
+                    .query_map(params![source, cutoff], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<Result<_, _>>()?;
+                v
+            };
+            if gone.is_empty() {
+                continue;
+            }
+            let fname = format!("f_{h}");
+            for (id, raw) in &gone {
+                tx.prepare_cached(&format!(
+                    "INSERT INTO {f} (\"{fname}\", rowid, raw) VALUES ('delete', ?, ?)"
+                ))?
+                .execute(params![id, raw])?;
+            }
+            tx.execute(
+                &format!(
+                    "DELETE FROM {i} WHERE line_id IN (SELECT id FROM {l} WHERE source = ? AND ts < ?)"
+                ),
+                params![source, cutoff],
+            )?;
+            tx.execute(
+                &format!("DELETE FROM {l} WHERE source = ? AND ts < ?"),
+                params![source, cutoff],
+            )?;
+            let n = gone.len() as i64;
+            let bytes: i64 = gone.iter().map(|(_, r)| r.len() as i64).sum();
+            tx.execute(
+                "UPDATE partitions SET lines = MAX(0, lines - ?), bytes = MAX(0, bytes - ?) WHERE hour = ?",
+                params![n, bytes, h],
+            )?;
+            tx.execute(
+                "UPDATE source_hours SET lines = MAX(0, lines - ?), bytes = MAX(0, bytes - ?)
+                 WHERE hour = ? AND source = ?",
+                params![n, bytes, h, source],
+            )?;
+            tx.execute(
+                "UPDATE sources SET lines = MAX(0, lines - ?) WHERE name = ?",
+                params![n, source],
+            )?;
+            let left: i64 =
+                tx.query_row("SELECT lines FROM partitions WHERE hour = ?", [h], |r| {
+                    r.get(0)
+                })?;
+            tx.commit()?;
+            if left == 0 {
+                self.drop_hour(h)?;
+            }
+            dropped += n as u64;
+        }
+        if dropped > 0 {
+            self.reclaim();
+        }
+        Ok(dropped)
+    }
+
+    /// Purge: every hour goes, the newest too.
+    fn purge_all(&mut self) -> anyhow::Result<u64> {
+        let mut dropped = 0;
+        for h in self.hours()? {
+            dropped += self.drop_hour(h)?;
+        }
+        self.reclaim();
         Ok(dropped)
     }
 
@@ -920,6 +1134,7 @@ mod tests {
         SqliteStore::open(SqliteOptions {
             path: path.to_path_buf(),
             ring: 100,
+            ring_memory: crate::store::DEFAULT_RING_MEMORY,
         })
         .unwrap()
     }
@@ -1161,6 +1376,56 @@ mod tests {
         let after = s.usage().await.unwrap();
         assert_eq!(after.lines, 1);
         assert!(after.bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn per_source_expiry_purge_and_volume() {
+        let path = tmp();
+        let s = open(&path);
+        fixture(&s).await;
+        let u = s.storage().await.unwrap();
+        assert_eq!(u.hours.len(), 2);
+        assert_eq!(u.hours.iter().map(|h| h.lines).sum::<u64>(), 5);
+        let api = u.sources.iter().find(|x| x.source == "api").unwrap();
+        assert_eq!(api.lines, 3);
+        assert!(api.bytes > 100);
+
+        // Drop api's lines older than T0 + 1s: one line, everywhere (FTS,
+        // id index, counters), the others untouched.
+        assert_eq!(s.expire_source("api", T0 + 1).await.unwrap(), 1);
+        assert_eq!(ids(&s.search(&q("slow")).await.unwrap()), Vec::<u64>::new());
+        assert_eq!(ids(&s.search(&q("id:req_1")).await.unwrap()), vec![4]);
+        assert_eq!(ids(&s.search(&q("")).await.unwrap()), vec![5, 4, 3, 2]);
+        let u = s.storage().await.unwrap();
+        assert_eq!(
+            u.sources.iter().find(|x| x.source == "api").unwrap().lines,
+            2
+        );
+        assert_eq!(s.usage().await.unwrap().lines, 4);
+
+        // Purge one source: its hour empties and is dropped whole.
+        assert_eq!(s.purge(Some("api")).await.unwrap(), 2);
+        let u = s.storage().await.unwrap();
+        assert_eq!(u.hours.len(), 1);
+        assert!(u.sources.iter().all(|x| x.source != "api"));
+        assert!(s.tail("api", 10).await.unwrap().is_empty());
+
+        // Volume survives a restart and old databases get it backfilled.
+        drop(s);
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute("DELETE FROM source_hours", []).unwrap();
+        }
+        let s = open(&path);
+        let u = s.storage().await.unwrap();
+        assert_eq!(u.sources.len(), 1);
+        assert_eq!(u.sources[0].lines, 2);
+
+        // Purge everything, the newest hour included.
+        assert_eq!(s.purge(None).await.unwrap(), 2);
+        assert_eq!(s.usage().await.unwrap().lines, 0);
+        assert!(s.search(&q("")).await.unwrap().lines.is_empty());
+        assert_eq!(s.health().write_errors, 0);
     }
 
     #[test]

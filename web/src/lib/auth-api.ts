@@ -77,6 +77,7 @@ export const authState = z.object({
   user: user.nullable(),
   csrf: z.string().nullable(),
   version: z.string(),
+  instance_name: z.string(),
   host: setupHost.nullable(),
 }) satisfies z.ZodType<AuthState>
 
@@ -156,6 +157,7 @@ function useSignedIn() {
     qc.setQueryData(authQuery.queryKey, {
       auth: 'on',
       version: prev?.version ?? '',
+      instance_name: prev?.instance_name ?? 'quiet',
       host: null,
       setup_required: false,
       user: r.user,

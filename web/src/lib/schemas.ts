@@ -89,6 +89,9 @@ export const sourceInfo = z.object({
   group: z.string().nullable(),
   lines: z.number(),
   last_ts: z.number().nullable(),
+  display_name: z.string().nullable(),
+  hidden: z.boolean(),
+  paused: z.boolean(),
 }) satisfies z.ZodType<SourceInfo>
 
 export const sourcesResponse = z.object({ sources: z.array(sourceInfo) }) satisfies z.ZodType<SourcesResponse>

@@ -10,11 +10,12 @@ services:
     environment:
       QUIET_ADDR: 0.0.0.0:7070
       QUIET_RING: "10000"
+      QUIET_RING_MEMORY: 64MB   # live lines in memory, all sources together; fits the 256M limit below
       QUIET_DRAIN_MS: "3000"
       QUIET_SHUTDOWN_TIMEOUT_MS: "10000"
       QUIET_DATA_DIR: /data
-      QUIET_RETENTION: 24h   # 1h … 7d
-      QUIET_MAX_DISK: 5GB    # oldest hour dropped first; keep below the volume's free space
+      QUIET_RETENTION: 24h   # 1h … 7d; Settings → Storage overrides it once saved
+      QUIET_MAX_DISK: 5GB    # oldest hour dropped first; keep below the volume's free space; UI overrides
       # HTTP ingest (Vector, Fluent Bit, OTLP, curl) needs a qi_ token from
       # Settings → Ingest tokens. Defaults shown.
       QUIET_INGEST_AUTH: token

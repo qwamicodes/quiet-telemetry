@@ -42,6 +42,7 @@ export function UserMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" className="w-56">
         <DropdownMenuHeader>
+          <span className="truncate font-mono text-[11px] text-muted-foreground">{auth.instance_name}</span>
           <span className="truncate text-foreground">{user.name}</span>
           <span className="truncate font-mono text-[11px] text-muted-foreground">{user.email}</span>
         </DropdownMenuHeader>

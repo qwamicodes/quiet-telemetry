@@ -104,7 +104,15 @@ fn unavailable(e: anyhow::Error) -> Response {
 
 fn window(s: &AppState) -> (i64, i64) {
     let now = chrono::Utc::now().timestamp_millis();
-    (now - s.retention_ms, now)
+    (now - s.retention_ms(), now)
+}
+
+/// Walk limits, with the instance's "match ids by key" setting.
+fn limits(s: &AppState) -> Limits {
+    Limits {
+        by_key: s.pipeline.settings().flow_ids().match_by == crate::settings::MatchBy::Key,
+        ..Limits::default()
+    }
 }
 
 fn valid_id(id: &str) -> Result<&str, &'static str> {
@@ -150,7 +158,7 @@ async fn flow(State(s): State<AppState>, Query(p): Query<FlowParams>) -> Respons
         _ => return bad("give exactly one of `id` or `line`"),
     };
 
-    let st = match stitch(&*store, seed, since, until, Limits::default()).await {
+    let st = match stitch(&*store, seed, since, until, limits(&s)).await {
         Ok(st) => st,
         Err(e) => return unavailable(e),
     };
@@ -227,7 +235,7 @@ async fn summaries(State(s): State<AppState>, Json(req): Json<FlowSummariesReque
     let mut flows = Vec::with_capacity(ids.len());
     for id in ids {
         if !done.contains_key(&id) {
-            let st = match stitch(&*store, Seed::Id(&id), since, until, Limits::default()).await {
+            let st = match stitch(&*store, Seed::Id(&id), since, until, limits(&s)).await {
                 Ok(st) => st,
                 Err(e) => return unavailable(e),
             };

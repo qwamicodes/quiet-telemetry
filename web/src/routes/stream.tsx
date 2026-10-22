@@ -9,7 +9,8 @@ import { StreamFooter } from '@/components/stream/stream-footer'
 import { liveState, TopBar } from '@/components/stream/top-bar'
 import type { LogLine } from '@/gen'
 import { useSources } from '@/lib/api'
-import type { LevelFilter } from '@/lib/format'
+import { LEVEL_FILTERS, type LevelFilter } from '@/lib/format'
+import { useSettings } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
 import { useDebounced } from '@/lib/use-debounced'
 import { useHotkeys } from '@/lib/use-hotkeys'
@@ -26,7 +27,17 @@ export function StreamPage() {
   const { data: sources } = useSources()
   const rates = useRates(sources)
   const source = search.source ?? null
-  const level: LevelFilter = search.level ?? ''
+  const settings = useSettings().data
+  // A source's default level applies until the URL says otherwise (`all` = none).
+  const fallback = settings?.sources[source ?? '']?.default_level
+  const sourceDefault: LevelFilter =
+    fallback && (LEVEL_FILTERS as readonly string[]).includes(fallback)
+      ? (fallback as LevelFilter)
+      : fallback === 'fatal'
+        ? 'error'
+        : ''
+  const level: LevelFilter = search.level === 'all' ? '' : (search.level ?? sourceDefault)
+  const [direction, setDirection] = useStreamDirection(settings?.general.stream_direction)
 
   // Pick the first source when none is in the URL.
   useEffect(() => {
@@ -93,8 +104,8 @@ export function StreamPage() {
   const live = liveState(state, !follow)
   useHotkeys({
     '/': () => filterRef.current?.focus(),
-    j: () => move(1),
-    k: () => move(-1),
+    j: () => move(direction === 'top' ? -1 : 1),
+    k: () => move(direction === 'top' ? 1 : -1),
     space: () => state === 'live' && setFollow((f) => !f),
     g: (e) => e.shiftKey && setFollow(true),
     escape: () => setSelectedId(null),
@@ -119,9 +130,13 @@ export function StreamPage() {
         text={text}
         onText={setText}
         level={level}
-        onLevel={(l) => navigate({ search: (s) => ({ ...s, level: l || undefined }), replace: true })}
+        onLevel={(l) =>
+          navigate({ search: (s) => ({ ...s, level: l || (sourceDefault ? 'all' : undefined) }), replace: true })
+        }
         counts={counts}
         inputRef={filterRef}
+        direction={direction}
+        onDirection={setDirection}
       />
       {state === 'reconnecting' && <ConnectionBanner attempt={attempt} retryAt={retryAt} onRetry={retryNow} />}
       {dropped > 0 && <GapBanner dropped={dropped} />}
@@ -132,6 +147,7 @@ export function StreamPage() {
           onSelect={(l) => setSelectedId(l.id)}
           follow={follow}
           onFollow={setFollow}
+          direction={direction}
           emptyText={
             !source
               ? 'Waiting for the first source…'
@@ -151,7 +167,7 @@ export function StreamPage() {
           />
         )}
       </div>
-      <StreamFooter state={live} count={lines.length} />
+      <StreamFooter state={live} count={lines.length} direction={direction} />
       {source && exporting && (
         <ExportDialog
           open={exporting}
@@ -184,4 +200,25 @@ export function StreamPage() {
       )}
     </div>
   )
+}
+
+const DIRECTION_KEY = 'quiet.stream-direction'
+
+/** The instance default (Settings → General), unless this browser flipped it. */
+function useStreamDirection(instance: 'bottom' | 'top' | undefined) {
+  const [mine, setMine] = useState<'bottom' | 'top' | null>(() => {
+    try {
+      const v = localStorage.getItem(DIRECTION_KEY)
+      return v === 'top' || v === 'bottom' ? v : null
+    } catch {
+      return null
+    }
+  })
+  const set = (d: 'bottom' | 'top') => {
+    setMine(d)
+    try {
+      localStorage.setItem(DIRECTION_KEY, d)
+    } catch {}
+  }
+  return [mine ?? instance ?? 'bottom', set] as const
 }

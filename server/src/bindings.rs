@@ -17,6 +17,11 @@ use crate::flow_api::{
 use crate::search_api::{
     ExportParams, ExportTokenRequest, ExportTokenResponse, SearchParams, SearchResponse,
 };
+use crate::settings::{
+    FlowIdSettings, GeneralSettings, SettingsResponse, SourceSettings, UpdateStorage,
+};
+use crate::settings_api::{PurgeRequest, Purged, SourceActivity, StorageReport};
+use crate::system::SystemStatus;
 use crate::tokens::{CreateIngestToken, CreatedIngestToken, IngestToken, IngestTokensResponse};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -72,6 +77,17 @@ fn export_into(dir: &Path) {
     CreateInvite::export_all(&cfg).unwrap();
     CreatedInvite::export_all(&cfg).unwrap();
     ResetLink::export_all(&cfg).unwrap();
+    // Settings, storage, system.
+    SettingsResponse::export_all(&cfg).unwrap();
+    GeneralSettings::export_all(&cfg).unwrap();
+    UpdateStorage::export_all(&cfg).unwrap();
+    FlowIdSettings::export_all(&cfg).unwrap();
+    SourceSettings::export_all(&cfg).unwrap();
+    StorageReport::export_all(&cfg).unwrap();
+    PurgeRequest::export_all(&cfg).unwrap();
+    Purged::export_all(&cfg).unwrap();
+    SourceActivity::export_all(&cfg).unwrap();
+    SystemStatus::export_all(&cfg).unwrap();
 
     // A barrel so the UI imports from one place.
     let mut names: Vec<String> = std::fs::read_dir(dir)

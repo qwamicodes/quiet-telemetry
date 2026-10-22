@@ -2,10 +2,56 @@ import type { Level } from '@/gen'
 
 const pad = (n: number, w = 2) => String(n).padStart(w, '0')
 
-/** `14:07:04.120` in the viewer's local time. */
-export function fmtTime(ts: number): string {
-  const d = new Date(ts)
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+// ---- display timezone (Settings → General) ----------------------------------------
+
+/** `local` = the viewer's browser zone; else an IANA zone or `UTC`. */
+let displayZone = 'local'
+const zoneFormats = new Map<string, Intl.DateTimeFormat>()
+
+export function setDisplayTimeZone(tz: string) {
+  displayZone = validTimeZone(tz) ? tz : 'local'
+}
+
+export function getDisplayTimeZone() {
+  return displayZone
+}
+
+export function validTimeZone(tz: string): boolean {
+  if (tz === 'local') return true
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Hours, minutes, seconds of `ts` in `tz` (`local` = browser). */
+function hms(ts: number, tz: string): [number, number, number] {
+  if (tz === 'local') {
+    const d = new Date(ts)
+    return [d.getHours(), d.getMinutes(), d.getSeconds()]
+  }
+  let f = zoneFormats.get(tz)
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+    zoneFormats.set(tz, f)
+  }
+  const p = f.formatToParts(ts)
+  const n = (t: string) => Number(p.find((x) => x.type === t)?.value ?? 0)
+  return [n('hour'), n('minute'), n('second')]
+}
+
+/** `14:07:04.120` in the display timezone (or `tz`). */
+export function fmtTime(ts: number, tz = displayZone): string {
+  const [h, m, s] = hms(ts, tz)
+  return `${pad(h)}:${pad(m)}:${pad(s)}.${pad(new Date(ts).getMilliseconds(), 3)}`
 }
 
 /** Levels a user can filter by, lowest first. `''` means all. */
@@ -28,10 +74,10 @@ export function bytes(s: string): number {
   return new TextEncoder().encode(s).length
 }
 
-/** `14:07` in the viewer's local time. */
-export function fmtClock(ts: number): string {
-  const d = new Date(ts)
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+/** `14:07` in the display timezone. */
+export function fmtClock(ts: number, tz = displayZone): string {
+  const [h, m] = hms(ts, tz)
+  return `${pad(h)}:${pad(m)}`
 }
 
 /** 412000 → `412k`, 1_500_000 → `1.5M`. */

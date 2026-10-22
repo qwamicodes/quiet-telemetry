@@ -13,12 +13,16 @@ mod memory;
 mod sqlite;
 
 pub use memory::MemoryStore;
+#[cfg(test)]
+pub use memory::DEFAULT_RING_MEMORY;
 pub use sqlite::{SqliteOptions, SqliteStore};
 
 use crate::hub::{Line, SourceKind};
 use crate::normalize::{CorrId, Level};
 use crate::search::{Order, SearchPage, SearchQuery};
 use async_trait::async_trait;
+use serde::Serialize;
+use ts_rs::TS;
 
 /// What a stream or a search asks for. Shared by every store so the live
 /// filter and the stored-window filter can never disagree.
@@ -90,6 +94,24 @@ pub trait Store: Send + Sync + 'static {
     /// whole hours, so a line may outlive the cutoff by up to an hour.
     /// Returns how many lines went.
     async fn expire(&self, cutoff: i64) -> anyhow::Result<u64>;
+
+    /// Drop lines of one source older than `cutoff` (a per-source window
+    /// shorter than the instance's). Returns how many lines went.
+    async fn expire_source(&self, source: &str, cutoff: i64) -> anyhow::Result<u64>;
+
+    /// Delete every stored line (`None`) or every line of one source, now.
+    /// Returns how many lines went.
+    async fn purge(&self, source: Option<&str>) -> anyhow::Result<u64>;
+
+    /// Per-hour partitions and per-source volume (Settings → Storage).
+    async fn storage(&self) -> anyhow::Result<StorageUsage> {
+        Ok(StorageUsage::default())
+    }
+
+    /// Write errors seen by the store (a full disk, a broken database).
+    fn health(&self) -> StoreHealth {
+        StoreHealth::default()
+    }
 
     /// Drop the oldest hours until the store is under `max_bytes`.
     /// Returns how many lines went. Stores without a disk footprint ignore it.
@@ -217,6 +239,45 @@ pub struct StoredSource {
     pub kind: SourceKind,
     pub lines: u64,
     pub last_ts: Option<i64>,
+}
+
+/// Write errors a store has seen since start.
+#[derive(Debug, Clone, Default)]
+pub struct StoreHealth {
+    pub write_errors: u64,
+    /// When (unix ms) and what the last one was.
+    pub last_error: Option<(i64, String)>,
+}
+
+/// One hourly partition.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct HourUsage {
+    /// Start of the hour, unix ms.
+    pub start: i64,
+    #[ts(type = "number")]
+    pub lines: u64,
+    /// Raw line bytes stored in it (not counting indexes).
+    #[ts(type = "number")]
+    pub bytes: u64,
+}
+
+/// What one source holds in the window.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct SourceUsage {
+    pub source: String,
+    #[ts(type = "number")]
+    pub lines: u64,
+    /// Raw line bytes (the on-disk share is this share of the database size).
+    #[ts(type = "number")]
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StorageUsage {
+    /// Oldest first.
+    pub hours: Vec<HourUsage>,
+    /// Biggest first.
+    pub sources: Vec<SourceUsage>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

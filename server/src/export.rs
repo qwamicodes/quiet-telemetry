@@ -3,6 +3,7 @@
 
 use crate::normalize::LogLine;
 use crate::search::{field_at, scalar_text};
+use crate::settings::{Masker, PiiKind};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -59,6 +60,9 @@ pub struct Formatter {
     /// Add the raw line (JSON: a `raw` key; CSV: a `raw` column).
     pub raw: bool,
     pub columns: Vec<String>,
+    /// Per-source masking rules (extra keys, groups switched off); `None` =
+    /// the built-in groups for every source.
+    pub rules: Option<std::sync::Arc<crate::settings::Settings>>,
 }
 
 impl Formatter {
@@ -101,9 +105,13 @@ impl Formatter {
 
     /// One line in this format. `first` matters for the JSON array's commas.
     pub fn line(&self, l: &LogLine, first: bool) -> String {
+        let masker = match (&self.rules, self.mask) {
+            (Some(r), true) => r.masker(&l.source),
+            _ => Masker::default(),
+        };
         let fields = l.fields.as_ref().map(|f| {
             if self.mask {
-                mask_value(None, f)
+                mask_with(&masker, "", None, f)
             } else {
                 f.clone()
             }
@@ -236,36 +244,60 @@ fn csv_cell(v: &str) -> String {
 
 pub const MASK: &str = "[masked]";
 
-/// Keys whose values are masked whole (compared lowercase, `-` as `_`).
-const PII_KEYS: &[&str] = &[
-    "email",
-    "email_address",
-    "e_mail",
-    "phone",
-    "phone_number",
-    "phonenumber",
-    "mobile",
-    "msisdn",
-    "ip",
-    "ip_address",
-    "ipaddress",
-    "client_ip",
-    "remote_ip",
-    "remote_addr",
-    "x_forwarded_for",
-    "x_real_ip",
-    "cf_connecting_ip",
-    "user_agent",
-    "useragent",
-    "first_name",
-    "last_name",
-    "full_name",
-    "customer_name",
+/// Keys whose values are masked whole (compared lowercase, `-` as `_`), by group.
+const PII_KEYS: &[(PiiKind, &[&str])] = &[
+    (PiiKind::Email, &["email", "email_address", "e_mail"]),
+    (
+        PiiKind::Phone,
+        &["phone", "phone_number", "phonenumber", "mobile", "msisdn"],
+    ),
+    (
+        PiiKind::Ip,
+        &[
+            "ip",
+            "ip_address",
+            "ipaddress",
+            "client_ip",
+            "remote_ip",
+            "remote_addr",
+            "x_forwarded_for",
+            "x_real_ip",
+            "cf_connecting_ip",
+        ],
+    ),
+    (PiiKind::UserAgent, &["user_agent", "useragent"]),
+    (
+        PiiKind::Name,
+        &["first_name", "last_name", "full_name", "customer_name"],
+    ),
 ];
 
-fn is_pii_key(k: &str) -> bool {
+/// The built-in group a key belongs to, if any.
+pub fn pii_kind(k: &str) -> Option<PiiKind> {
     let k = k.to_ascii_lowercase().replace('-', "_");
-    PII_KEYS.contains(&k.as_str()) || ["_email", "_phone", "_ip"].iter().any(|s| k.ends_with(s))
+    if let Some((kind, _)) = PII_KEYS.iter().find(|(_, ks)| ks.contains(&k.as_str())) {
+        return Some(*kind);
+    }
+    [
+        ("_email", PiiKind::Email),
+        ("_phone", PiiKind::Phone),
+        ("_ip", PiiKind::Ip),
+    ]
+    .iter()
+    .find(|(s, _)| k.ends_with(s))
+    .map(|(_, kind)| *kind)
+}
+
+fn masked_key(m: &Masker, path: &str, key: &str) -> bool {
+    if pii_kind(key).is_some_and(|k| !m.unmasked.contains(&k)) {
+        return true;
+    }
+    if m.extra.is_empty() {
+        return false;
+    }
+    let norm = |s: &str| s.to_ascii_lowercase().replace('-', "_");
+    let (key, path) = (norm(key), norm(path));
+    m.extra.iter().any(|e| *e == key || *e == path)
 }
 
 static EMAIL: LazyLock<Regex> =
@@ -280,17 +312,26 @@ pub fn mask_text(s: &str) -> String {
     IPV4.replace_all(&s, MASK).into_owned()
 }
 
-/// Mask PII keys whole and email/IP-looking text anywhere else.
-pub fn mask_value(key: Option<&str>, v: &Value) -> Value {
-    if key.is_some_and(is_pii_key) && !v.is_null() {
+/// Mask with a source's rule: built-in groups (minus the ones it switched
+/// off) and its extra keys (`address` or a dotted path `customer.address`)
+/// whole; email/IP-looking text anywhere else.
+pub fn mask_with(m: &Masker, path: &str, key: Option<&str>, v: &Value) -> Value {
+    if key.is_some_and(|k| masked_key(m, path, k)) && !v.is_null() {
         return json!(MASK);
     }
     match v {
         Value::String(s) => Value::String(mask_text(s)),
-        Value::Array(a) => Value::Array(a.iter().map(|x| mask_value(None, x)).collect()),
+        Value::Array(a) => Value::Array(a.iter().map(|x| mask_with(m, path, None, x)).collect()),
         Value::Object(o) => Value::Object(
             o.iter()
-                .map(|(k, x)| (k.clone(), mask_value(Some(k), x)))
+                .map(|(k, x)| {
+                    let p = if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{path}.{k}")
+                    };
+                    (k.clone(), mask_with(m, &p, Some(k), x))
+                })
                 .collect(),
         ),
         other => other.clone(),
@@ -422,6 +463,43 @@ mod tests {
     }
 
     #[test]
+    fn per_source_rules_add_keys_and_switch_groups_off() {
+        let rules = std::sync::Arc::new(crate::settings::Settings::memory());
+        rules
+            .put_source(
+                "api",
+                crate::settings::SourceSettings {
+                    mask_fields: vec!["customer.address".into(), "plan".into()],
+                    unmasked: vec![PiiKind::UserAgent],
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let f = Formatter {
+            mask: true,
+            rules: Some(rules),
+            ..Default::default()
+        };
+        let raw = r#"{"msg":"x","customer":{"address":"12 Ring Rd","city":"Accra"},"user":{"plan":"pro","email":"a@b.co"},"user_agent":"okhttp"}"#;
+        let v: Value = serde_json::from_str(&f.line(&line(raw), true)).unwrap();
+        assert_eq!(v["customer"]["address"], MASK);
+        assert_eq!(v["customer"]["city"], "Accra");
+        assert_eq!(v["user"]["plan"], MASK, "a bare key matches at any depth");
+        assert_eq!(v["user"]["email"], MASK);
+        assert_eq!(
+            v["user_agent"], "okhttp",
+            "group switched off for this source"
+        );
+        // Another source keeps the built-in rule only.
+        let mut other = line(raw);
+        other.source = "web".into();
+        let v: Value = serde_json::from_str(&f.line(&other, true)).unwrap();
+        assert_eq!(v["customer"]["address"], "12 Ring Rd");
+        assert_eq!(v["user_agent"], MASK);
+    }
+
+    #[test]
     fn json_array_and_csv() {
         let f = Formatter {
             format: ExportFormat::Json,
@@ -456,6 +534,7 @@ mod tests {
             ],
             raw: false,
             mask: true,
+            ..Default::default()
         };
         assert_eq!(
             f.header(),

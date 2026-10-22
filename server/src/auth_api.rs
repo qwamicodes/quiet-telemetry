@@ -105,6 +105,8 @@ pub struct AuthState {
     /// Send back as `X-Quiet-Csrf` on every non-GET request.
     pub csrf: Option<String>,
     pub version: String,
+    /// Settings → General instance name, shown signed out too ("Join legivent").
+    pub instance_name: String,
     /// Only while setup is required.
     pub host: Option<SetupHost>,
 }
@@ -347,6 +349,7 @@ async fn state(State(s): State<AppState>, headers: HeaderMap) -> Response {
             user: Some(Viewer::local().user),
             csrf: None,
             version,
+            instance_name: s.pipeline.settings().general().instance_name,
             host: None,
         })
         .into_response();
@@ -371,8 +374,8 @@ async fn state(State(s): State<AppState>, headers: HeaderMap) -> Response {
         store: s.pipeline.store().kind().to_string(),
         data_dir: s.host.data_dir.as_ref().map(|d| d.display().to_string()),
         data_dir_writable: s.host.data_dir.as_deref().is_some_and(data_dir_writable),
-        retention_ms: s.retention_ms,
-        max_disk: s.host.max_disk,
+        retention_ms: s.retention_ms(),
+        max_disk: s.pipeline.settings().storage().max_disk,
     });
     let mut res = Json(AuthState {
         auth: AuthModeWire::On,
@@ -380,6 +383,7 @@ async fn state(State(s): State<AppState>, headers: HeaderMap) -> Response {
         user: su.as_ref().map(|x| x.user.clone()),
         csrf: su.map(|x| x.csrf),
         version,
+        instance_name: s.pipeline.settings().general().instance_name,
         host,
     })
     .into_response();
@@ -1864,6 +1868,86 @@ mod tests {
             )
             .await;
         assert_eq!(r.status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn settings_writes_are_owner_only_and_need_csrf() {
+        let t = T::new().await;
+        let owner = t.setup_owner().await;
+        let (member, _) = t.add_member(&owner, "ama@x.co").await;
+        let anon = Who::default();
+        let general =
+            json!({"instance_name":"legivent","stream_direction":"top","timezone":"Africa/Accra"});
+
+        // Signed out: nothing. Members read, never write.
+        assert_eq!(
+            t.get("/api/settings", &anon).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            t.get("/api/system", &anon).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(t.get("/api/settings", &member).await.status, StatusCode::OK);
+        assert_eq!(t.get("/api/storage", &member).await.status, StatusCode::OK);
+        assert_eq!(t.get("/api/system", &member).await.status, StatusCode::OK);
+        for (m, path, body) in [
+            (Method::PUT, "/api/settings/general", general.clone()),
+            (
+                Method::PUT,
+                "/api/settings/storage",
+                json!({"retention_ms": 3_600_000}),
+            ),
+            (
+                Method::PUT,
+                "/api/settings/flow-ids",
+                json!({"order":["job_id"],"match_by":"key"}),
+            ),
+            (
+                Method::PUT,
+                "/api/settings/sources/api",
+                json!({"paused": true}),
+            ),
+            (Method::DELETE, "/api/settings/sources/api", json!({})),
+            (
+                Method::POST,
+                "/api/storage/purge",
+                json!({"confirm":"purge"}),
+            ),
+        ] {
+            let r = t.call(m.clone(), path, Some(body), &member).await;
+            assert_eq!(r.status, StatusCode::FORBIDDEN, "{m} {path}: {}", r.text);
+            assert_eq!(r.body["code"], "owner_only");
+        }
+        // An owner without the CSRF header is refused too.
+        let no_csrf = Who {
+            csrf: None,
+            ..owner.clone()
+        };
+        let r = t
+            .call(
+                Method::PUT,
+                "/api/settings/general",
+                Some(general.clone()),
+                &no_csrf,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN);
+        // The owner can; the name shows signed out (invite page, tab title).
+        let r = t
+            .call(Method::PUT, "/api/settings/general", Some(general), &owner)
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+        let r = t.get("/api/auth/state", &anon).await;
+        assert_eq!(r.body["instance_name"], "legivent");
+        assert_eq!(
+            t.st.pipeline.settings().general().stream_direction,
+            crate::settings::StreamDirection::Top
+        );
+        let r = t
+            .post("/api/storage/purge", json!({"confirm":"purge"}), &owner)
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     }
 
     #[tokio::test]

@@ -3,6 +3,18 @@ import type { SourceKind } from "./SourceKind";
 
 export type SourceInfo = { name: string, kind: SourceKind, 
 /**
+ * From its settings: shown instead of `name` (stored lines keep `name`).
+ */
+display_name: string | null, 
+/**
+ * Left out of the sidebar (still stored and searchable).
+ */
+hidden: boolean, 
+/**
+ * Ingest paused: new lines are dropped.
+ */
+paused: boolean, 
+/**
  * Containers feeding this source (docker only).
  */
 containers: Array<string>, 

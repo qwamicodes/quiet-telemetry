@@ -11,7 +11,8 @@ use crate::cli::{ServerArgs, StoreKind};
 use crate::hub::Hub;
 use crate::pipeline::Pipeline;
 use crate::receiver::{DockerReceiver, DockerStatus, HttpReceiver, IngestConfig, Receiver};
-use crate::retention::{self, Retention};
+use crate::retention;
+use crate::settings::{Defaults, Settings};
 use crate::store::{MemoryStore, SqliteOptions, SqliteStore, Store};
 use crate::tokens::IngestTokens;
 use crate::web;
@@ -28,18 +29,31 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
             args.addr
         );
     }
+    // Settings live with the accounts (always on disk): the flags are the
+    // layer under what the UI saved. Installing the id policy here makes
+    // every line normalized from now on follow it.
+    let defaults = Defaults {
+        retention_ms: args.retention.as_millis() as i64,
+        max_disk: args.max_disk,
+    };
+    let settings_path = args.data_dir.join("quiet.db");
+    let settings = Arc::new(
+        tokio::task::spawn_blocking(move || Settings::open(Some(&settings_path), defaults, true))
+            .await??,
+    );
     let store: Arc<dyn Store> = match args.store {
-        StoreKind::Memory => Arc::new(MemoryStore::new(args.ring)),
+        StoreKind::Memory => Arc::new(MemoryStore::with_budget(args.ring, args.ring_memory)),
         StoreKind::Sqlite => {
             let opts = SqliteOptions {
                 path: args.data_dir.join("quiet.db"),
                 ring: args.ring,
+                ring_memory: args.ring_memory,
             };
             tracing::info!(path = %opts.path.display(), "opening sqlite store");
             Arc::new(tokio::task::spawn_blocking(move || SqliteStore::open(opts)).await??)
         }
     };
-    let pipeline = Pipeline::new(store.clone(), Hub::new());
+    let pipeline = Pipeline::with_settings(store.clone(), Hub::new(), settings.clone());
     pipeline.restore().await?;
 
     // Ingest tokens live next to the lines (same quiet.db), or in memory.
@@ -81,14 +95,12 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         trust_proxy: args.trust_proxy,
     };
 
-    let retention_ms = args.retention.as_millis() as i64;
+    let system = pipeline.system().clone();
     let state = AppState::new(pipeline, docker_status)
-        .with_retention(retention_ms)
         .with_ingest(ingest_tokens.clone(), ingest)
         .with_accounts(accounts.clone(), auth)
         .with_host(HostInfo {
             data_dir: Some(args.data_dir.clone()),
-            max_disk: args.max_disk,
         });
     let shutdown = state.shutdown.clone();
     let ready = state.ready.clone();
@@ -107,23 +119,25 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     }
     tasks.spawn(retention::run(
         store.clone(),
-        Retention {
-            window: args.retention,
-            max_bytes: args.max_disk,
-        },
+        settings.clone(),
+        system,
         shutdown.clone(),
     ));
     tasks.close();
     let app = security_headers(web::attach(app, args.web_dir.clone()));
 
     let listener = tokio::net::TcpListener::bind(args.addr).await?;
+    let live = settings.storage();
     tracing::info!(
         addr = %args.addr,
         docker = args.docker,
         ring = args.ring,
+        ring_memory_mb = args.ring_memory / 1_000_000,
         store = store.kind(),
-        retention_h = args.retention.as_secs() / 3600,
-        max_disk_mb = args.max_disk / 1_000_000,
+        retention_h = live.retention_ms / 3_600_000,
+        retention_from = ?live.retention_origin,
+        max_disk_mb = live.max_disk / 1_000_000,
+        max_disk_from = ?live.max_disk_origin,
         ingest_auth = ?args.ingest_auth,
         ingest_tokens = ingest_tokens.active(),
         auth = ?args.auth,

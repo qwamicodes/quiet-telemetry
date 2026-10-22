@@ -21,6 +21,7 @@ export function authState(user: User | null, over: Partial<AuthState> = {}): Aut
     user,
     csrf: user ? 'csrf-1' : null,
     version: '0.1.0',
+    instance_name: 'quiet',
     host: null,
     ...over,
   }

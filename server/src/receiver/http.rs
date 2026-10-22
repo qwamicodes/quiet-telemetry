@@ -206,13 +206,53 @@ async fn handle(i: &Inner, kind: SourceKind, format: Format, h: HeaderMap, body:
         Format::Otlp(Signal::Logs) => "otlp-logs",
         Format::Otlp(Signal::Traces) => "otlp-traces",
     };
-    match ingest(i, kind, format, &h, body).await {
+    let res = match ingest(i, kind, format, &h, body).await {
         Ok(res) => res,
         Err(Reject(status, msg)) => {
             tracing::warn!(endpoint, status = status.as_u16(), reason = %msg, "ingest rejected");
-            Reject(status, msg).into_response()
+            record(i, endpoint, status, &msg, &h);
+            return Reject(status, msg).into_response();
         }
+    };
+    if res.status() == StatusCode::TOO_MANY_REQUESTS {
+        record(i, endpoint, res.status(), "over the ingest rate", &h);
     }
+    res
+}
+
+/// Count a refused request for the system status and the source's Rejected
+/// tab: endpoint, status, reason, the source it named and a token preview.
+/// Never the body.
+fn record(i: &Inner, endpoint: &str, status: StatusCode, reason: &str, h: &HeaderMap) {
+    let source = header_str(h, "x-quiet-source").filter(|s| crate::tokens_api::valid_source(s));
+    let token = header_str(h, "authorization").map(token_preview);
+    i.pipeline.system().reject(
+        chrono::Utc::now().timestamp_millis(),
+        endpoint,
+        status.as_u16(),
+        reason,
+        source,
+        token,
+    );
+}
+
+/// `Bearer qi_…1a77` → `qi_••••1a77` (enough to tell tokens apart).
+fn token_preview(auth: &str) -> String {
+    let t = auth
+        .strip_prefix("Bearer ")
+        .or_else(|| auth.strip_prefix("bearer "))
+        .unwrap_or(auth)
+        .trim();
+    let tail: String = t
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let head = if t.starts_with("qi_") { "qi_" } else { "" };
+    format!("{head}••••{tail}")
 }
 
 async fn ingest(
@@ -601,6 +641,19 @@ mod tests {
         assert_eq!(s, StatusCode::UNAUTHORIZED);
         assert!(String::from_utf8_lossy(&b).contains("revoked"));
         assert!(tail(&t, "api").await.is_empty());
+        // Each refusal is counted for the system status and the source's
+        // Rejected tab, with a token preview and no body.
+        let sys = t.pipeline.system();
+        assert_eq!(sys.rejected_since(0, Some("api")), 3);
+        let latest = &sys.rejections(Some("api"), 10)[0];
+        assert_eq!(
+            (latest.status, latest.reason.as_str()),
+            (401, "ingest token revoked")
+        );
+        assert_eq!(
+            latest.token.as_deref().map(|t| t.starts_with("qi_••••")),
+            Some(true)
+        );
 
         // Open mode takes tokenless lines but still checks a token that is sent.
         let t = setup(IngestConfig {

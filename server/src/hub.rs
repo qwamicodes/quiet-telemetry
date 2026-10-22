@@ -97,6 +97,9 @@ impl Source {
             name: self.name.clone(),
             kind: self.kind(),
             meta: self.meta(),
+            display_name: None,
+            hidden: false,
+            paused: false,
         }
     }
 }
@@ -107,6 +110,12 @@ pub struct SourceInfo {
     pub kind: SourceKind,
     #[serde(flatten)]
     pub meta: SourceMeta,
+    /// From its settings: shown instead of `name` (stored lines keep `name`).
+    pub display_name: Option<String>,
+    /// Left out of the sidebar (still stored and searchable).
+    pub hidden: bool,
+    /// Ingest paused: new lines are dropped.
+    pub paused: bool,
 }
 
 #[derive(Default)]
