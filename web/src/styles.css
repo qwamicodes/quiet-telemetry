@@ -208,3 +208,18 @@
     @apply bg-background font-sans text-[13px] text-foreground antialiased;
   }
 }
+
+/* Toasts (sileo): quiet's status colours, a hairline edge, Geist. sileo injects
+   its own :root defaults at runtime, so these sit on the viewport to win. */
+[data-sileo-viewport] {
+  --sileo-state-success: var(--status-ok);
+  --sileo-state-error: var(--status-err);
+  --sileo-state-warning: var(--status-warn);
+  --sileo-state-info: var(--brand);
+  --sileo-state-action: var(--brand);
+  --sileo-state-loading: var(--status-idle);
+  font-family: var(--font-sans);
+}
+[data-sileo-viewport] [data-sileo-svg] {
+  filter: drop-shadow(0 0 0.5px var(--border)) drop-shadow(0 8px 24px rgb(0 0 0 / 35%));
+}
