@@ -1,6 +1,6 @@
 # v0.1 design parity
 
-Audit of every v0.1 board in `design/portal-v01/` (pages 01–09 and 11 plus Foundations; v0.2+, mobile (10.x) and archive left out) against `main` at `371f1e4` (slice 6 merged). Each row says what the board shows that `main` did not, and the **Status** column says what `v01/design-parity` (PR #11) did about it. Status is as of the end of the branch (Undo on token revoke, 2026-10-22).
+Audit of every v0.1 board in `design/portal-v01/` (pages 01–09 and 11 plus Foundations; v0.2+, mobile (10.x) and archive left out) against `main` at `371f1e4` (slice 6 merged). Each row says what the board shows that `main` did not, and the **Status** column says what `v01/design-parity` (PR #11) did about it. Status is as of the end of the branch (minimap, server-side export jobs, muted lines, remove + revoke, 2026-10-22).
 
 Method: every board PNG was read at full size and compared with screenshots of `main` rendered in headless Chromium (server + sample generator + Vite) and with the code. Times, names and counts in the boards are mock data. Matching means showing the same thing with real values.
 
@@ -52,7 +52,7 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 |---|---|---|
 | 04.1 HTTP flow | Header lacked **Export flow** (05.6 puts it first). Field card actions matched. Waterfall, lanes, wideEvents group, brand edge matched. | fixed |
 | 04.2 Job retry | Matches (bar timeline, retry arcs, "started by" note, attempt in card). Card action now follows the picked field ("Filter by err.code"). | — |
-| 04.3 Long flow | Matches (collapsed runs, Problems only, segmented bar). Minimap not built. | partial: minimap open (the canvas scrolls; low value at v0.1 flow sizes) |
+| 04.3 Long flow | Matches (collapsed runs, Problems only, segmented bar). Minimap not built. | fixed: minimap on long flows (a tick per step, folded runs included; errors red, warnings amber; viewport box; click / drag / keys to move) |
 | 04.4 Single line | One-node card lacked "Open in stream" action. | fixed |
 | 04.5 Id not found | Retention note pointed to "--retention (settings UI in slice 6)"; board points to Settings (Storage). | fixed |
 | 04.6 JSON tab | No line numbers; footer actions did not switch to Copy as JSON / **Download .json**. | fixed |
@@ -68,8 +68,8 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 | 05.4 Export from stream | Dialog lacked the **time range select** (defaults to the view's range, "from the stream view" / "changed in this dialog"); filters showed `level ≥x` instead of chips + "level info, warn, error"; mask hint lacked "on because PII masking is on for these sources". | fixed |
 | 05.5 CSV columns | Columns could not be **dragged to reorder**; suggested columns are unchecked checkboxes. | fixed |
 | 05.6 Export flow | **Missing** (no entry point, no flow scope: request_id → job_id, sources, whole flow span, lines · steps · size; gzip off). | fixed |
-| 05.7 Large export | No progress ("Preparing 1.2M lines · 34% · 412k / 1.2M · ~40s left", Cancel, closeable). | partial: the browser streams the file itself with live progress, Cancel and a closeable dialog; there is still no server-side preparing job (slice 2 decision: export streams page by page), so "lines that expire meanwhile are still included" is not promised. |
-| 05.8 Ready toast | Missing ("Export ready · file · size" + Download). | fixed (toast after a background export finishes) |
+| 05.7 Large export | No progress ("Preparing 1.2M lines · 34% · 412k / 1.2M · ~40s left", Cancel, closeable). | fixed: over ~100k lines the server prepares the file as a background job (`/api/export/jobs`): "Preparing N lines · % · done / total · ~Ns left", Cancel, closeable; the retention window waits while a job prepares, so lines that expire meanwhile are still included; members always masked; session only (no `qx_`). |
+| 05.8 Ready toast | Missing ("Export ready · file · size" + Download). | fixed (toast when the server job is ready; Download fetches the prepared file) |
 
 ## 06 · Sources & per-source settings
 
@@ -77,8 +77,8 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 |---|---|---|
 | 06.1 List | Columns lacked **rate sparkline**, **errors %**, **flow id** chip; no host group rows ("this host · 3 sources · docker.sock"); no "stopped sending" banner; "Erroring n" filter missing. | fixed (grouped by stack by default, see *Source grouping* below; "Group by host" keeps the receiver grouping) |
 | 06.2 Detail | Overview lacked rate / last line / lines 24h / flow id stats as drawn, **lines per 15 min · 24h histogram**, **Fields detected** table (field, type, coverage bar, sample), **Flow id detected** (coverage per id key), Connection details, Remove source. | fixed (remove = purge this source's lines + forget it; Docker containers come back if they log again) |
-| 06.3 Edit / rename | Edit sheet (display name, matches, flow id order, muted lines). Display name + id order live in the Settings tab on main. | partial: Edit opens the Settings tab; **muted lines** (hide a path from the live stream) not built: needs a per-source stream filter, logged as follow-up |
-| 06.4 Confirm remove | Type-to-confirm dialog + "also revoke its token". | fixed (type-to-confirm; token revoke is a link to Ingest tokens) |
+| 06.3 Edit / rename | Edit sheet (display name, matches, flow id order, muted lines). Display name + id order live in the Settings tab on main. | fixed: Edit opens the Settings tab, which now has **Muted lines** (chips `field:value` with `*`, or text); stream and search hide matches by default with "N muted · Show muted" |
+| 06.4 Confirm remove | Type-to-confirm dialog + "also revoke its token". | fixed: type-to-confirm; one server step pauses, hides, purges and (switch on by default) revokes the tokens bound to the source; Undo restores tokens + settings |
 | 06.5 Rejected + malformed | Rejected tab existed. **Malformed** tab + stats (accepted, rejected 15 min, malformed 24h) missing. | fixed (malformed = lines kept as raw text: not JSON / truncated / duplicate key, from the store) |
 | 06.6 Per-source settings | Built in slice 6 (display name, match, id order, PII, ignore). | — |
 | 06.7 Grouped by stack | Flat list (host groups only). | fixed: group rows with kind tag (compose / stack / label / docker / push), `N/M sending · K shown`, aggregate rate, Search this group · 24h, ⋯ menu (incl. Ignore all N), member dots when collapsed, all-stopped row. |
@@ -133,12 +133,8 @@ Left out of v0.1 parity (the app is desktop-first; 10.1 / 10.2 are a later pass)
 
 ## Still open after this branch
 
-- 04.3 flow minimap.
-- 05.7 server-side preparing job for very large exports (the browser streams the file with progress instead).
-- 06.3 muted lines (hide a path from the live stream per source).
-- 06.4 real "also revoke its token" on remove (today a link to Ingest tokens).
-- Streaming a whole source group.
-- 10.x mobile.
+- Streaming a whole source group: decided out for v0.1 (the stream stays one source at a time; see decisions).
+- 10.x mobile: later.
 
 ## Added outside the boards
 

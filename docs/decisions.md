@@ -9,21 +9,52 @@ project notes; this file records what the code does and why.
 Choices made while matching the v0.1 boards (`docs/v01-parity.md` has the
 per-board status). Source grouping has its own section further down.
 
-- **Large exports are prepared in the browser, not on the server** (05.7).
-  Over ~100k lines the dialog fetches `/api/export` as a stream, counts lines
-  and bytes for the progress bar and "~Ns left", and keeps going when the
-  dialog is closed; an "Export ready" toast offers the file (05.8). No
-  server-side job queue: export already streams page by page (slice 2), and a
-  job would mean storing a temp file inside the 256MB container. Cost: lines
-  that expire during a long export are not promised, and closing the tab
-  cancels it.
+- **Large exports are prepared on the server** (05.7, replaces the earlier
+  "prepared in the browser" choice; asked for in the follow-up). Over ~100k
+  lines (the dialog's estimate) Download starts `POST /api/export/jobs` with
+  the same query string as `/api/export`; the dialog polls
+  `GET /api/export/jobs/:id` once a second ("Preparing N lines · % · done /
+  total · ~Ns left", where time left is the pace so far), Cancel is
+  `DELETE`, and the dialog can be closed. Ready → the "Export ready · file ·
+  size" toast (05.8) and the dialog's Download fetch
+  `GET /api/export/jobs/:id/download`. Rules: session only (a `qx_` token
+  stays read-only on `GET /api/export` for its one query; a curl of a huge
+  export simply streams); members always masked; a job is visible only to the
+  user who started it (others get 404); at most 4 preparing at once, 2 per
+  user (429). Files go to `<data dir>/exports` (temp dir without one), are
+  deleted on cancel, on failure, an hour after they are ready and at startup.
+  The range is fixed when the job starts and the **retention window waits
+  while any job is preparing** (the disk cap does not), which is how "lines
+  that expire meanwhile are still included" holds. Jobs live in memory: a
+  restart drops them (and their files).
 - **Stream histogram = the last hour in one-minute bars, stacked by level**
   (`/api/stream/stats`). The board shows ~96 bars over a longer span; an hour
   matches what the live stream is about and keeps the stats query cheap.
-- **Remove source = pause ingest + hide + purge its lines.** There is no source
-  table to delete from; a Docker container that logs again comes back. An
-  ingest token is separate and stays valid until it is revoked (the remove
-  dialog links to Ingest tokens instead of revoking for you).
+- **Remove source = pause ingest + hide + purge its lines, and revoke its
+  tokens, in one step** (06.4; `POST /api/sources/:name/remove`). There is no
+  source table to delete from; a Docker container that logs again comes back.
+  The dialog shows "Also revoke its token qi_••••…" (on by default) only when
+  tokens are **bound** to the source; any-source tokens are shared, so they
+  are never revoked here (the dialog points at Ingest tokens instead). Undo
+  follows token revoke: the toast offers it for 15 s, the server allows token
+  restore for 60 s; Undo restores the revoked tokens and puts the source's
+  previous settings back (un-pause, un-hide). Deleted lines stay deleted and
+  the toast says so.
+- **Muted lines** (06.3) are per-source rules in the source's settings
+  (`SourceSettings.muted`, ≤ 32): `field:value` compares the field's value
+  (dot path, as text) case-insensitively with `*` wildcards; plain text
+  matches anywhere in the raw line. They are matched **in the browser**, on
+  the lines the stream and search already have, so "Show muted" is instant
+  and lines stay stored, counted (histogram, level counts, totals) and
+  searchable, as the board says. Stream and Search show "N muted · Show muted ·
+  Edit rules" when any line in view is muted. Cost: a stream backlog that is
+  mostly muted lines shows fewer rows (the server does not top it up), and a
+  search page can look short until the next page loads.
+- **Flow minimap** (04.3) is drawn on long flows (the same ones that get the
+  All steps / Problems only toolbar): one tick per step, a folded run drawing
+  a tick per step it holds, errors red and warnings amber, positions measured
+  from the laid-out canvas; click or drag moves the canvas, arrow / Page /
+  Home / End when focused.
 - **"Stopped sending" banner** (06.1): a source that had lines earlier in the
   hour and none in the last three one-minute buckets, so it shows after about
   2–3 minutes of silence.
@@ -54,8 +85,8 @@ per-board status). Source grouping has its own section further down.
   The toast offers Undo for 15 s.
 
 **Open questions**
-- Should removing a source really delete it (and offer to revoke its bound
-  token in one step) rather than pause + hide + purge?
+- Should muting move to the server (so backlogs and pages are topped up past
+  muted lines), at the cost of a reconnect when "Show muted" toggles?
 - Should similar values move to a server endpoint (one pass over the window
   instead of a second search from the browser)?
 
@@ -364,7 +395,10 @@ configurable because it ships as an update. Boards v0.1-06.7, 06.8, 03.8,
 - **Ignore all N** = pause ingest + hide each source (the per-source settings
   already have both), after a confirm dialog; reversible per source. Stored
   lines stay until they expire.
-- **Not built**: streaming a whole group. The stream stays one source at a
-  time for v0.1; a group in ⌘K opens Sources, never the stream.
+- **Decided out for v0.1**: streaming a whole group. The stream stays one
+  source at a time; a group in ⌘K opens Sources, never the stream.
+- Docker grouping could not be checked on screen with real containers in the
+  build sandbox (no Docker there); it is covered by server tests on label
+  sets and by UI tests.
 - The Sources page keeps the 06.1 stat cards above the filters (06.7 omits
   them; both are v0.1 boards).
