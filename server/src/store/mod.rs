@@ -37,6 +37,7 @@ pub struct LineFilter {
 }
 
 impl LineFilter {
+    #[cfg(test)]
     pub fn new(level: Option<&str>, text: Option<&str>) -> Self {
         Self::with_levels(level, None, text)
     }

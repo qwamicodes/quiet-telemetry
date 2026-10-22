@@ -57,7 +57,8 @@ pub struct SearchParams {
     pub since: Option<i64>,
     #[ts(optional)]
     pub until: Option<i64>,
-    /// A correlation id (any key).
+    /// Correlation ids (any key), comma-separated; a line matches when it
+    /// carries any of them (a stitched flow exports as `id=req_1,job_9`).
     #[ts(optional)]
     pub id: Option<String>,
     #[ts(optional)]
@@ -91,8 +92,13 @@ impl SearchParams {
                 q.levels = ls;
             }
         }
-        if let Some(id) = self.id.as_deref().filter(|i| !i.is_empty()) {
-            q.ids.push(id.to_string());
+        if let Some(ids) = self.id.as_deref() {
+            q.ids.extend(
+                ids.split(',')
+                    .map(str::trim)
+                    .filter(|i| !i.is_empty())
+                    .map(String::from),
+            );
         }
         q.since = self.since;
         q.until = self.until;
@@ -200,27 +206,31 @@ fn on(v: &Option<String>) -> bool {
     )
 }
 
-/// What to name the file: one source's name, else `search`.
+fn slug(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// What to name the file: a flow's first id (`quiet-flow-req_1`), else one
+/// source's name and the day, else `search` and the day.
 fn file_name(p: &SearchQuery, fmt: ExportFormat, gzip: bool) -> String {
+    let ext = format!("{}{}", fmt.ext(), if gzip { ".gz" } else { "" });
+    if let Some(first) = p.ids.first() {
+        return format!("quiet-flow-{}.{ext}", slug(first));
+    }
     let label = match p.sources.as_slice() {
-        [one] => one
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect(),
+        [one] => slug(one),
         _ => "search".to_string(),
     };
     let day = chrono::Utc::now().format("%Y-%m-%d");
-    format!(
-        "quiet-{label}-{day}.{}{}",
-        fmt.ext(),
-        if gzip { ".gz" } else { "" }
-    )
+    format!("quiet-{label}-{day}.{ext}")
 }
 
 async fn export(
@@ -487,6 +497,19 @@ mod tests {
             parts.headers,
             body.collect().await.unwrap().to_bytes().to_vec(),
         )
+    }
+
+    #[tokio::test]
+    async fn flow_export_takes_every_id_and_names_the_file_after_the_flow() {
+        let (_, app) = app().await;
+        let (st, headers, body) =
+            get(&app, "/api/export?id=req_2,payout:88&format=ndjson", None).await;
+        assert_eq!(st, StatusCode::OK);
+        let text = String::from_utf8(body).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(text.contains("req_2") && text.contains("payout:88"));
+        let cd = headers[header::CONTENT_DISPOSITION].to_str().unwrap();
+        assert!(cd.contains("quiet-flow-req_2.ndjson"), "{cd}");
     }
 
     #[tokio::test]

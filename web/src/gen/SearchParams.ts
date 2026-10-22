@@ -26,7 +26,8 @@ levels?: string,
  */
 since?: number, until?: number, 
 /**
- * A correlation id (any key).
+ * Correlation ids (any key), comma-separated; a line matches when it
+ * carries any of them (a stitched flow exports as `id=req_1,job_9`).
  */
 id?: string, order?: Order, cursor?: string, limit?: number, 
 /**
