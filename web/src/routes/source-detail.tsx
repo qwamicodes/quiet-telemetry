@@ -30,11 +30,12 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import type { Level, PiiKind, SourceInfo, SourceSettings } from '@/gen'
+import type { Level, PiiKind, RemovedSource, SourceInfo, SourceSettings } from '@/gen'
 import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { kindLabel } from '@/lib/connect'
 import { fmtAgo, fmtBytes, fmtClock, fmtCount, fmtTime, fmtWindow, isRecent } from '@/lib/format'
+import { parseMute } from '@/lib/mute'
 import { searchResponse } from '@/lib/schemas'
 import { toQuery } from '@/lib/search-api'
 import {
@@ -43,7 +44,7 @@ import {
   PII_KINDS,
   PII_LABEL,
   useActivity,
-  usePurge,
+  useRemoveSource,
   useResetSource,
   useSaveSource,
   useSettings,
@@ -51,6 +52,7 @@ import {
 } from '@/lib/settings-api'
 import { useSourceFields, useStreamStats } from '@/lib/stream-api'
 import { toast } from '@/lib/toast'
+import { useRestoreToken, useTokens } from '@/lib/tokens-api'
 import { useRates } from '@/lib/use-rates'
 import { cn } from '@/lib/utils'
 
@@ -407,40 +409,50 @@ function Overview({
           )}
         </div>
       </div>
-      {removing && <RemoveSourceDialog name={name} lines={total} saved={saved} onClose={() => setRemoving(false)} />}
+      {removing && <RemoveSourceDialog name={name} lines={total} onClose={() => setRemoving(false)} />}
     </div>
   )
 }
 
 /**
- * Type-to-confirm remove (design 06.4): pauses ingest (new lines are dropped),
- * hides it, and purges its stored lines. A token stays valid until revoked in
- * Settings → Ingest tokens.
+ * Type-to-confirm remove (design 06.4), one server step: pauses ingest (new
+ * lines are dropped), hides it, purges its stored lines and, with the switch
+ * on (the default when it has one), revokes the ingest tokens bound to it.
+ * The toast's Undo (like a token revoke's) restores the tokens and the
+ * source's settings within a minute; deleted lines stay deleted.
  */
-export function RemoveSourceDialog({
-  name,
-  lines,
-  saved,
-  onClose,
-}: {
-  name: string
-  lines: number
-  saved: SourceSettings
-  onClose: () => void
-}) {
+export function RemoveSourceDialog({ name, lines, onClose }: { name: string; lines: number; onClose: () => void }) {
   const [typed, setTyped] = useState('')
+  const remove = useRemoveSource(name)
   const save = useSaveSource(name)
-  const purge = usePurge()
+  const restore = useRestoreToken()
+  const tokens = useTokens().data
+  const bound = (tokens ?? []).filter((t) => t.revoked == null && t.source === name)
+  const [revoke, setRevoke] = useState(true)
   const navigate = useNavigate()
-  const busy = save.isPending || purge.isPending
+  const undo = async (r: RemovedSource) => {
+    try {
+      for (const t of r.revoked) await restore.mutateAsync(t.id)
+      await save.mutateAsync(r.previous)
+      toast.success(`${name} is back`, {
+        description: `${r.revoked.length ? 'Its token works again and new' : 'New'} lines are stored again. Deleted lines stay deleted.`,
+      })
+    } catch (err) {
+      toast.error('Could not undo', { description: (err as Error).message })
+    }
+  }
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     if (typed.trim() !== name) return
     try {
-      await save.mutateAsync({ ...saved, paused: true, hidden: true })
-      const r = await purge.mutateAsync({ source: name, confirm: name })
+      const r = await remove.mutateAsync({ confirm: name, revoke_tokens: revoke && bound.length > 0 })
+      const revokedText = r.revoked.length
+        ? ` · ${r.revoked.length === 1 ? `token ${r.revoked[0].preview}` : `${r.revoked.length} tokens`} revoked`
+        : ''
       toast.success(`Removed ${name}`, {
-        description: `${fmtCount(r.lines)} stored lines deleted; new lines are dropped.`,
+        description: `${fmtCount(r.lines)} stored lines deleted${revokedText}; new lines are dropped.`,
+        duration: 15_000,
+        button: { title: 'Undo', onClick: () => undo(r) },
       })
       onClose()
       navigate({ to: '/sources' })
@@ -456,11 +468,18 @@ export function RemoveSourceDialog({
             <DialogTitle>Remove {name}?</DialogTitle>
             <DialogDescription>
               quiet stops accepting lines from {name} and deletes its {fmtCount(lines)} stored lines. Flows that include
-              them will show as partial. A sender keeps running until you revoke its token in{' '}
-              <Link to="/settings/ingest-tokens" className="text-brand hover:underline">
-                Ingest tokens
-              </Link>
-              .
+              them will show as partial.{' '}
+              {bound.length > 0 ? (
+                'The exporter keeps running until you revoke its token.'
+              ) : (
+                <>
+                  A sender using an any-source token keeps running until you revoke it in{' '}
+                  <Link to="/settings/ingest-tokens" className="text-brand hover:underline">
+                    Ingest tokens
+                  </Link>
+                  .
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5 text-xs">
@@ -475,11 +494,23 @@ export function RemoveSourceDialog({
               autoFocus
             />
           </div>
+          {bound.length > 0 && (
+            // biome-ignore lint/a11y/noLabelWithoutControl: the Switch inside is the control
+            <label className="flex items-center gap-2.5 text-sm">
+              <Switch aria-label="Also revoke its token" checked={revoke} onCheckedChange={setRevoke} />
+              <span>
+                Also revoke {bound.length === 1 ? 'its token' : `its ${bound.length} tokens`}{' '}
+                <span className="font-mono text-muted-foreground text-xs">
+                  {bound.map((t) => t.preview).join(', ')}
+                </span>
+              </span>
+            </label>
+          )}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" variant="destructive" disabled={typed.trim() !== name || busy}>
+            <Button type="submit" variant="destructive" disabled={typed.trim() !== name || remove.isPending}>
               <Trash2Icon /> Remove source
             </Button>
           </DialogFooter>
@@ -655,6 +686,7 @@ export function SourceSettingsForm({
   const reset = useResetSource(name)
   const [draft, setDraft] = useState<SourceSettings>(saved)
   const [field, setField] = useState('')
+  const [mute, setMute] = useState('')
   const [purging, setPurging] = useState(false)
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
   const set = (p: Partial<SourceSettings>) => setDraft({ ...draft, ...p })
@@ -674,6 +706,12 @@ export function SourceSettingsForm({
     if (!f || draft.mask_fields.includes(f)) return
     set({ mask_fields: [...draft.mask_fields, f] })
     setField('')
+  }
+  const addMute = () => {
+    const r = parseMute(mute)
+    if (!r) return
+    if (!draft.muted.some((x) => x.field === r.field && x.value === r.value)) set({ muted: [...draft.muted, r] })
+    setMute('')
   }
   const toggleMask = (k: PiiKind, on: boolean) =>
     set({ unmasked: on ? draft.unmasked.filter((x) => x !== k) : [...draft.unmasked, k] })
@@ -733,6 +771,66 @@ export function SourceSettingsForm({
               <span className="text-muted-foreground text-xs">
                 The first id found is the one a row shows; every id still counted links the line into flows. Keys you
                 remove are ignored for this source (new lines, rows, stitching).
+              </span>
+            </div>
+          </Panel>
+          <Panel title="Muted lines" aside={draft.muted.length ? `${draft.muted.length} rules` : undefined}>
+            <div className="flex flex-col gap-2 p-4">
+              <ul aria-label="Muted lines" className="flex flex-wrap items-center gap-1.5">
+                {draft.muted.map((r) => (
+                  <li
+                    key={`${r.field ?? ''}\u0000${r.value}`}
+                    className="flex items-center gap-1 border bg-brand/10 px-1.5 py-0.5 font-mono text-xs"
+                  >
+                    {r.field ? (
+                      <>
+                        <span className="text-brand">{r.field}</span>
+                        <span className="text-muted-foreground">:</span>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">text</span>
+                    )}
+                    <span>{r.value}</span>
+                    <button
+                      type="button"
+                      aria-label={`Unmute ${r.field ? `${r.field}:` : ''}${r.value}`}
+                      className="text-muted-foreground hover:text-foreground"
+                      onClick={() => set({ muted: draft.muted.filter((x) => x !== r) })}
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </li>
+                ))}
+                <li className="flex items-center gap-1.5">
+                  <Input
+                    aria-label="Mute lines matching"
+                    placeholder="path:/api/v1/health or text"
+                    className="h-7 w-56 font-mono text-xs"
+                    value={mute}
+                    onChange={(e) => setMute(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        addMute()
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Add muted rule"
+                    onClick={addMute}
+                    disabled={!mute.trim()}
+                  >
+                    <PlusIcon /> Add
+                  </Button>
+                </li>
+              </ul>
+              <span className="text-muted-foreground text-xs">
+                Muted lines are still stored and searchable, just hidden from the stream and search until you click Show
+                muted. <code className="font-mono">field:value</code> matches a field (<code>*</code> for any run of
+                characters); anything else matches text in the line.
               </span>
             </div>
           </Panel>

@@ -17,6 +17,8 @@ import type {
   Purged,
   PurgeRequest,
   Rejection,
+  RemovedSource,
+  RemoveSource,
   SettingsResponse,
   SourceActivity,
   SourceSettings,
@@ -30,7 +32,7 @@ import type {
 } from '@/gen'
 import { fetchJson, sendJson } from '@/lib/api'
 import { AUTH_KEY } from '@/lib/auth-api'
-import { BUILTIN_ID_KEYS, dockerStatus, idKey, level } from '@/lib/schemas'
+import { BUILTIN_ID_KEYS, dockerStatus, idKey, ingestToken, level } from '@/lib/schemas'
 
 // ---- schemas (each satisfies its generated type) ----------------------------
 
@@ -92,6 +94,7 @@ export const sourceSettings = z.object({
   default_level: level.nullable(),
   mask_fields: z.array(z.string()),
   unmasked: z.array(piiKind),
+  muted: z.array(z.object({ field: z.string().nullable(), value: z.string() })).catch([]),
 }) satisfies z.ZodType<SourceSettings>
 
 export const groupMode = z.enum(['auto', 'label', 'off'])
@@ -255,6 +258,7 @@ export const DEFAULT_SOURCE_SETTINGS: SourceSettings = {
   default_level: null,
   mask_fields: [],
   unmasked: [],
+  muted: [],
 }
 
 export function useSourceSettings(name: string | null): SourceSettings {
@@ -367,6 +371,25 @@ export function useResetSource(name: string) {
   return useMutation({
     mutationFn: () => sendJson(`/api/settings/sources/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     onSuccess: () => refresh([['sources']]),
+  })
+}
+
+export const removedSource = z.object({
+  lines: z.number(),
+  revoked: z.array(ingestToken),
+  previous: sourceSettings,
+}) satisfies z.ZodType<RemovedSource>
+
+/**
+ * Remove a source in one step (06.4): pause + hide, purge its lines and,
+ * when asked, revoke the tokens bound to it.
+ */
+export function useRemoveSource(name: string) {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (body: RemoveSource) =>
+      fetchJson(`/api/sources/${encodeURIComponent(name)}/remove`, removedSource, put(body, 'POST')),
+    onSuccess: () => refresh([['storage'], ['health'], ['sources'], ['system'], ['ingest-tokens']]),
   })
 }
 

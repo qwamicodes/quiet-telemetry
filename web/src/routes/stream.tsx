@@ -3,6 +3,7 @@ import { ClockIcon, FilterXIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TOGGLE_PAUSE } from '@/components/command-palette'
 import { ExportDialog } from '@/components/export-dialog'
+import { MutedNote } from '@/components/muted-note'
 import { ErrorRateBanner, GapBanner, SourceLostBanner } from '@/components/stream/connection-banner'
 import { FilterBar, FilterChip } from '@/components/stream/filter-bar'
 import { LogTable, type RowActions } from '@/components/stream/log-table'
@@ -15,6 +16,7 @@ import { useHealth, useSources } from '@/lib/api'
 import { useConnection } from '@/lib/connection'
 import { fmtTime, fmtWindow } from '@/lib/format'
 import { chipOf, isOn, type LevelChip, levelsFromParam, levelsToParam, toggleChip } from '@/lib/levels'
+import { useMuted } from '@/lib/mute'
 import { joinQuery, splitQuery } from '@/lib/query'
 import { rowParts } from '@/lib/row'
 import { useSettings } from '@/lib/settings-api'
@@ -124,7 +126,16 @@ export function StreamPage() {
     navigate({ search: (s) => ({ ...s, q: undefined, level: levelsToParam([], sourceDefault) }), replace: true })
   }
 
-  const { lines, state, dropped, retryNow, everConnected } = useStream({ source, levels: levelsCsv, q: search.q })
+  const {
+    lines: received,
+    state,
+    dropped,
+    retryNow,
+    everConnected,
+  } = useStream({ source, levels: levelsCsv, q: search.q })
+  // Muted lines (06.3): hidden unless "show"; the count stays visible.
+  const [showMuted, setShowMuted] = useState(false)
+  const { visible: lines, muted } = useMuted(received, showMuted)
   const stats = useStreamStats(source, search.q)
   const [follow, setFollow] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -384,6 +395,9 @@ export function StreamPage() {
             Clear filters
           </Button>
         </div>
+      )}
+      {muted > 0 && source && (
+        <MutedNote count={muted} shown={showMuted} onToggle={() => setShowMuted((v) => !v)} source={source} />
       )}
       <div className="flex min-h-0 flex-1 gap-3 px-6 pb-3">
         <LogTable

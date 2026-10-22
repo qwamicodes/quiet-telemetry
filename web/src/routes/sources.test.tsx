@@ -3,7 +3,9 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Bucket, Health, SettingsResponse, SourceActivity, SourceFields, SourceInfo, StreamStats } from '@/gen'
+import { DEFAULT_SOURCE_SETTINGS } from '@/lib/settings-api'
 import { resetCollapsedGroups } from '@/lib/source-groups'
+import { toast } from '@/lib/toast'
 import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
 import { seedAuth } from '@/test/auth'
@@ -112,6 +114,18 @@ const fields = (name: string): SourceFields => ({
 })
 const activity: SourceActivity = { source: 'legivent-api', rejections: [], rejected_15m: 3, paused_dropped: 0 }
 let calls: { url: string; method: string; body: unknown }[] = []
+const ingestTokens = [
+  {
+    id: 7,
+    name: 'legivent-api otlp',
+    preview: 'qi_••••77e0',
+    source: 'legivent-api',
+    created: NOW - 86_400_000,
+    last_used: NOW - 1000,
+    revoked: null,
+  },
+  { id: 8, name: 'shared', preview: 'qi_••••1a2b', source: null, created: NOW, last_used: null, revoked: null },
+]
 
 beforeEach(() => {
   calls = []
@@ -147,6 +161,15 @@ beforeEach(() => {
       }
       if (url.startsWith('/api/settings/sources/')) return json(body)
       if (url === '/api/storage/purge') return json({ lines: 1000, source: body.source })
+      if (url === '/api/ingest-tokens') return json({ tokens: ingestTokens })
+      if (url.startsWith('/api/ingest-tokens/') && url.endsWith('/restore'))
+        return json({ ...ingestTokens[0], revoked: null })
+      if (url === '/api/sources/legivent-api/remove')
+        return json({
+          lines: 1000,
+          revoked: body.revoke_tokens ? [{ ...ingestTokens[0], revoked: NOW }] : [],
+          previous: DEFAULT_SOURCE_SETTINGS,
+        })
       return json({ error: 'nope' }, 404)
     }),
   )
@@ -310,25 +333,65 @@ describe('source detail (06.2 / 06.4 / 06.5)', () => {
     expect(screen.getByText('0.4% errors · 0% warn')).toBeInTheDocument()
   })
 
-  it('remove needs the name typed, then pauses, hides and purges the source', async () => {
+  it('remove needs the name typed, then removes the source and revokes its token in one step; Undo restores (06.4)', async () => {
+    const success = vi.spyOn(toast, 'success')
     const user = userEvent.setup()
     const router = renderAt('/sources/legivent-api')
     await user.click(await screen.findByRole('button', { name: /Remove$/ }, { timeout: 5000 }))
     const dialog = await screen.findByRole('dialog')
     const go = within(dialog).getByRole('button', { name: /Remove source/ })
     expect(go).toBeDisabled()
+    // Only the token bound to this source is offered (on by default), not the any-source one.
+    const sw = await within(dialog).findByRole('switch', { name: 'Also revoke its token' })
+    expect(sw).toBeChecked()
+    expect(dialog).toHaveTextContent('qi_••••77e0')
+    expect(dialog).not.toHaveTextContent('qi_••••1a2b')
     await user.type(within(dialog).getByRole('textbox', { name: 'Confirm remove' }), 'legivent-api')
     await user.click(go)
     await waitFor(() =>
       expect(calls).toContainEqual({
-        url: '/api/storage/purge',
+        url: '/api/sources/legivent-api/remove',
         method: 'POST',
-        body: { source: 'legivent-api', confirm: 'legivent-api' },
+        body: { confirm: 'legivent-api', revoke_tokens: true },
       }),
     )
-    const saved = calls.find((c) => c.url === '/api/settings/sources/legivent-api')
-    expect(saved?.body).toMatchObject({ paused: true, hidden: true })
+    expect(calls.some((c) => c.url === '/api/storage/purge')).toBe(false)
     await waitFor(() => expect(router.state.location.pathname).toBe('/sources'))
+    const removed = success.mock.calls.find((c) => c[0] === 'Removed legivent-api')?.[1]
+    expect(removed?.description).toBe('1.0k stored lines deleted · token qi_••••77e0 revoked; new lines are dropped.')
+
+    // Undo: the token is restored and the settings put back.
+    removed?.button?.onClick()
+    await waitFor(() =>
+      expect(calls).toContainEqual(expect.objectContaining({ url: '/api/ingest-tokens/7/restore', method: 'POST' })),
+    )
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          url: '/api/settings/sources/legivent-api',
+          method: 'PUT',
+          body: expect.objectContaining({ paused: false, hidden: false }),
+        }),
+      ),
+    )
+  })
+
+  it('turning the switch off keeps the token', async () => {
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api')
+    await user.click(await screen.findByRole('button', { name: /Remove$/ }, { timeout: 5000 }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(await within(dialog).findByRole('switch', { name: 'Also revoke its token' }))
+    await user.type(within(dialog).getByRole('textbox', { name: 'Confirm remove' }), 'legivent-api')
+    await user.click(within(dialog).getByRole('button', { name: /Remove source/ }))
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          url: '/api/sources/legivent-api/remove',
+          body: { confirm: 'legivent-api', revoke_tokens: false },
+        }),
+      ),
+    )
   })
 
   it('the rejected tab shows the stats and the newest malformed lines; the malformed tab lists them', async () => {

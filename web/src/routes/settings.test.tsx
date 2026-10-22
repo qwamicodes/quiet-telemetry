@@ -374,6 +374,14 @@ describe('source settings', () => {
     await user.type(within(form).getByRole('textbox', { name: 'Mask another field' }), 'customer.address')
     await user.click(within(form).getByRole('button', { name: 'Add' }))
     await user.click(within(form).getByRole('switch', { name: 'Mask user_agent' }))
+    // Muted lines (06.3): a field rule and a text rule; one removed again.
+    const mute = within(form).getByRole('textbox', { name: 'Mute lines matching' })
+    await user.type(mute, 'path:/api/v1/health{Enter}')
+    await user.type(mute, 'kube-probe{Enter}')
+    await user.type(mute, 'path:/metrics{Enter}')
+    const chips = within(form).getByRole('list', { name: 'Muted lines' })
+    expect(chips).toHaveTextContent('path:/api/v1/health')
+    await user.click(within(form).getByRole('button', { name: 'Unmute path:/metrics' }))
     await user.click(within(form).getByRole('switch', { name: 'Pause ingest' }))
     await user.click(within(form).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(calls).toHaveLength(1))
@@ -389,6 +397,10 @@ describe('source settings', () => {
         default_level: null,
         mask_fields: ['customer.address'],
         unmasked: ['user_agent'],
+        muted: [
+          { field: 'path', value: '/api/v1/health' },
+          { field: null, value: 'kube-probe' },
+        ],
       },
     })
   })
@@ -437,6 +449,7 @@ describe('stream defaults from settings', () => {
       default_level: 'warn',
       mask_fields: [],
       unmasked: [],
+      muted: [],
     }
     settings.general.stream_direction = 'top'
     const user = userEvent.setup()
