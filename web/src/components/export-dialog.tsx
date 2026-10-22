@@ -10,25 +10,25 @@ import {
   XIcon,
 } from 'lucide-react'
 import { type ReactNode, useState, useSyncExternalStore } from 'react'
+import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import type { ExportFormat, SearchParams } from '@/gen'
-import { fetchJson, useHealth } from '@/lib/api'
+import type { ExportFormat, ExportJob, SearchParams } from '@/gen'
+import { fetchJson, sendJson, useHealth } from '@/lib/api'
 import { fmtBytes, fmtClock, fmtCount, fmtWindow } from '@/lib/format'
-import { searchResponse } from '@/lib/schemas'
+import { exportJob, searchResponse } from '@/lib/schemas'
 import { copyCurl, type ExportOptions, exportFileName, exportQuery, toQuery } from '@/lib/search-api'
-import { apiFetch } from '@/lib/session'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
 /** CSV columns on by default, and the ones offered to add (design 05.5). */
 export const DEFAULT_COLUMNS = ['timestamp', 'level', 'source', 'request_id', 'msg', 'status', 'duration_ms']
 const SUGGESTED = ['job_id', 'method', 'path', 'user_id', 'error.message']
-/** Over this many lines the browser fetches the file in the background with progress (design 05.7). */
+/** Over this many lines the server prepares the file first, with progress (design 05.7). */
 export const LARGE = 100_000
 
 const FORMATS: { value: ExportFormat; title: string; hint: string }[] = [
@@ -37,18 +37,17 @@ const FORMATS: { value: ExportFormat; title: string; hint: string }[] = [
   { value: 'csv', title: 'CSV', hint: 'Pick columns. Opens in any spreadsheet.' },
 ]
 
-// ---- background exports (survive closing the dialog) --------------------------------
+// ---- server-side preparing (05.7 / 05.8; survives closing the dialog) ------------------
 
+/** The export being prepared on the server, as last polled. */
 export interface Job {
+  id: string
   file: string
   total: number
-  /** Raw bytes the server will send (an estimate when gzipped). */
-  expected: number
-  received: number
+  done: number
   started: number
-  done: boolean
-  error?: string
-  abort: AbortController
+  etaMs: number | null
+  ready: boolean
 }
 let job: Job | null = null
 const subs = new Set<() => void>()
@@ -65,78 +64,127 @@ function useJob() {
     () => null,
   )
 }
+/** How often the progress is polled, ms (tests shorten it). */
+export const POLL = { ms: 1000 }
 
-function save(blob: Blob, file: string) {
-  const url = URL.createObjectURL(blob)
+/** The browser saves the prepared file straight from the server. */
+export function downloadJob(id: string, file: string) {
   const a = document.createElement('a')
-  a.href = url
+  a.href = `/api/export/jobs/${encodeURIComponent(id)}/download`
   a.download = file
   a.click()
-  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
-/** Fetch the export as a stream, counting bytes, then offer it in a toast. */
-export async function runBackgroundExport(query: string, file: string, total: number, expected: number) {
-  job?.abort.abort()
-  const abort = new AbortController()
-  job = { file, total, expected: Math.max(1, expected), received: 0, started: Date.now(), done: false, abort }
+/** Cancel the export being prepared (the server deletes the partial file). */
+export async function cancelServerExport() {
+  const j = job
+  if (!j) return
+  job = null
   emit()
+  await sendJson(`/api/export/jobs/${encodeURIComponent(j.id)}`, { method: 'DELETE' }).catch(() => {})
+  toast.info('Export cancelled', { description: j.file })
+}
+
+/**
+ * Ask the server to prepare the file, poll its progress, then offer it in a
+ * toast ("Export ready · file · size · Download"). One at a time from here.
+ */
+export async function runServerExport(query: string) {
+  if (job && !job.ready) return
+  let j: ExportJob
   try {
-    const res = await apiFetch(`/api/export?${query}`, { signal: abort.signal })
-    if (!res.ok || !res.body) throw new Error(`export failed (${res.status})`)
-    const reader = res.body.getReader()
-    const parts: BlobPart[] = []
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      parts.push(value)
-      if (job) job = { ...job, received: job.received + value.byteLength }
-      emit()
-    }
-    const blob = new Blob(parts)
-    job = job && { ...job, done: true, received: blob.size }
-    emit()
-    toast.success('Export ready', {
-      description: `${file} · ${fmtBytes(blob.size)}`,
-      duration: null,
-      button: { title: 'Download', onClick: () => save(blob, file) },
+    j = await fetchJson('/api/export/jobs', exportJob, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query }),
     })
   } catch (e) {
-    if (abort.signal.aborted) toast.info('Export cancelled')
-    else toast.error('Export failed', { description: e instanceof Error ? e.message : String(e) })
-  } finally {
-    job = null
+    toast.error('Export failed', { description: e instanceof Error ? e.message : String(e) })
+    return
+  }
+  const id = j.id
+  const show = (x: ExportJob) => {
+    job = {
+      id,
+      file: x.file_name,
+      total: x.total,
+      done: x.done,
+      started: x.started,
+      etaMs: x.eta_ms,
+      ready: x.state === 'ready',
+    }
     emit()
   }
+  show(j)
+  while (j.state === 'preparing') {
+    await new Promise((r) => setTimeout(r, POLL.ms))
+    if (job?.id !== id) return // cancelled
+    try {
+      j = await fetchJson(`/api/export/jobs/${encodeURIComponent(id)}`, exportJob)
+    } catch (e) {
+      if (job?.id !== id) return
+      job = null
+      emit()
+      toast.error('Export failed', { description: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    if (job?.id !== id) return
+    show(j)
+  }
+  if (j.state === 'ready') {
+    const { file_name: file, bytes } = j
+    toast.success('Export ready', {
+      description: `${file} · ${fmtBytes(bytes)}`,
+      duration: null,
+      button: {
+        title: 'Download',
+        onClick: () => {
+          downloadJob(id, file)
+          if (job?.id === id) {
+            job = null
+            emit()
+          }
+        },
+      },
+    })
+    // The dialog's Download stays on this file until it is used or replaced.
+    return
+  }
+  job = null
+  emit()
+  if (j.state === 'failed') toast.error('Export failed', { description: j.error ?? undefined })
 }
 
 function Progress({ j }: { j: Job }) {
-  const pct = Math.min(99, Math.floor((j.received / j.expected) * 100))
-  const lines = Math.round((pct / 100) * j.total)
-  const elapsed = (Date.now() - j.started) / 1000
-  const left = pct > 0 ? Math.max(1, Math.round((elapsed / pct) * (100 - pct))) : null
+  const pct = j.ready ? 100 : Math.min(99, Math.floor((j.done / Math.max(1, j.total)) * 100))
+  const left = j.etaMs != null ? Math.max(1, Math.round(j.etaMs / 1000)) : null
   return (
     <section aria-label="Export progress" className="flex flex-col gap-2 border bg-background/40 p-3">
       <div className="flex items-center gap-3 font-mono text-xs">
+        <StatusDot status={j.ready ? 'ok' : 'warn'} />
         <span className="font-sans font-medium text-sm">
-          Preparing {fmtCount(j.total)} lines · {pct}%
+          {j.ready ? `Ready · ${fmtCount(j.total)} lines` : `Preparing ${fmtCount(j.total)} lines · ${pct}%`}
         </span>
-        <span className="text-muted-foreground">
-          {fmtCount(lines)} / {fmtCount(j.total)}
-          {left != null && ` · ~${left}s left`}
-        </span>
+        {!j.ready && (
+          <span className="text-muted-foreground">
+            {fmtCount(j.done)} / {fmtCount(j.total)}
+            {left != null && ` · ~${left}s left`}
+          </span>
+        )}
         <span className="flex-1" />
-        <Button variant="ghost" size="xs" onClick={() => j.abort.abort()}>
-          <XIcon />
-          Cancel
-        </Button>
+        {!j.ready && (
+          <Button variant="outline" size="xs" onClick={() => cancelServerExport()}>
+            <XIcon />
+            Cancel
+          </Button>
+        )}
       </div>
       <div className="h-1 bg-muted">
         <div className="h-full bg-brand transition-[width]" style={{ width: `${pct}%` }} />
       </div>
       <p className="text-muted-foreground text-xs">
-        Over ~{fmtCount(LARGE)} lines quiet streams the file in the background. You can close this; a toast tells you
-        when it is ready.
+        Over ~{fmtCount(LARGE)} lines quiet prepares the file on the server first. You can close this; a toast tells you
+        when it is ready. Lines that expire meanwhile are still included.
       </p>
     </section>
   )
@@ -189,7 +237,8 @@ const RANGE_CHOICES: { value: string; label: string; ms: number }[] = [
 
 /**
  * Export what is on screen: these filters, this time range. Download streams
- * the file from `/api/export` (large exports in the background with progress);
+ * the file from `/api/export` (over ~100k lines the server prepares it first,
+ * with progress, see `export_jobs.rs`);
  * Copy curl mints a read-only `qx_` token for this exact query (reusable for
  * 15 minutes) and copies a ready curl.
  */
@@ -459,12 +508,12 @@ export function ExportDialog({
           </section>
         )}
 
-        {running && !running.done && <Progress j={running} />}
+        {running && <Progress j={running} />}
 
         <footer className="flex items-center gap-2">
           <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate font-mono text-muted-foreground text-xs">
             <FileDownIcon className="size-3.5 shrink-0" />
-            {file}
+            {running ? running.file : file}
           </span>
           {running ? (
             <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
@@ -476,12 +525,22 @@ export function ExportDialog({
               {curl ? 'Copied' : 'Copy curl'}
             </Button>
           )}
-          {large || running ? (
+          {running ? (
             <Button
               size="sm"
-              disabled={Boolean(running)}
-              onClick={() => runBackgroundExport(query, file, total ?? 0, opts.gzip ? (bytes ?? 0) / 12 : (bytes ?? 0))}
+              disabled={!running.ready}
+              onClick={() => {
+                downloadJob(running.id, running.file)
+                job = null
+                emit()
+              }}
             >
+              <FileDownIcon />
+              Download
+              <CornerDownLeftIcon className="ml-1 size-3 opacity-60" />
+            </Button>
+          ) : large ? (
+            <Button size="sm" onClick={() => runServerExport(query)}>
               <FileDownIcon />
               Download
               <CornerDownLeftIcon className="ml-1 size-3 opacity-60" />

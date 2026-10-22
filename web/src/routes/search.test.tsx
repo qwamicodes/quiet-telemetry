@@ -2,7 +2,9 @@ import { createMemoryHistory, RouterProvider } from '@tanstack/react-router'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { POLL } from '@/components/export-dialog'
 import type { Health, LogLine, SearchResponse, SourceInfo } from '@/gen'
+import { toast } from '@/lib/toast'
 import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
 import { seedAuth } from '@/test/auth'
@@ -86,13 +88,18 @@ const page = (ls: LogLine[]): SearchResponse => ({
 })
 
 let calls: string[] = []
+let jobReady = false
+let bodies: Record<string, string> = {}
 
 beforeEach(() => {
   calls = []
+  bodies = {}
+  jobReady = false
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
       calls.push(url)
+      if (init?.body) bodies[url] = String(init.body)
       const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status })
       if (url.startsWith('/api/health')) return json(health)
       if (url.startsWith('/api/sources')) return json({ sources })
@@ -126,8 +133,28 @@ beforeEach(() => {
         }
         return json({ flows: ids.map((id) => ({ id, flow: id === 'req_1' ? flow : null })) })
       }
+      if (url.startsWith('/api/export/jobs')) {
+        // 05.7: preparing → (poll) 40% → (poll) ready; DELETE cancels.
+        if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+        const base = {
+          id: 'job1',
+          total: 250_000,
+          file_name: 'quiet-api-2026-10-22.ndjson.gz',
+          started: Date.now(),
+          masked: true,
+          error: null,
+          expires_at: null,
+          finished: null,
+        }
+        if (init?.method === 'POST') {
+          return json({ ...base, state: 'preparing', done: 0, bytes: 0, eta_ms: null }, 202)
+        }
+        if (!jobReady) return json({ ...base, state: 'preparing', done: 100_000, bytes: 1, eta_ms: 6_000 })
+        return json({ ...base, state: 'ready', done: 250_000, bytes: 48_000_000, eta_ms: null, finished: 1 })
+      }
       if (url.startsWith('/api/search')) {
         const q = new URL(url, 'http://x').searchParams.get('q') ?? ''
+        if (q.includes('huge')) return json({ ...page(lines), total: 250_000, bytes: 960_000_000 })
         return json(page(q.includes('nothing') ? [] : lines))
       }
       return json({ error: 'nope' }, 404)
@@ -291,5 +318,49 @@ describe('export dialog', () => {
     const tokenCall = calls.find((c) => c === '/api/export/token')
     expect(tokenCall).toBeTruthy()
     expect(copied).toContain(href)
+  })
+
+  it('over ~100k lines the server prepares the file with progress; Cancel stops it; ready → toast + Download (05.7/05.8)', async () => {
+    POLL.ms = 10
+    const success = vi.spyOn(toast, 'success')
+    const info = vi.spyOn(toast, 'info')
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const user = userEvent.setup()
+    renderAt('/search?q=huge&source=api')
+    await user.click(await screen.findByRole('button', { name: 'Export' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText(/≈ 250k lines/)).toBeInTheDocument()
+
+    // Large: Download is a button that starts a server job (no direct href).
+    let download = within(dialog).getByRole('button', { name: 'Download' })
+    expect(download.getAttribute('href')).toBeNull()
+    await user.click(download)
+    const progress = await within(dialog).findByRole('region', { name: 'Export progress' })
+    expect(JSON.parse(bodies['/api/export/jobs']).query).toContain('q=huge')
+    expect(within(progress).getByText(/prepares the file on the server first/)).toBeInTheDocument()
+    expect(await within(progress).findByText('Preparing 250k lines · 40%')).toBeInTheDocument()
+    expect(progress).toHaveTextContent('100k / 250k · ~6s left')
+    expect(within(dialog).getByRole('button', { name: 'Download' })).toBeDisabled()
+
+    // Cancel: DELETE, progress goes away.
+    await user.click(within(progress).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(within(dialog).queryByRole('region', { name: 'Export progress' })).toBeNull())
+    expect(calls).toContain('/api/export/jobs/job1')
+    expect(info).toHaveBeenCalledWith('Export cancelled', expect.anything())
+
+    // Again, to the end: a toast with the file and its size, and Download works.
+    await user.click(within(dialog).getByRole('button', { name: 'Download' }))
+    await within(dialog).findByText('Preparing 250k lines · 40%')
+    jobReady = true
+    await waitFor(() => expect(success).toHaveBeenCalledWith('Export ready', expect.anything()), { timeout: 3000 })
+    const opts = success.mock.calls.find((c) => c[0] === 'Export ready')?.[1]
+    expect(opts?.description).toBe('quiet-api-2026-10-22.ndjson.gz · 48 MB')
+    download = within(dialog).getByRole('button', { name: 'Download' })
+    await waitFor(() => expect(download).toBeEnabled())
+    await user.click(download)
+    expect(click).toHaveBeenCalled()
+    expect((click.mock.contexts.at(-1) as HTMLAnchorElement).getAttribute('href')).toBe(
+      '/api/export/jobs/job1/download',
+    )
   })
 })

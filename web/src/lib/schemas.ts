@@ -7,6 +7,7 @@ import type {
   CorrId,
   CreatedIngestToken,
   DockerStatus,
+  ExportJob,
   ExportTokenResponse,
   Flow,
   FlowEdge,
@@ -130,6 +131,21 @@ export const searchResponse = z.object({
   since: z.number(),
   until: z.number(),
 }) satisfies z.ZodType<SearchResponse>
+
+export const exportJob = z.object({
+  id: z.string(),
+  state: z.enum(['preparing', 'ready', 'failed', 'cancelled']),
+  done: z.number(),
+  total: z.number(),
+  bytes: z.number(),
+  file_name: z.string(),
+  started: z.number(),
+  finished: z.number().nullable(),
+  eta_ms: z.number().nullable(),
+  expires_at: z.number().nullable(),
+  masked: z.boolean(),
+  error: z.string().nullable(),
+}) satisfies z.ZodType<ExportJob>
 
 export const exportTokenResponse = z.object({
   token: z.string().startsWith('qx_'),
