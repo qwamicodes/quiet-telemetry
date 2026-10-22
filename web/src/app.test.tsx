@@ -20,6 +20,7 @@ const health: Health = {
   disk_bytes: 0,
   stored_lines: 0,
   oldest: null,
+  ingest: { auth: 'token', loopback: true, max_body: 16_000_000, rate: 20_000, tokens: 0 },
 }
 
 const lines: LogLine[] = [

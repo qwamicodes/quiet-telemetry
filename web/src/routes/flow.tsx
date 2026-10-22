@@ -145,6 +145,7 @@ function FlowView({
     fmtDuration(flow.duration_ms),
     `started ${fmtTime(flow.started)}`,
     flow.stitched_by.length > 0 && `stitched by ${stitchedBy(flow)}`,
+    flow.span_tree && 'span tree',
     one && `no other line shares this id in the last ${fmtWindow(until - since)}`,
   ].filter(Boolean)
 

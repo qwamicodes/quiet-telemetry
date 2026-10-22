@@ -1,4 +1,4 @@
-import { ArrowDownIcon, ArrowRightIcon, ChevronsUpDownIcon, RotateCwIcon } from 'lucide-react'
+import { ArrowDownIcon, ArrowRightIcon, ChevronsUpDownIcon, CornerDownRightIcon, RotateCwIcon } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -76,6 +76,19 @@ function Connector({ edge, lanes, nodes }: { edge: FlowEdge; lanes: string[]; no
         <ArrowRightIcon className="size-3" />
         {edge.via ? `${edge.via.key} ${edge.via.value}` : `from ${nodes[edge.from].source}`}
         <span className="text-muted-foreground">+{fmtDuration(edge.gap_ms)}</span>
+      </div>
+    )
+  }
+  if (edge.kind === 'child') {
+    // Span tree: the parent span this one ran inside.
+    return (
+      <div
+        className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground"
+        style={{ gridColumn: toLane + 1, paddingLeft: `${16 + to.depth * 16}px` }}
+      >
+        <CornerDownRightIcon className="size-3 opacity-60" />
+        in {nodes[edge.from].name}
+        <span>+{fmtDuration(edge.gap_ms)}</span>
       </div>
     )
   }
@@ -186,7 +199,10 @@ export function FlowGraph({
             const edge = incoming.get(it.node.index)
             return [
               edge && <Connector key={`e${it.node.index}`} edge={edge} lanes={lanes} nodes={flow.nodes} />,
-              <div key={`n${it.node.index}`} style={{ gridColumn: lanes.indexOf(it.node.source) + 1 }}>
+              <div
+                key={`n${it.node.index}`}
+                style={{ gridColumn: lanes.indexOf(it.node.source) + 1, paddingLeft: `${it.node.depth * 16}px` }}
+              >
                 <NodeCard
                   node={it.node}
                   selected={selected === it.node.line_id}

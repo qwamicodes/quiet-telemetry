@@ -21,6 +21,7 @@ const health: Health = {
   disk_bytes: 0,
   stored_lines: 0,
   oldest: null,
+  ingest: { auth: 'token', loopback: true, max_body: 16_000_000, rate: 20_000, tokens: 0 },
 }
 
 const mk = (id: number, source: string, ts: number, fields: Record<string, unknown>): LogLine => {
@@ -100,6 +101,9 @@ const multi: Flow = {
       error: false,
       warn: false,
       attempt: null,
+      span_id: null,
+      parent: null,
+      depth: 0,
       children: [{ name: 'db.insert', summary: '', at_ms: 5, duration_ms: 30, error: false }],
     },
     {
@@ -116,6 +120,9 @@ const multi: Flow = {
       error: false,
       warn: false,
       attempt: null,
+      span_id: null,
+      parent: null,
+      depth: 0,
       children: [],
     },
     {
@@ -132,6 +139,9 @@ const multi: Flow = {
       error: true,
       warn: false,
       attempt: 0,
+      span_id: null,
+      parent: null,
+      depth: 0,
       children: [],
     },
   ],
@@ -142,6 +152,7 @@ const multi: Flow = {
   lines: [reqLine, picked, failed],
   missing_parent: null,
   partial: false,
+  span_tree: false,
 }
 
 const lonely = mk(7, 'api', T, { level: 30, method: 'GET', path: '/api/v1/orders', status: 200, request_id: 'req_9' })
@@ -162,6 +173,18 @@ const one: Flow = {
   lines: [lonely],
   missing_parent: null,
   partial: false,
+  span_tree: false,
+}
+
+// The same steps read as a span tree (OTLP traces): settle ran inside picked_up, inside the request.
+const traced: Flow = {
+  ...multi,
+  span_tree: true,
+  nodes: multi.nodes.map((n, i) => ({ ...n, source: 'api', span_id: `s${i}`, parent: i ? i - 1 : null, depth: i })),
+  edges: [
+    { from: 0, to: 1, kind: 'child', via: null, gap_ms: 200 },
+    { from: 1, to: 2, kind: 'child', via: null, gap_ms: 100 },
+  ],
 }
 
 const notFound: FlowNotFound = {
@@ -205,6 +228,7 @@ beforeEach(() => {
         const ok = (flow: Flow): FlowResponse => ({ flow, since: T - 86_400_000, until: T, took_ms: 3 })
         if (p.get('id') === 'req_1' || p.get('id') === 'payout:1' || p.get('line') === '3') return json(ok(multi))
         if (p.get('id') === 'req_9' || p.get('line') === '7') return json(ok(one))
+        if (p.get('id') === 'trace_1') return json(ok(traced))
         return json(notFound, 404)
       }
       if (url.startsWith('/api/search')) {
@@ -243,6 +267,15 @@ function renderAt(path: string) {
 }
 
 describe('flow route', () => {
+  it('a trace reads as a span tree: child edges name the parent span', async () => {
+    renderAt('/flow/trace_1')
+    expect(await screen.findByText(/span tree/)).toBeInTheDocument()
+    expect(screen.getByText('in POST /api/v1/payouts')).toBeInTheDocument()
+    expect(screen.getByText('in picked_up')).toBeInTheDocument()
+    const deepest = screen.getByRole('button', { name: 'Step settle' }).parentElement as HTMLElement
+    expect(deepest.style.paddingLeft).toBe('32px')
+  })
+
   it('shows the stitched steps, timeline and the field card of the failing step', async () => {
     renderAt('/flow/req_1')
     expect(await screen.findByRole('heading', { name: 'POST /api/v1/payouts' })).toBeInTheDocument()

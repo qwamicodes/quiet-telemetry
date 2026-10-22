@@ -15,6 +15,7 @@ import { useDebounced } from '@/lib/use-debounced'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { useRates } from '@/lib/use-rates'
 import { useStream } from '@/lib/use-stream'
+import { Welcome } from '@/routes/connect'
 
 const route = getRouteApi('/')
 
@@ -102,6 +103,8 @@ export function StreamPage() {
 
   const info = sources?.find((s) => s.name === source)
   const filtered = Boolean(level || search.q)
+  // First run: nothing has sent a line yet.
+  if (sources?.length === 0 && !source) return <Welcome />
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <TopBar

@@ -20,6 +20,7 @@ const health: Health = {
   disk_bytes: 1000,
   stored_lines: 4,
   oldest: 0,
+  ingest: { auth: 'token', loopback: true, max_body: 16_000_000, rate: 20_000, tokens: 0 },
 }
 const T = 1_760_000_000_000
 const mk = (id: number, source: string, rid: string, level: LogLine['level'], msg: string, extra = {}): LogLine => {

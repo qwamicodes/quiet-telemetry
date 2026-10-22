@@ -5,7 +5,17 @@ import { cn } from '@/lib/utils'
 /** Rows up to this many steps; beyond it, one compact strip. */
 export const TIMELINE_ROWS = 14
 
-type Row = { key: string; tag: string; name: string; start: number; dur: number | null; tone: string; child: boolean }
+type Row = {
+  key: string
+  tag: string
+  name: string
+  start: number
+  dur: number | null
+  tone: string
+  child: boolean
+  /** Span tree depth (0 outside a span tree). */
+  depth: number
+}
 
 function rows(f: Flow): Row[] {
   const out: Row[] = []
@@ -19,6 +29,7 @@ function rows(f: Flow): Row[] {
       dur: n.duration_ms,
       tone,
       child: false,
+      depth: n.depth,
     })
     for (const [i, c] of n.children.entries())
       out.push({
@@ -29,6 +40,7 @@ function rows(f: Flow): Row[] {
         dur: c.duration_ms,
         tone: c.error ? 'bg-status-err' : 'bg-brand/70',
         child: true,
+        depth: n.depth,
       })
   }
   // The last step of the flow reads green when it all went well.
@@ -85,7 +97,10 @@ export function Timeline({ flow }: { flow: Flow }) {
       </div>
       {all.map((r) => (
         <div key={r.key} className="grid h-[22px] grid-cols-[180px_minmax(0,1fr)_56px] items-center gap-3">
-          <span className={cn('truncate', r.child && 'pl-3')}>
+          <span
+            className={cn('truncate', r.child && 'pl-3')}
+            style={r.depth ? { paddingLeft: `${r.depth * 10 + (r.child ? 12 : 0)}px` } : undefined}
+          >
             <span className="text-muted-foreground">{r.tag}</span> {r.name}
           </span>
           <span className="relative h-2">

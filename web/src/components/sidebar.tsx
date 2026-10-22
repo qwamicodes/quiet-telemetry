@@ -1,5 +1,5 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { RowsIcon, SearchIcon, SettingsIcon } from 'lucide-react'
+import { PlugIcon, PlusIcon, RowsIcon, SearchIcon, SettingsIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Logo } from '@/components/logo'
 import { ReceiverBadge } from '@/components/receiver-badge'
@@ -16,7 +16,7 @@ function NavItem({
   badge,
   children,
 }: {
-  to: '/' | '/search' | '/settings'
+  to: '/' | '/search' | '/sources' | '/settings'
   icon: ReactNode
   badge?: string
   children: ReactNode
@@ -24,7 +24,7 @@ function NavItem({
   return (
     <Link
       to={to}
-      activeOptions={{ exact: true, includeSearch: false }}
+      activeOptions={{ exact: to !== '/settings', includeSearch: false }}
       className="flex h-7 items-center gap-2.5 px-3 text-sidebar-foreground outline-none hover:bg-sidebar-accent focus-visible:bg-sidebar-accent data-[status=active]:bg-sidebar-accent data-[status=active]:text-foreground [&_svg]:size-3.5"
     >
       {icon}
@@ -71,6 +71,9 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
         <NavItem to="/search" icon={<SearchIcon />} badge={health ? fmtWindow(health.retention_ms) : undefined}>
           Search
         </NavItem>
+        <NavItem to="/sources" icon={<PlugIcon />} badge={sources ? String(sources.length) : undefined}>
+          Sources
+        </NavItem>
         <NavItem to="/settings" icon={<SettingsIcon />}>
           Settings
         </NavItem>
@@ -82,9 +85,10 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3">
         {sources?.length === 0 && (
-          <p className="px-3 py-2 text-muted-foreground text-xs">
-            Waiting for logs… Start a container or POST to <code className="font-mono">/ingest/ndjson</code>.
-          </p>
+          <div className="flex flex-col gap-1 border border-sidebar-border border-dashed px-3 py-2.5">
+            <span className="text-[13px] text-foreground">Nothing connected yet</span>
+            <span className="text-muted-foreground text-xs">Sources appear here as soon as they send a line.</span>
+          </div>
         )}
         {sources?.map((s) => (
           <SourceItem
@@ -94,6 +98,12 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
             rate={rates[s.name] ?? null}
           />
         ))}
+        <Link
+          to="/connect"
+          className="mt-3 flex h-8 items-center justify-center gap-1.5 border border-sidebar-border border-dashed text-muted-foreground text-xs outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:bg-sidebar-accent [&_svg]:size-3.5"
+        >
+          <PlusIcon /> Connect a source
+        </Link>
       </div>
 
       <div

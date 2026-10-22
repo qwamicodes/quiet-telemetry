@@ -7,9 +7,12 @@ import {
 } from '@tanstack/react-router'
 import { AppShell } from '@/components/app-shell'
 import { BrokenLink } from '@/components/broken-link'
+import { connectSearch } from '@/lib/connect'
 import { flowParams, flowSearch, lineParams, searchSearch, streamSearch } from '@/lib/search-params'
+import { ConnectPage } from '@/routes/connect'
 import { FlowPage, LineFlowPage } from '@/routes/flow'
-import { SettingsPage } from '@/routes/settings'
+import { SettingsGeneral, SettingsLayout, SettingsTokens } from '@/routes/settings'
+import { SourcesPage } from '@/routes/sources'
 import { StreamPage } from '@/routes/stream'
 
 const rootRoute = createRootRoute({ component: AppShell })
@@ -47,13 +50,44 @@ export const searchRoute = createRoute({
   component: lazyRouteComponent(() => import('@/routes/search'), 'SearchPage'),
 })
 
+export const connectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/connect',
+  validateSearch: connectSearch,
+  component: ConnectPage,
+})
+
+const sourcesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sources',
+  component: SourcesPage,
+})
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
-  component: SettingsPage,
+  component: SettingsLayout,
+})
+const settingsIndexRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/',
+  component: SettingsGeneral,
+})
+const settingsTokensRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/ingest-tokens',
+  component: SettingsTokens,
 })
 
-export const routeTree = rootRoute.addChildren([streamRoute, searchRoute, flowRoute, lineRoute, settingsRoute])
+export const routeTree = rootRoute.addChildren([
+  streamRoute,
+  searchRoute,
+  flowRoute,
+  lineRoute,
+  connectRoute,
+  sourcesRoute,
+  settingsRoute.addChildren([settingsIndexRoute, settingsTokensRoute]),
+])
 
 /** `history` is for tests (memory history); the app uses the browser's. */
 export function makeRouter(history?: RouterHistory) {
