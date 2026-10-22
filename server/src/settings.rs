@@ -314,7 +314,8 @@ impl Settings {
         Ok(me)
     }
 
-    /// In memory with built-in defaults; never installs the id policy.
+    /// In memory with built-in defaults; never installs the id policy (tests).
+    #[cfg(test)]
     pub fn memory() -> Self {
         Settings::open(None, Defaults::default(), false).expect("in-memory sqlite")
     }

@@ -44,7 +44,8 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    /// With in-memory settings (tests, and anything that never changes them).
+    /// With in-memory settings (tests).
+    #[cfg(test)]
     pub fn new(store: Arc<dyn Store>, hub: Arc<Hub>) -> Arc<Self> {
         Self::with_settings(store, hub, Arc::new(Settings::memory()))
     }

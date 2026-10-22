@@ -16,7 +16,9 @@ use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, RwLock};
 
-/// The default memory budget for every ring together (bytes, estimated).
+/// The default memory budget for every ring together (bytes, estimated);
+/// the server takes it from `--ring-memory` (default 64MB, same value).
+#[cfg(test)]
 pub const DEFAULT_RING_MEMORY: usize = 64_000_000;
 
 #[derive(Default)]
@@ -57,6 +59,7 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     /// `cap` lines are kept per source; the oldest falls off first.
+    #[cfg(test)]
     pub fn new(cap: usize) -> Self {
         Self::with_budget(cap, DEFAULT_RING_MEMORY)
     }
@@ -71,6 +74,7 @@ impl MemoryStore {
     }
 
     /// Estimated bytes held by every ring, and how many rings there are.
+    #[cfg(test)]
     pub fn memory(&self) -> (usize, usize) {
         let rings = self.rings.read().unwrap();
         (
@@ -122,7 +126,7 @@ impl MemoryStore {
                 }
             })
             .collect();
-        v.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        v.sort_by_key(|a| std::cmp::Reverse(a.bytes));
         v
     }
 

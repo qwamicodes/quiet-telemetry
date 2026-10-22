@@ -74,6 +74,8 @@ fn unavailable(e: anyhow::Error) -> Response {
 }
 
 /// Run a settings write off the async runtime (it is a SQLite write).
+/// The error is the finished response, returned as is.
+#[allow(clippy::result_large_err)]
 async fn write<T: Send + 'static>(
     s: &AppState,
     f: impl FnOnce(&crate::settings::Settings) -> Result<T, SettingsError> + Send + 'static,

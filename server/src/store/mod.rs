@@ -12,7 +12,9 @@
 mod memory;
 mod sqlite;
 
-pub use memory::{MemoryStore, DEFAULT_RING_MEMORY};
+pub use memory::MemoryStore;
+#[cfg(test)]
+pub use memory::DEFAULT_RING_MEMORY;
 pub use sqlite::{SqliteOptions, SqliteStore};
 
 use crate::hub::{Line, SourceKind};
