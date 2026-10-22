@@ -30,7 +30,7 @@ import {
   maskToken,
   snippets,
 } from '@/lib/connect'
-import { fmtElapsed, fmtTime } from '@/lib/format'
+import { fmtElapsed, fmtTime, publicOrigin } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { useCreateToken } from '@/lib/tokens-api'
 import { cn } from '@/lib/utils'
@@ -239,7 +239,7 @@ function Panel({ kind }: { kind: ConnectKind }) {
   const create = useCreateToken()
   const owner = isOwner(useMe())
   const info = KIND_INFO[kind]
-  const origin = window.location.origin
+  const origin = publicOrigin()
   const [name, setName] = useState(kind === 'otlp' ? 'my-service' : 'my-app')
   const [token, setToken] = useState<string | null>(null)
   const [revealed, setRevealed] = useState(false)

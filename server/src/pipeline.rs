@@ -121,9 +121,27 @@ impl Pipeline {
             self.system.paused_drop(&source, n);
         }
         // Parse outside the lock; it is the expensive part.
+        // Settings → General: cut lines over the size cap (flagged
+        // `truncated:<original bytes>`), and drop plain text when "Keep
+        // non-JSON lines" is off. A cut JSON line no longer parses; it is kept
+        // as raw text either way, since it was JSON when it was written.
+        let (max_bytes, keep_non_json) = self.settings.ingest_rules();
         let mut lines: Vec<_> = raws
             .into_iter()
-            .map(|r| normalize(&r.text, &r.source, r.collector_ts, r.received))
+            .filter_map(|r| {
+                let len = r.text.len();
+                if len > max_bytes {
+                    let mut cut = max_bytes;
+                    while !r.text.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    let mut l = normalize(&r.text[..cut], &r.source, r.collector_ts, r.received);
+                    l.flags.push(format!("truncated:{len}"));
+                    return Some(l);
+                }
+                let l = normalize(&r.text, &r.source, r.collector_ts, r.received);
+                (keep_non_json || l.fields.is_some()).then_some(l)
+            })
             .collect();
         if lines.is_empty() {
             return Ok(Vec::new());
@@ -170,6 +188,33 @@ mod tests {
         assert_eq!(tail.iter().map(|l| l.id).collect::<Vec<_>>(), vec![3, 4, 5]);
         assert_eq!(hub.source("api").unwrap().meta().lines, 5);
         assert_eq!(rx.recv().await.unwrap().id, 1);
+    }
+
+    #[tokio::test]
+    async fn long_lines_are_cut_and_plain_text_can_be_dropped() {
+        let p = Pipeline::new(Arc::new(MemoryStore::new(10)), Hub::new());
+        let g = crate::settings::GeneralSettings {
+            max_line_bytes: 1024,
+            keep_non_json: false,
+            ..Default::default()
+        };
+        p.settings().put_general(g, None).unwrap();
+        let long = format!("{{\"msg\":\"{}\"}}", "é".repeat(800));
+        let got = p
+            .ingest(
+                SourceKind::Http,
+                [
+                    RawLine::new(long.clone(), "api", 1),
+                    RawLine::new("plain text", "api", 1),
+                    RawLine::new("{\"msg\":\"ok\"}", "api", 1),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 2, "plain text dropped, the cut line kept");
+        assert!(got[0].raw.len() <= 1024);
+        assert_eq!(got[0].flags, vec![format!("truncated:{}", long.len())]);
+        assert_eq!(got[1].msg, "ok");
     }
 
     #[tokio::test]

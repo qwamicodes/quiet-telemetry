@@ -35,7 +35,16 @@ const health: Health = {
   ingest: { auth: 'token', loopback: true, max_body: 16_000_000, rate: 20_000, tokens: 0 },
 }
 const settings: SettingsResponse = {
-  general: { instance_name: 'quiet', stream_direction: 'bottom', timezone: 'local' },
+  general: {
+    instance_name: 'quiet',
+    stream_direction: 'bottom',
+    timezone: 'local',
+    public_url: null,
+    timestamps: 'millis',
+    max_line_bytes: 65536,
+    keep_non_json: true,
+    check_updates: false,
+  },
   storage: {
     retention_ms: 24 * H,
     retention_origin: 'default',

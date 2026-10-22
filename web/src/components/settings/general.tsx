@@ -4,11 +4,13 @@ import { type FormEvent, useState } from 'react'
 import { PageHeader, ReadOnlyNote, SettingRow } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import type { GeneralSettings, StreamDirection } from '@/gen'
+import type { GeneralSettings, StreamDirection, TimestampFormat } from '@/gen'
 import { useHealth } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
-import { fmtTime, validTimeZone } from '@/lib/format'
+import { fmtBytes, fmtRowTime, fmtTime, publicHost, validTimeZone } from '@/lib/format'
 import { useSaveGeneral, useSettings } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
 
@@ -20,7 +22,14 @@ const ZONES: string[] = (() => {
   }
 })()
 
-/** Settings → General (board v0.1-07.10): instance name, timezone, stream direction. */
+const LINE_SIZES = [16, 32, 64, 128, 256, 512, 1024].map((k) => k * 1024)
+
+export function validPublicUrl(u: string | null): boolean {
+  if (!u?.trim()) return true
+  return /^https?:\/\/[^\s/]+(\/\S*)?$/.test(u.trim()) && u.trim().length <= 200
+}
+
+/** Settings → General (board v0.1-07.10). */
 export function General() {
   const saved = useSettings().data?.general
   const health = useHealth().data
@@ -36,12 +45,18 @@ function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: str
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
   const nameOk = draft.instance_name.trim().length > 0 && draft.instance_name.trim().length <= 40
   const tzOk = validTimeZone(draft.timezone)
+  const urlOk = validPublicUrl(draft.public_url)
+  const sample = Date.now() - 2_000
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!nameOk || !tzOk) return
+    if (!nameOk || !tzOk || !urlOk) return
     try {
-      await save.mutateAsync({ ...draft, instance_name: draft.instance_name.trim() })
+      await save.mutateAsync({
+        ...draft,
+        instance_name: draft.instance_name.trim(),
+        public_url: draft.public_url?.trim() || null,
+      })
       toast.success('Settings saved', { description: 'Everyone sees the new values on their next page load.' })
     } catch (err) {
       toast.error('Could not save', { description: (err as Error).message })
@@ -50,7 +65,7 @@ function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: str
 
   return (
     <form className="max-w-3xl" onSubmit={submit} aria-label="General settings">
-      <PageHeader title="General" sub={`Self-hosted at ${window.location.host} · v${version ?? '…'} · single host`} />
+      <PageHeader title="General" sub={`Self-hosted at ${publicHost()} · v${version ?? '…'} · single host`} />
       {!owner && <ReadOnlyNote />}
       <fieldset disabled={!owner} className="contents">
         <SettingRow
@@ -65,6 +80,21 @@ function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: str
             maxLength={40}
             aria-invalid={!nameOk}
             onChange={(e) => setDraft({ ...draft, instance_name: e.target.value })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Public URL"
+          hint="Used in invite links and in the snippets on Connect a source. Empty uses the address in your browser."
+          htmlFor="public-url"
+          under={urlOk ? undefined : 'an http(s) address like https://quiet.example.com'}
+        >
+          <Input
+            id="public-url"
+            className="w-70 font-mono text-xs"
+            placeholder={window.location.origin}
+            value={draft.public_url ?? ''}
+            aria-invalid={!urlOk}
+            onChange={(e) => setDraft({ ...draft, public_url: e.target.value })}
           />
         </SettingRow>
         <SettingRow
@@ -88,6 +118,54 @@ function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: str
               <option key={z} value={z} />
             ))}
           </datalist>
+        </SettingRow>
+        <SettingRow
+          label="Timestamps"
+          hint="How rows show their time. Absolute is easier to match against other tools."
+        >
+          <ToggleGroup
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label="Timestamps"
+            value={[draft.timestamps]}
+            onValueChange={(v) => v[0] && setDraft({ ...draft, timestamps: v[0] as TimestampFormat })}
+          >
+            {(['seconds', 'millis', 'relative'] as const).map((f) => (
+              <ToggleGroupItem key={f} value={f} aria-label={f} className="font-mono text-xs">
+                {fmtRowTime(sample, f)}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </SettingRow>
+        <SettingRow label="Max line size" hint="Longer lines are cut and marked truncated in the card.">
+          <Select
+            value={String(draft.max_line_bytes)}
+            onValueChange={(v) => v && setDraft({ ...draft, max_line_bytes: Number(v) })}
+          >
+            <SelectTrigger aria-label="Max line size" className="w-30">
+              <SelectValue>{(v: string) => fmtBytes(Number(v))}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {[...new Set([...LINE_SIZES, draft.max_line_bytes])]
+                .sort((a, b) => a - b)
+                .map((b) => (
+                  <SelectItem key={b} value={String(b)}>
+                    {fmtBytes(b)}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
+        </SettingRow>
+        <SettingRow
+          label="Keep non-JSON lines"
+          hint="Plain text lines are kept as raw lines with level info. Off drops them at ingest."
+        >
+          <Switch
+            aria-label="Keep non-JSON lines"
+            checked={draft.keep_non_json}
+            onCheckedChange={(v) => setDraft({ ...draft, keep_non_json: Boolean(v) })}
+          />
         </SettingRow>
         <SettingRow
           label="Stream direction"
@@ -122,7 +200,7 @@ function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: str
           <Button type="button" variant="ghost" disabled={!dirty} onClick={() => setDraft(saved)}>
             Discard
           </Button>
-          <Button type="submit" disabled={!dirty || !nameOk || !tzOk || save.isPending}>
+          <Button type="submit" disabled={!dirty || !nameOk || !tzOk || !urlOk || save.isPending}>
             Save changes
           </Button>
         </div>

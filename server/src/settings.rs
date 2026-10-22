@@ -46,8 +46,26 @@ pub enum StreamDirection {
     Top,
 }
 
+/// How rows show their time (Settings → General → Timestamps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TimestampFormat {
+    /// `14:07:35`
+    Seconds,
+    /// `14:07:35.412` (the default).
+    #[default]
+    Millis,
+    /// `2s ago`
+    Relative,
+}
+
+pub const DEFAULT_MAX_LINE_BYTES: u32 = 64 * 1024;
+pub const MIN_MAX_LINE_BYTES: u32 = 1024;
+pub const MAX_MAX_LINE_BYTES: u32 = 4 * 1024 * 1024;
+
 /// Settings → General.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
 pub struct GeneralSettings {
     /// Browser tab, user menu and "Join <name>" on invite links.
     pub instance_name: String,
@@ -55,6 +73,16 @@ pub struct GeneralSettings {
     pub stream_direction: StreamDirection,
     /// `local` (each viewer's browser zone), `UTC`, or an IANA zone like `Africa/Accra`.
     pub timezone: String,
+    /// Where people reach quiet (`https://quiet.example.com`), used in invite
+    /// links and Connect snippets. `null` uses the browser's address.
+    pub public_url: Option<String>,
+    pub timestamps: TimestampFormat,
+    /// Longer lines are cut to this many bytes and flagged `truncated:<bytes>`.
+    pub max_line_bytes: u32,
+    /// Off drops plain-text (non-JSON) lines at ingest.
+    pub keep_non_json: bool,
+    /// Settings → About checks GitHub releases from the browser when on.
+    pub check_updates: bool,
 }
 
 impl Default for GeneralSettings {
@@ -63,6 +91,11 @@ impl Default for GeneralSettings {
             instance_name: "quiet".into(),
             stream_direction: StreamDirection::Bottom,
             timezone: "local".into(),
+            public_url: None,
+            timestamps: TimestampFormat::Millis,
+            max_line_bytes: DEFAULT_MAX_LINE_BYTES,
+            keep_non_json: true,
+            check_updates: false,
         }
     }
 }
@@ -108,6 +141,21 @@ pub struct UpdateStorage {
 }
 
 /// Absent → `None` (leave as is); `null` → `Some(None)` (clear).
+fn valid_public_url(u: &str) -> bool {
+    let rest = u
+        .strip_prefix("https://")
+        .or_else(|| u.strip_prefix("http://"));
+    match rest {
+        Some(r) => {
+            let host = r.split('/').next().unwrap_or("");
+            u.len() <= 200
+                && !host.is_empty()
+                && !u.chars().any(|c| c.is_whitespace() || c.is_control())
+        }
+        None => false,
+    }
+}
+
 fn nullable<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<Option<T>>, D::Error> {
@@ -437,6 +485,12 @@ impl Settings {
         }
     }
 
+    /// The line-size cap and the non-JSON switch, read per ingest batch.
+    pub fn ingest_rules(&self) -> (usize, bool) {
+        let g = &self.state.read().unwrap().general;
+        (g.max_line_bytes as usize, g.keep_non_json)
+    }
+
     // ---- writes (callers check the owner role) ----
 
     pub fn put_general(
@@ -454,6 +508,18 @@ impl Settings {
         g.timezone = g.timezone.trim().to_string();
         if !valid_timezone(&g.timezone) {
             return invalid("timezone: `local`, `UTC` or an IANA zone like Africa/Accra");
+        }
+        g.public_url = g
+            .public_url
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty());
+        if let Some(u) = &g.public_url {
+            if !valid_public_url(u) {
+                return invalid("public_url: an http(s) address like https://quiet.example.com");
+            }
+        }
+        if !(MIN_MAX_LINE_BYTES..=MAX_MAX_LINE_BYTES).contains(&g.max_line_bytes) {
+            return invalid("max_line_bytes: between 1 KB and 4 MB");
         }
         self.save("general", Some(serde_json::to_string(&g)?), by)?;
         self.state.write().unwrap().general = g.clone();
@@ -716,6 +782,7 @@ mod tests {
             instance_name: name.into(),
             stream_direction: StreamDirection::Top,
             timezone: tz.into(),
+            ..Default::default()
         };
         assert!(s.put_general(g("", "local"), None).is_err());
         assert!(s.put_general(g("legivent", "Mars/../x"), None).is_err());
@@ -725,6 +792,35 @@ mod tests {
         assert_eq!(saved.instance_name, "legivent");
         assert_eq!(s.general().stream_direction, StreamDirection::Top);
         assert!(valid_timezone("America/Argentina/Buenos_Aires") && valid_timezone("UTC"));
+
+        // Public URL: trimmed, trailing slash dropped, empty clears; caps checked.
+        let with = |u: &str, max: u32| GeneralSettings {
+            public_url: Some(u.into()),
+            max_line_bytes: max,
+            ..Default::default()
+        };
+        assert!(s
+            .put_general(with("quiet.legivent.com", 65_536), None)
+            .is_err());
+        assert!(s.put_general(with("https://a b", 65_536), None).is_err());
+        assert!(s.put_general(with("https://q.x", 10), None).is_err());
+        let saved = s
+            .put_general(with(" https://quiet.legivent.com/ ", 131_072), None)
+            .unwrap();
+        assert_eq!(
+            saved.public_url.as_deref(),
+            Some("https://quiet.legivent.com")
+        );
+        assert_eq!(s.ingest_rules(), (131_072, true));
+        let cleared = s.put_general(with("  ", 65_536), None).unwrap();
+        assert_eq!(cleared.public_url, None);
+        // An old saved value without the new keys still reads.
+        let old: GeneralSettings = serde_json::from_str(
+            r#"{"instance_name":"x","stream_direction":"top","timezone":"UTC"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.max_line_bytes, DEFAULT_MAX_LINE_BYTES);
+        assert!(old.keep_non_json && !old.check_updates);
     }
 
     #[test]

@@ -33,7 +33,7 @@ use axum::{middleware, Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
@@ -63,6 +63,8 @@ pub struct AppState {
     pub limiter: Arc<LoginLimiter>,
     /// What the first-run page says about this host.
     pub host: HostInfo,
+    /// Open live-stream websockets (Settings → About).
+    pub live_clients: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -85,6 +87,7 @@ impl AppState {
             auth: Arc::new(AuthConfig::default()),
             limiter: Arc::new(LoginLimiter::default()),
             host: HostInfo::default(),
+            live_clients: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -122,6 +125,7 @@ pub fn router(state: AppState) -> Router {
     // Everything here needs a session (or a qx_ token on /api/export).
     let protected = Router::new()
         .route("/api/health", get(health))
+        .route("/api/about", get(about))
         .route("/api/sources", get(sources))
         .route("/api/sources/:name/lines", get(lines))
         .route("/api/stream", get(stream))
@@ -316,7 +320,59 @@ async fn stream(
     Query(f): Query<Filter>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.on_upgrade(move |socket| run_stream(socket, s, f, v.session_id))
+    ws.on_upgrade(move |socket| async move {
+        let clients = s.live_clients.clone();
+        clients.fetch_add(1, Ordering::Relaxed);
+        run_stream(socket, s, f, v.session_id).await;
+        clients.fetch_sub(1, Ordering::Relaxed);
+    })
+}
+
+/// `GET /api/about` (Settings → About, board 07.6).
+#[derive(Debug, Serialize, TS)]
+pub struct About {
+    pub version: String,
+    /// Git commit the binary was built from (`QUIET_GIT_SHA` at build time).
+    pub commit: Option<String>,
+    /// Build date (`QUIET_BUILD_DATE` at build time, `YYYY-MM-DD`).
+    pub built: Option<String>,
+    /// Process start, unix ms.
+    pub started: i64,
+    pub now: i64,
+    /// `sqlite` or `memory`.
+    pub store: String,
+    /// The bundled SQLite library version.
+    pub sqlite_version: String,
+    /// Database size on disk, bytes.
+    #[ts(type = "number")]
+    pub db_bytes: u64,
+    pub data_dir: Option<String>,
+    /// Open live-stream connections.
+    #[ts(type = "number")]
+    pub live_clients: u64,
+    /// People with an account.
+    #[ts(type = "number")]
+    pub members: u64,
+    pub docker: DockerStatus,
+}
+
+async fn about(State(s): State<AppState>) -> Json<About> {
+    let usage = s.pipeline.store().usage().await.unwrap_or_default();
+    let members = s.accounts.members().map(|m| m.len() as u64).unwrap_or(0);
+    Json(About {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        commit: option_env!("QUIET_GIT_SHA").map(|c| c.chars().take(7).collect()),
+        built: option_env!("QUIET_BUILD_DATE").map(String::from),
+        started: s.started,
+        now: chrono::Utc::now().timestamp_millis(),
+        store: s.pipeline.store().kind().to_string(),
+        sqlite_version: rusqlite::version().to_string(),
+        db_bytes: usage.bytes,
+        data_dir: s.host.data_dir.as_ref().map(|d| d.display().to_string()),
+        live_clients: s.live_clients.load(Ordering::Relaxed) as u64,
+        members,
+        docker: s.docker.lock().unwrap().clone(),
+    })
 }
 
 /// The newest `limit` lines of `source` matching `filter` in the window, oldest first.
@@ -538,6 +594,21 @@ mod tests {
         assert_eq!(lines[0]["display_id"]["key"], "request_id");
         assert_eq!(lines[0]["display_id"]["value"], "r1");
         assert_eq!(lines[3]["msg"], "b");
+    }
+
+    #[tokio::test]
+    async fn about_reports_version_store_and_clients() {
+        let st = state();
+        let res = app(&st)
+            .oneshot(Request::get("/api/about").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_of(res).await;
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["store"], "memory");
+        assert_eq!(v["live_clients"], 0);
+        assert!(v["sqlite_version"].as_str().unwrap().starts_with('3'));
     }
 
     #[tokio::test]

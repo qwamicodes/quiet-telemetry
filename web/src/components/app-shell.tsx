@@ -7,7 +7,7 @@ import { Sidebar } from '@/components/sidebar'
 import { ServerUnreachableBanner } from '@/components/stream/connection-banner'
 import { SystemBanners } from '@/components/system-banners'
 import { useAuth } from '@/lib/auth-api'
-import { setDisplayTimeZone } from '@/lib/format'
+import { setDisplayTimeZone, setPublicUrl, setTimestampStyle } from '@/lib/format'
 import { useSettings } from '@/lib/settings-api'
 import { useTheme } from '@/lib/theme'
 import { useHotkeys } from '@/lib/use-hotkeys'
@@ -15,9 +15,13 @@ import { useHotkeys } from '@/lib/use-hotkeys'
 /** Instance-wide display settings: tab title and timezone. */
 function useInstanceDisplay() {
   const name = useAuth().data?.instance_name
-  const tz = useSettings().data?.general.timezone
-  // Set during render so the first rows already use the zone.
-  if (tz) setDisplayTimeZone(tz)
+  const general = useSettings().data?.general
+  // Set during render so the first rows already use the zone and style.
+  if (general) {
+    setDisplayTimeZone(general.timezone)
+    setTimestampStyle(general.timestamps)
+    setPublicUrl(general.public_url)
+  }
   const title = name && name !== 'quiet' ? `${name} · quiet` : 'quiet'
   if (typeof document !== 'undefined' && document.title !== title) document.title = title
 }

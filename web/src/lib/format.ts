@@ -48,6 +48,33 @@ function hms(ts: number, tz: string): [number, number, number] {
   return [n('hour'), n('minute'), n('second')]
 }
 
+// ---- row timestamps and public URL (Settings → General) ---------------------------
+
+export type TimestampStyle = 'seconds' | 'millis' | 'relative'
+let rowStyle: TimestampStyle = 'millis'
+export function setTimestampStyle(s: TimestampStyle) {
+  rowStyle = s
+}
+
+/** A row's time in the instance's style: `14:07:35`, `14:07:35.412` or `2s ago`. */
+export function fmtRowTime(ts: number, style: TimestampStyle = rowStyle, now = Date.now()): string {
+  if (style === 'relative') return fmtAgo(ts, now)
+  const t = fmtTime(ts)
+  return style === 'seconds' ? t.slice(0, 8) : t
+}
+
+let publicUrl: string | null = null
+export function setPublicUrl(u: string | null | undefined) {
+  publicUrl = u ? u.replace(/\/+$/, '') : null
+}
+/** Where people reach quiet: the saved public URL, else this browser's origin. */
+export function publicOrigin(): string {
+  return publicUrl ?? window.location.origin
+}
+export function publicHost(): string {
+  return publicOrigin().replace(/^https?:\/\//, '')
+}
+
 /** `14:07:04.120` in the display timezone (or `tz`). */
 export function fmtTime(ts: number, tz = displayZone): string {
   const [h, m, s] = hms(ts, tz)

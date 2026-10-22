@@ -4,7 +4,7 @@
 //! Regenerate: `QUIET_UPDATE_TS=1 cargo test bindings` (or `bun run gen:types` in web/).
 
 use crate::accounts::{Invite, Member, Role, SessionInfo, User};
-use crate::api::{Frame, Health, LinesResponse, SourcesResponse};
+use crate::api::{About, Frame, Health, LinesResponse, SourcesResponse};
 use crate::auth_api::{
     AcceptInvite, AuthState, ChangePassword, CompleteReset, CreateInvite, CreatedInvite,
     InviteProblem, LoginRequest, MembersResponse, PasswordChanged, ResetInfo, ResetLink,
@@ -39,6 +39,7 @@ fn export_into(dir: &Path) {
     StreamStats::export_all(&cfg).unwrap();
     SourceFields::export_all(&cfg).unwrap();
     Health::export_all(&cfg).unwrap();
+    About::export_all(&cfg).unwrap();
     SourcesResponse::export_all(&cfg).unwrap();
     LinesResponse::export_all(&cfg).unwrap();
     SearchParams::export_all(&cfg).unwrap();

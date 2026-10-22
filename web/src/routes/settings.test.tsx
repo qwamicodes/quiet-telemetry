@@ -55,7 +55,16 @@ let calls: { url: string; method: string; body: unknown }[]
 function fresh() {
   sources = [source('legivent-api'), source('traefik', { kind: 'vector' }), source('noisy', { hidden: true })]
   settings = {
-    general: { instance_name: 'quiet', stream_direction: 'bottom', timezone: 'local' },
+    general: {
+      instance_name: 'quiet',
+      stream_direction: 'bottom',
+      timezone: 'local',
+      public_url: null,
+      timestamps: 'millis',
+      max_line_bytes: 65536,
+      keep_non_json: true,
+      check_updates: false,
+    },
     storage: {
       retention_ms: 24 * H,
       retention_origin: 'default',
@@ -257,12 +266,28 @@ describe('Settings → General', () => {
     await user.clear(tz)
     await user.type(tz, 'Africa/Accra')
     await user.click(screen.getByRole('button', { name: 'Newest at top' }))
+    const url = screen.getByLabelText('Public URL')
+    await user.type(url, 'quiet.legivent.com')
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+    await user.clear(url)
+    await user.type(url, 'https://quiet.legivent.com/')
+    await user.click(screen.getByRole('button', { name: 'relative' }))
+    await user.click(screen.getByLabelText('Keep non-JSON lines'))
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() =>
       expect(calls).toContainEqual({
         url: '/api/settings/general',
         method: 'PUT',
-        body: { instance_name: 'legivent', stream_direction: 'top', timezone: 'Africa/Accra' },
+        body: {
+          instance_name: 'legivent',
+          stream_direction: 'top',
+          timezone: 'Africa/Accra',
+          public_url: 'https://quiet.legivent.com/',
+          timestamps: 'relative',
+          max_line_bytes: 65536,
+          keep_non_json: false,
+          check_updates: false,
+        },
       }),
     )
   })

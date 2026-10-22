@@ -25,7 +25,7 @@ import type { Flow, FlowNotFound, LogLine } from '@/gen'
 import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { flowTone, fmtDuration, statusLabel, stitchedBy } from '@/lib/flow'
 import { type FlowTarget, useFlow } from '@/lib/flow-api'
-import { fmtBytes, fmtClock, fmtDay, fmtTime, fmtWindow } from '@/lib/format'
+import { fmtBytes, fmtClock, fmtDay, fmtTime, fmtWindow, publicHost } from '@/lib/format'
 import { searchResponse } from '@/lib/schemas'
 import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
@@ -479,7 +479,7 @@ function Gone({
         </p>
         <div className="flex h-9 items-center gap-2 border bg-card/40 px-3 font-mono text-[13px]">
           <WorkflowIcon className="size-3.5 text-muted-foreground" />
-          <span className="text-muted-foreground">{`${location.host}/flow/`}</span>
+          <span className="text-muted-foreground">{`${publicHost()}/flow/`}</span>
           <span className="truncate">{nf.id}</span>
           <span className="flex-1" />
           <span className="bg-status-err/15 px-1.5 text-[11px] text-status-err">404</span>

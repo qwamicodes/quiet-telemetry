@@ -8,7 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { FlowSummary, LogLine } from '@/gen'
 import { fmtDuration } from '@/lib/flow'
 import { useFlowSummaries } from '@/lib/flow-api'
-import { fmtTime } from '@/lib/format'
+import { fmtRowTime } from '@/lib/format'
 import { chip, lineDuration, previewFields, type RowParts, rowParts } from '@/lib/row'
 import { useDebounced } from '@/lib/use-debounced'
 import { cn } from '@/lib/utils'
@@ -150,7 +150,7 @@ const LogRow = memo(function LogRow({
         expanded && 'border-b-0',
       )}
     >
-      <span className="text-muted-foreground tabular-nums">{fmtTime(line.ts)}</span>
+      <span className="text-muted-foreground tabular-nums">{fmtRowTime(line.ts)}</span>
       <span>
         <LevelBadge level={line.level} />
       </span>

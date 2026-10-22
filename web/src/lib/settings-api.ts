@@ -39,6 +39,11 @@ export const generalSettings = z.object({
   instance_name: z.string(),
   stream_direction: z.enum(['bottom', 'top']),
   timezone: z.string(),
+  public_url: z.string().nullable().catch(null),
+  timestamps: z.enum(['seconds', 'millis', 'relative']).catch('millis'),
+  max_line_bytes: z.number().catch(65_536),
+  keep_non_json: z.boolean().catch(true),
+  check_updates: z.boolean().catch(false),
 }) satisfies z.ZodType<GeneralSettings>
 
 export const storageSettings = z.object({
