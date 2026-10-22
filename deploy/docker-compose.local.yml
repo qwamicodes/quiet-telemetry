@@ -1,7 +1,7 @@
 # Local testing: quiet built from source + a sample log generator.
 #   make up    (or: docker compose -f deploy/docker-compose.local.yml up --build)
 #   open http://127.0.0.1:7070
-# No auth yet (accounts land in slice 5): the port stays on loopback.
+# The first visit asks you to create the owner account (sign-in is on).
 name: quiet-local
 services:
   quiet:
@@ -11,6 +11,9 @@ services:
       QUIET_DATA_DIR: /data
       QUIET_RETENTION: 24h
       QUIET_MAX_DISK: 1GB
+      # Local only: the sample generator posts without a token. Remove this
+      # line to try the token flow (Settings → Ingest tokens, Connect a source).
+      QUIET_INGEST_AUTH: open
       RUST_LOG: quiet=debug,tower_http=warn
     ports: ["127.0.0.1:7070:7070"]
     volumes:

@@ -7,23 +7,32 @@
 //! GET  /api/sources/:name/lines?limit=500
 //! GET  /api/stream?source=api&backlog=500&level=warn&q=text   (WebSocket)
 //! GET  /api/search, /api/export, POST /api/export/token       (see `search_api.rs`)
+//! GET  /api/flow, POST /api/flow-summaries                     (see `flow_api.rs`)
+//! GET/POST /api/ingest-tokens, DELETE /api/ingest-tokens/:id   (see `tokens_api.rs`)
+//! /api/auth/*, /api/account*, /api/members*, /api/invites*       (see `auth_api.rs`)
 //!
-//! Ingest endpoints belong to their receivers (see `receiver/`).
+//! Every `/api` route except the public auth routes needs a session (see
+//! `auth.rs`); `/health` and `/ready` stay open. Ingest endpoints belong to
+//! their receivers (see `receiver/`) and use `qi_` tokens.
 
+use crate::accounts::Accounts;
+use crate::auth::{AuthConfig, LoginLimiter, Viewer};
 use crate::export::ExportTokens;
 use crate::hub::{Line, SourceInfo, SourceKind};
 use crate::normalize::LogLine;
 use crate::pipeline::Pipeline;
-use crate::receiver::DockerStatus;
+use crate::receiver::{DockerStatus, IngestConfig, IngestInfo};
 use crate::store::{LineFilter, Query as StoreQuery};
+use crate::tokens::IngestTokens;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::{middleware, Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -44,6 +53,24 @@ pub struct AppState {
     pub retention_ms: i64,
     /// Read-only `qx_` export tokens (hashed, 15 min, reusable).
     pub tokens: Arc<ExportTokens>,
+    /// Send-only `qi_` ingest tokens (hashed, persisted).
+    pub ingest_tokens: Arc<IngestTokens>,
+    /// How HTTP ingest is gated and limited (shown on the connect screens).
+    pub ingest: IngestConfig,
+    /// Users, sessions, invites, reset links.
+    pub accounts: Arc<Accounts>,
+    /// Sign-in on/off, cookie and proxy settings.
+    pub auth: Arc<AuthConfig>,
+    /// Failed sign-in backoff.
+    pub limiter: Arc<LoginLimiter>,
+    /// What the first-run page says about this host.
+    pub host: HostInfo,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct HostInfo {
+    pub data_dir: Option<PathBuf>,
+    pub max_disk: u64,
 }
 
 impl AppState {
@@ -56,7 +83,37 @@ impl AppState {
             shutdown: CancellationToken::new(),
             retention_ms: 24 * 3_600_000,
             tokens: Arc::new(ExportTokens::default()),
+            ingest_tokens: Arc::new(IngestTokens::memory()),
+            ingest: IngestConfig::default(),
+            accounts: Arc::new(Accounts::memory()),
+            auth: Arc::new(AuthConfig::default()),
+            limiter: Arc::new(LoginLimiter::default()),
+            host: HostInfo::default(),
         }
+    }
+
+    pub fn with_accounts(mut self, accounts: Arc<Accounts>, auth: AuthConfig) -> Self {
+        self.accounts = accounts;
+        self.auth = Arc::new(auth);
+        self
+    }
+
+    /// No sign-in (`QUIET_AUTH=off`; also what most handler tests use).
+    #[cfg(test)]
+    pub fn auth_off(mut self) -> Self {
+        self.auth = Arc::new(AuthConfig::off());
+        self
+    }
+
+    pub fn with_host(mut self, host: HostInfo) -> Self {
+        self.host = host;
+        self
+    }
+
+    pub fn with_ingest(mut self, tokens: Arc<IngestTokens>, config: IngestConfig) -> Self {
+        self.ingest_tokens = tokens;
+        self.ingest = config;
+        self
     }
 
     pub fn with_retention(mut self, ms: i64) -> Self {
@@ -66,14 +123,30 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(live))
-        .route("/ready", get(ready))
+    // Everything here needs a session (or a qx_ token on /api/export).
+    let protected = Router::new()
         .route("/api/health", get(health))
         .route("/api/sources", get(sources))
         .route("/api/sources/:name/lines", get(lines))
         .route("/api/stream", get(stream))
         .merge(crate::search_api::routes())
+        .merge(crate::flow_api::routes())
+        .merge(crate::tokens_api::routes())
+        .merge(crate::auth_api::session_routes())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::gate,
+        ));
+    // Setup, sign in, invite and reset links: no session, same-origin only.
+    let public = crate::auth_api::public_routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        crate::auth::origin_gate,
+    ));
+    Router::new()
+        .route("/health", get(live))
+        .route("/ready", get(ready))
+        .merge(public)
+        .merge(protected)
         .with_state(state)
 }
 
@@ -111,6 +184,8 @@ pub struct Health {
     pub stored_lines: u64,
     /// Oldest stored event time, unix ms.
     pub oldest: Option<i64>,
+    /// HTTP ingest: auth mode, limits, whether remote shippers can reach it.
+    pub ingest: IngestInfo,
 }
 
 async fn health(State(s): State<AppState>) -> Json<Health> {
@@ -125,6 +200,7 @@ async fn health(State(s): State<AppState>) -> Json<Health> {
         disk_bytes: usage.bytes,
         stored_lines: usage.lines,
         oldest: usage.oldest,
+        ingest: s.ingest.info(s.ingest_tokens.active()),
     })
 }
 
@@ -225,10 +301,11 @@ pub enum Frame<'a> {
 
 async fn stream(
     State(s): State<AppState>,
+    Extension(v): Extension<Viewer>,
     Query(f): Query<Filter>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.on_upgrade(move |socket| run_stream(socket, s, f))
+    ws.on_upgrade(move |socket| run_stream(socket, s, f, v.session_id))
 }
 
 /// Batch window: lines arriving within it go out in one frame.
@@ -236,8 +313,13 @@ const BATCH: Duration = Duration::from_millis(75);
 const MAX_BATCH: usize = 2000;
 /// WebSocket close code 1012: service restart. The UI reconnects.
 const CLOSE_RESTART: u16 = 1012;
+/// Close code when the session behind a stream ends (signed out, removed,
+/// expired). The UI shows "session expired" instead of reconnecting.
+pub const CLOSE_SIGNED_OUT: u16 = 4401;
+/// How often an open stream re-checks its session.
+const SESSION_CHECK: Duration = Duration::from_secs(30);
 
-async fn run_stream(mut ws: WebSocket, s: AppState, f: Filter) {
+async fn run_stream(mut ws: WebSocket, s: AppState, f: Filter, session: Option<i64>) {
     // Allow streaming a source before its first line arrives.
     let source = s.pipeline.hub().ensure_source(&f.source, SourceKind::Http);
     let filter = f.line_filter();
@@ -274,8 +356,26 @@ async fn run_stream(mut ws: WebSocket, s: AppState, f: Filter) {
     let mut buf: Vec<Line> = Vec::new();
     let mut tick = tokio::time::interval(BATCH);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut recheck = tokio::time::interval(SESSION_CHECK);
+    recheck.tick().await; // the first tick is immediate; the gate just checked
     loop {
         tokio::select! {
+            _ = recheck.tick(), if session.is_some() => {
+                let (accounts, id) = (s.accounts.clone(), session.unwrap_or_default());
+                let now = chrono::Utc::now().timestamp_millis();
+                let alive = tokio::task::spawn_blocking(move || accounts.session_active(id, now))
+                    .await
+                    .unwrap_or(true);
+                if !alive {
+                    let _ = ws
+                        .send(Message::Close(Some(CloseFrame {
+                            code: CLOSE_SIGNED_OUT,
+                            reason: "signed out".into(),
+                        })))
+                        .await;
+                    return;
+                }
+            }
             msg = rx.recv() => match msg {
                 Ok(line) => {
                     if line.id > last_sent && filter.matches(&line) {
@@ -340,7 +440,7 @@ mod tests {
     use super::*;
     use crate::hub::Hub;
     use crate::pipeline::RawLine;
-    use crate::receiver::{NdjsonReceiver, Receiver};
+    use crate::receiver::{HttpReceiver, Receiver};
     use crate::store::MemoryStore;
     use axum::body::Body;
     use axum::http::Request;
@@ -349,11 +449,16 @@ mod tests {
 
     fn state() -> AppState {
         let pipeline = Pipeline::new(Arc::new(MemoryStore::new(100)), Hub::new());
-        AppState::new(pipeline, Arc::new(Mutex::new(DockerStatus::Disabled)))
+        AppState::new(pipeline, Arc::new(Mutex::new(DockerStatus::Disabled))).auth_off()
     }
 
     fn app(st: &AppState) -> Router {
-        router(st.clone()).merge(NdjsonReceiver::new(st.pipeline.clone()).routes())
+        let open = IngestConfig {
+            auth: crate::receiver::IngestAuth::Open,
+            ..Default::default()
+        };
+        router(st.clone())
+            .merge(HttpReceiver::new(st.pipeline.clone(), st.ingest_tokens.clone(), open).routes())
     }
 
     async fn json_of(res: Response) -> serde_json::Value {

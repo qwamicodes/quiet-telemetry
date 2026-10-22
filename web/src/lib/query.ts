@@ -1,4 +1,4 @@
-import type { CorrId, Level, LogLine } from '@/gen'
+import type { CorrId, FlowSummary, Level, LogLine } from '@/gen'
 
 /** `key:value` / `-key:value` (not a URL like `/a:b`), same rule as the server. */
 const KV = /^-?[^\s:/"]+:\S+$/
@@ -37,19 +37,25 @@ export interface FlowGroup {
   worst: Level | null
   first: number
   last: number
+  /** The stitched flow the group belongs to, once its summary has arrived. */
+  summary?: FlowSummary | null
 }
 
 /**
- * Group matches by the id each row shows (request → job…). Real flow
- * stitching across ids is slice 3; until then a group is one id's matches.
+ * Group matches by the flow they belong to. With `summaries` (from
+ * `/api/flow-summaries`, keyed by display id) lines whose ids stitch into
+ * one flow (a request line and its job's retry lines) share one group;
+ * until a summary arrives, a group is one id's matches. Groups keep the
+ * order of their first match.
  */
-export function groupByFlow(lines: LogLine[]): FlowGroup[] {
+export function groupByFlow(lines: LogLine[], summaries?: Map<string, FlowSummary | null>): FlowGroup[] {
   const groups = new Map<string, FlowGroup>()
   for (const l of lines) {
-    const key = l.display_id ? `${l.display_id.key}:${l.display_id.value}` : `line:${l.id}`
+    const s = l.display_id ? summaries?.get(l.display_id.value) : undefined
+    const key = s ? `flow:${s.key}` : l.display_id ? `${l.display_id.key}:${l.display_id.value}` : `line:${l.id}`
     let g = groups.get(key)
     if (!g) {
-      g = { key, id: l.display_id, lines: [], sources: [], worst: null, first: l.ts, last: l.ts }
+      g = { key, id: l.display_id, lines: [], sources: [], worst: null, first: l.ts, last: l.ts, summary: s }
       groups.set(key, g)
     }
     g.lines.push(l)
@@ -59,6 +65,11 @@ export function groupByFlow(lines: LogLine[]): FlowGroup[] {
     g.last = Math.max(g.last, l.ts)
   }
   return [...groups.values()]
+}
+
+/** The display ids a result page needs summaries for. */
+export function displayIds(lines: LogLine[]): string[] {
+  return [...new Set(lines.flatMap((l) => (l.display_id ? [l.display_id.value] : [])))]
 }
 
 const NOTABLE = ['status', 'duration_ms', 'attempt', 'err.code', 'error.code', 'outcome']

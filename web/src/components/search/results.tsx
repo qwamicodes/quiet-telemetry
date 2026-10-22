@@ -1,10 +1,11 @@
 import { Link } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowRightIcon, ChevronDownIcon, ChevronRightIcon } from 'lucide-react'
+import { ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, GitForkIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
-import type { LogLine } from '@/gen'
+import type { FlowSummary, LogLine } from '@/gen'
+import { fmtDuration } from '@/lib/flow'
 import { fmtTime } from '@/lib/format'
 import { type FlowGroup, groupByFlow, highlight, notableFields } from '@/lib/query'
 import { cn } from '@/lib/utils'
@@ -76,14 +77,52 @@ function LineRow({
       {notableFields(line, words).map(([k, v]) => (
         <FieldChip key={k} k={k} v={v} words={words} onPick={onPick} />
       ))}
+      <span className="flex-1" />
+      <FlowLink line={line} />
     </div>
   )
 }
 
+/** Open a line as its flow (by its id), or alone when it carries none. */
+function FlowLink({ line }: { line: LogLine }) {
+  const cls =
+    'shrink-0 text-muted-foreground opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 hover:text-brand'
+  return line.display_id ? (
+    <Link
+      to="/flow/$id"
+      params={{ id: line.display_id.value }}
+      search={{ line: line.id }}
+      aria-label="Open as flow"
+      className={cls}
+    >
+      <GitForkIcon className="size-3.5" />
+    </Link>
+  ) : (
+    <Link to="/line/$lineId" params={{ lineId: line.id }} aria-label="Open as flow" className={cls}>
+      <GitForkIcon className="size-3.5" />
+    </Link>
+  )
+}
+
+const OUTCOME: Record<FlowSummary['status'], string> = { ok: 'ok', warn: 'warn', error: 'failed' }
+
 function GroupHead({ group, open, onToggle }: { group: FlowGroup; open: boolean; onToggle: () => void }) {
-  const worst = group.worst === 'error' || group.worst === 'fatal' ? 'err' : group.worst === 'warn' ? 'warn' : 'ok'
+  const f = group.summary
+  const worst = f
+    ? f.status === 'error'
+      ? 'err'
+      : f.status === 'warn'
+        ? 'warn'
+        : 'ok'
+    : group.worst === 'error' || group.worst === 'fatal'
+      ? 'err'
+      : group.worst === 'warn'
+        ? 'warn'
+        : 'ok'
   const first = group.lines[group.lines.length - 1] ?? group.lines[0]
-  const title = (first.fields?.flow as string | undefined) ?? first.msg
+  const title = f?.title ?? (first.fields?.flow as string | undefined) ?? first.msg
+  const sources = f?.sources ?? group.sources
+  const n = group.lines.length
   return (
     <div className="mt-3 flex h-10 items-center gap-2.5 border border-b-0 bg-card px-3 data-[closed=true]:border-b">
       <button
@@ -98,20 +137,29 @@ function GroupHead({ group, open, onToggle }: { group: FlowGroup; open: boolean;
       <StatusDot status={worst} />
       <span className="min-w-0 truncate font-medium font-mono text-[13px]">{title}</span>
       {group.id && <span className="shrink-0 font-mono text-muted-foreground text-xs">{group.id.value}</span>}
-      <span className="shrink-0 border px-1.5 font-mono text-[11px] text-muted-foreground">
-        {group.sources.join(' → ')}
-      </span>
+      <span className="shrink-0 border px-1.5 font-mono text-[11px] text-muted-foreground">{sources.join(' → ')}</span>
       <span className="flex-1" />
       <span className="shrink-0 font-mono text-muted-foreground text-xs tabular-nums">
-        {group.lines.length} {group.lines.length === 1 ? 'line' : 'lines'} match · {fmtTime(group.last).slice(0, 8)}
+        {f
+          ? `${OUTCOME[f.status]} · ${n} of ${f.line_count} lines match · ${f.steps} ${f.steps === 1 ? 'step' : 'steps'} · ${fmtDuration(f.duration_ms)} · `
+          : `${n} ${n === 1 ? 'line' : 'lines'} match · `}
+        {fmtTime(group.last).slice(0, 8)}
       </span>
-      {group.id && (
+      {group.id ? (
         <Link
           to="/flow/$id"
           params={{ id: group.id.value }}
           className="flex shrink-0 items-center gap-1 text-xs hover:text-brand"
         >
           Open flow <ArrowRightIcon className="size-3.5" />
+        </Link>
+      ) : (
+        <Link
+          to="/line/$lineId"
+          params={{ lineId: first.id }}
+          className="flex shrink-0 items-center gap-1 text-xs hover:text-brand"
+        >
+          Open <ArrowRightIcon className="size-3.5" />
         </Link>
       )}
     </div>
@@ -130,7 +178,9 @@ export function SearchResults({
   loadingMore,
   onMore,
   onPick,
+  summaries,
 }: {
+  summaries?: Map<string, FlowSummary | null>
   lines: LogLine[]
   view: 'flows' | 'lines'
   words: string[]
@@ -140,7 +190,7 @@ export function SearchResults({
   onPick: (filter: string) => void
 }) {
   const [closed, setClosed] = useState<Set<string>>(new Set())
-  const groups = useMemo(() => groupByFlow(lines), [lines])
+  const groups = useMemo(() => groupByFlow(lines, summaries), [lines, summaries])
   const items: Item[] = useMemo(() => {
     if (view === 'lines') return lines.map((line) => ({ kind: 'line', line, last: false }))
     return groups.flatMap((g) => {
@@ -192,7 +242,7 @@ export function SearchResults({
               ) : (
                 <div
                   className={cn(
-                    'h-full border-border/60 border-x hover:bg-row-hover',
+                    'group/row h-full border-border/60 border-x hover:bg-row-hover',
                     view === 'lines' ? 'border-b' : 'border-t',
                     it.last && 'border-b',
                     (it.line.level === 'error' || it.line.level === 'fatal') && 'bg-row-error',

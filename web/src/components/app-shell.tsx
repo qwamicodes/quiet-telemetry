@@ -1,6 +1,7 @@
 import { Outlet, useRouterState } from '@tanstack/react-router'
 import { useState } from 'react'
 import { CommandPalette } from '@/components/command-palette'
+import { SessionExpired } from '@/components/session-expired'
 import { Sidebar } from '@/components/sidebar'
 import { useHotkeys } from '@/lib/use-hotkeys'
 
@@ -18,6 +19,7 @@ export function AppShell() {
         <Outlet />
       </main>
       <CommandPalette open={palette} onOpenChange={setPalette} />
+      <SessionExpired />
     </div>
   )
 }

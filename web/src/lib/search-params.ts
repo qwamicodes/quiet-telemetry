@@ -18,11 +18,19 @@ export const streamSearch = z.object({
 })
 export type StreamSearch = z.infer<typeof streamSearch>
 
-/** `/flow/$id` — `line` is the step whose field card is open. */
+/** `/flow/$id` and `/line/$lineId` — `line` is the step whose field card is open. */
 export const flowSearch = z.object({
   line: z.coerce.number().int().positive().optional().catch(undefined),
 })
 export type FlowSearch = z.infer<typeof flowSearch>
+
+/**
+ * Path params. A broken link (empty or absurd id, a line id that isn't a
+ * number) fails here and the route shows its "broken flow link" page instead
+ * of asking the server.
+ */
+export const flowParams = z.object({ id: z.string().trim().min(1).max(256) })
+export const lineParams = z.object({ lineId: z.coerce.number().int().positive() })
 
 /** Time ranges the picker offers; `from`/`to` (unix ms) override them. */
 export const RANGES = ['15m', '1h', '6h', '24h', '3d', '7d'] as const

@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { StatusDot } from '@/components/status-dot'
 import type { SourceInfo } from '@/gen'
+import { kindLabel } from '@/lib/connect'
 import { isRecent } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -20,7 +21,7 @@ export function SourceItem({ source, active, rate }: { source: SourceInfo; activ
       <StatusDot status={live ? 'ok' : 'idle'} />
       <span className="flex min-w-0 flex-1 flex-col leading-tight">
         <span className="truncate text-[13px]">{source.name}</span>
-        <span className="truncate font-mono text-[11px] text-muted-foreground">{source.kind}</span>
+        <span className="truncate font-mono text-[11px] text-muted-foreground">{kindLabel(source.kind)}</span>
       </span>
       <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
         {rate != null && rate > 0 ? `${rate < 10 ? rate.toFixed(1) : Math.round(rate)}/s` : '—'}

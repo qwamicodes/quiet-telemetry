@@ -1,11 +1,14 @@
-//! Inputs. Every receiver feeds the same [`Pipeline`]; adding OTLP or the
-//! remote agent (v0.2) is a new impl here, nothing else changes.
+//! Inputs. Every receiver feeds the same [`Pipeline`]; adding OTLP/gRPC or
+//! the remote agent (v0.2) is a new impl here, nothing else changes.
 //!
 //! - Pull receivers (Docker) do their work in [`Receiver::run`].
-//! - Push receivers (HTTP NDJSON) mount endpoints via [`Receiver::routes`].
+//! - Push receivers (HTTP ingest: NDJSON, Vector, Fluent Bit, OTLP/HTTP)
+//!   mount endpoints via [`Receiver::routes`].
 
 pub mod docker;
 pub mod http;
+pub mod otlp;
+pub mod shippers;
 
 use async_trait::async_trait;
 use axum::Router;
@@ -13,7 +16,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub use docker::{DockerReceiver, DockerStatus};
-pub use http::NdjsonReceiver;
+pub use http::{HttpReceiver, IngestAuth, IngestConfig, IngestInfo};
 
 #[async_trait]
 pub trait Receiver: Send + Sync + 'static {

@@ -33,7 +33,16 @@ rand = "0.8"
 flate2 = "1.1.10"
 regex = "1.13.1"
 serde_urlencoded = "0.7.1"
+prost = "0.13"
+argon2 = { version = "0.5", features = ["std"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+# argon2 is unusably slow unoptimized (tests and `make dev` hash passwords).
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

@@ -70,12 +70,50 @@ jobs:
         run: |
           docker run -d --name quiet-smoke -e QUIET_DOCKER=0 -p 7070:7070 quiet:ci
           for i in $(seq 1 20); do curl -fs localhost:7070/ready && break; sleep 1; done
-          curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci' --data-binary '{"msg":"hello"}'
-          curl -fs localhost:7070/api/sources/ci/lines | grep -q hello
+          # Accounts: /api needs a session. Create the owner (first run), keep
+          # the cookie, send the CSRF token on writes; setup works only once.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' localhost:7070/api/sources)" = 401 ]
+          curl -fs localhost:7070/api/auth/state | grep -q '"setup_required":true'
+          curl -fs -c jar -X POST localhost:7070/api/auth/setup -H 'content-type: application/json' \
+            -d '{"name":"CI","email":"ci@example.com","password":"ci password 12345"}' | grep -q '"role":"owner"'
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:7070/api/auth/setup -H 'content-type: application/json' -d '{"name":"X","email":"x@example.com","password":"another password 1"}')" = 409 ]
+          CSRF=$(curl -fs -b jar localhost:7070/api/auth/state | sed -E 's/.*"csrf":"([^"]+)".*/\1/')
+          S="curl -fs -b jar"
+          # A write without the CSRF token is refused; one from another site too.
+          [ "$(curl -s -b jar -o /dev/null -w '%{http_code}' -X POST localhost:7070/api/ingest-tokens -H 'content-type: application/json' -d '{"name":"ci"}')" = 403 ]
+          [ "$(curl -s -b jar -o /dev/null -w '%{http_code}' -X POST localhost:7070/api/ingest-tokens -H "X-Quiet-Csrf: $CSRF" -H 'Origin: https://evil.example' -H 'content-type: application/json' -d '{"name":"ci"}')" = 403 ]
+          # Ingest needs a qi_ token: none → 401; create one through the API.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:7070/ingest/ndjson --data-binary x)" = 401 ]
+          TOKEN=$($S -X POST localhost:7070/api/ingest-tokens -H "X-Quiet-Csrf: $CSRF" -H 'content-type: application/json' -d '{"name":"ci"}' | sed -E 's/.*"secret":"([^"]+)".*/\1/')
+          case "$TOKEN" in qi_*) ;; *) echo "no token: $TOKEN"; exit 1 ;; esac
+          AUTH="Authorization: Bearer $TOKEN"
+          curl -fs -X POST localhost:7070/ingest/ndjson -H "$AUTH" -H 'X-Quiet-Source: ci' --data-binary '{"msg":"hello"}'
+          $S localhost:7070/api/sources/ci/lines | grep -q hello
           # SQLite search + export (the writer commits within milliseconds).
           sleep 1
-          curl -fs 'localhost:7070/api/search?q=hello' | grep -q hello
-          curl -fs 'localhost:7070/api/export?format=csv&columns=msg' | grep -q hello
+          $S 'localhost:7070/api/search?q=hello' | grep -q hello
+          $S 'localhost:7070/api/export?format=csv&columns=msg' | grep -q hello
+          # Copy curl: a qx_ token exports without a session.
+          QX=$($S -X POST localhost:7070/api/export/token -H "X-Quiet-Csrf: $CSRF" -H 'content-type: application/json' -d '{"query":"format=csv&columns=msg"}' | sed -E 's/.*"token":"([^"]+)".*/\1/')
+          curl -fs 'localhost:7070/api/export?format=csv&columns=msg' -H "Authorization: Bearer $QX" | grep -q hello
+          # Vector (envelope unwrapped, gzip) and OTLP/HTTP JSON land as their own sources.
+          printf '%s\n' '{"container_name":"/ci-edge","message":"{\"msg\":\"via vector\"}","source_type":"docker_logs"}' | gzip | curl -fs -X POST localhost:7070/ingest/vector -H "$AUTH" -H 'Content-Encoding: gzip' --data-binary @-
+          curl -fs -X POST localhost:7070/v1/logs -H "$AUTH" -H 'Content-Type: application/json' --data-binary '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"ci-otlp"}}]},"scopeLogs":[{"logRecords":[{"severityNumber":9,"body":{"stringValue":"via otlp"}}]}]}]}'
+          sleep 1
+          $S 'localhost:7070/api/search?q=via' | grep -q '"source":"ci-edge"'
+          $S 'localhost:7070/api/search?q=via' | grep -q '"source":"ci-otlp"'
+          $S localhost:7070/api/ingest-tokens | grep -q '"last_used":1'
+          # Flows: a request and its job stitch by request_id.
+          curl -fs -X POST localhost:7070/ingest/ndjson -H "$AUTH" -H 'X-Quiet-Source: ci-api' --data-binary '{"msg":"POST /orders","request_id":"req_ci"}'
+          curl -fs -X POST localhost:7070/ingest/ndjson -H "$AUTH" -H 'X-Quiet-Source: ci-worker' --data-binary '{"msg":"job done","job_id":"job_ci","data":{"request_id":"req_ci"}}'
+          $S 'localhost:7070/api/flow?id=job_ci' | grep -q '"line_count":2'
+          # Sign in again, sign out: the old cookie stops working.
+          curl -fs -c jar2 -X POST localhost:7070/api/auth/login -H 'content-type: application/json' -d '{"email":"ci@example.com","password":"ci password 12345"}' | grep -q csrf
+          $S -X POST localhost:7070/api/auth/logout -H "X-Quiet-Csrf: $CSRF" -o /dev/null
+          [ "$(curl -s -b jar -o /dev/null -w '%{http_code}' localhost:7070/api/sources)" = 401 ]
+          curl -fs -b jar2 localhost:7070/api/sources | grep -q ci-api
+          # A locked-out owner gets a one-time reset link from the CLI.
+          docker exec quiet-smoke /quiet admin reset-password ci@example.com | grep -q '/reset/rst_'
           curl -fs localhost:7070/ | grep -q '<div id="root">'
           for i in $(seq 1 40); do [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ] && break; sleep 1; done
           docker inspect --format 'health: {{.State.Health.Status}}' quiet-smoke

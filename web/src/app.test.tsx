@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Health, LogLine, SourceInfo } from '@/gen'
 import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
+import { seedAuth } from '@/test/auth'
 
 const sources: SourceInfo[] = [
   { name: 'api', kind: 'http', containers: [], group: null, lines: 2, last_ts: Date.now() },
@@ -20,6 +21,7 @@ const health: Health = {
   disk_bytes: 0,
   stored_lines: 0,
   oldest: null,
+  ingest: { auth: 'token', loopback: true, max_body: 16_000_000, rate: 20_000, tokens: 0 },
 }
 
 const lines: LogLine[] = [
@@ -84,9 +86,11 @@ afterEach(() => {
 })
 
 function renderApp(path = '/?source=api') {
-  const router = makeRouter(createMemoryHistory({ initialEntries: [path] }))
+  const client = makeQueryClient()
+  seedAuth(client)
+  const router = makeRouter(createMemoryHistory({ initialEntries: [path] }), client)
   render(
-    <Providers client={makeQueryClient()}>
+    <Providers client={client}>
       <RouterProvider router={router} />
     </Providers>,
   )
@@ -150,7 +154,8 @@ describe('popups (every Base UI popup the app uses opens without crashing)', () 
     await user.type(await screen.findByRole('combobox'), 'req_123')
     await user.click(await screen.findByText('open flow'))
     await waitFor(() => expect(router.state.location.pathname).toBe('/flow/req_123'))
-    expect(await screen.findByText('Flows arrive in slice 3')).toBeInTheDocument()
+    // No line carries req_123 here (the mock 404s): the not-found flow page.
+    expect(await screen.findByText('No lines with this id')).toBeInTheDocument()
   })
 
   it('tooltips open on hover', async () => {

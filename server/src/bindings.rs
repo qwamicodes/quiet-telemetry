@@ -3,10 +3,21 @@
 //!
 //! Regenerate: `QUIET_UPDATE_TS=1 cargo test bindings` (or `bun run gen:types` in web/).
 
+use crate::accounts::{Invite, Member, Role, SessionInfo, User};
 use crate::api::{Frame, Health, LinesResponse, SourcesResponse};
+use crate::auth_api::{
+    AcceptInvite, AuthState, ChangePassword, CompleteReset, CreateInvite, CreatedInvite,
+    InviteProblem, LoginRequest, MembersResponse, PasswordChanged, ResetInfo, ResetLink,
+    SessionsResponse, SetupRequest, SignedIn, SignedOutOthers, TokenRequest, UpdateMember,
+    UpdateProfile,
+};
+use crate::flow_api::{
+    FlowNotFound, FlowParams, FlowResponse, FlowSummariesRequest, FlowSummariesResponse,
+};
 use crate::search_api::{
     ExportParams, ExportTokenRequest, ExportTokenResponse, SearchParams, SearchResponse,
 };
+use crate::tokens::{CreateIngestToken, CreatedIngestToken, IngestToken, IngestTokensResponse};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use ts_rs::{Config, TS};
@@ -27,6 +38,40 @@ fn export_into(dir: &Path) {
     ExportParams::export_all(&cfg).unwrap();
     ExportTokenRequest::export_all(&cfg).unwrap();
     ExportTokenResponse::export_all(&cfg).unwrap();
+    FlowParams::export_all(&cfg).unwrap();
+    FlowResponse::export_all(&cfg).unwrap();
+    FlowNotFound::export_all(&cfg).unwrap();
+    FlowSummariesRequest::export_all(&cfg).unwrap();
+    FlowSummariesResponse::export_all(&cfg).unwrap();
+    IngestToken::export_all(&cfg).unwrap();
+    IngestTokensResponse::export_all(&cfg).unwrap();
+    CreateIngestToken::export_all(&cfg).unwrap();
+    CreatedIngestToken::export_all(&cfg).unwrap();
+    // Accounts.
+    Role::export_all(&cfg).unwrap();
+    User::export_all(&cfg).unwrap();
+    Member::export_all(&cfg).unwrap();
+    Invite::export_all(&cfg).unwrap();
+    SessionInfo::export_all(&cfg).unwrap();
+    AuthState::export_all(&cfg).unwrap();
+    SetupRequest::export_all(&cfg).unwrap();
+    LoginRequest::export_all(&cfg).unwrap();
+    SignedIn::export_all(&cfg).unwrap();
+    TokenRequest::export_all(&cfg).unwrap();
+    InviteProblem::export_all(&cfg).unwrap();
+    AcceptInvite::export_all(&cfg).unwrap();
+    ResetInfo::export_all(&cfg).unwrap();
+    CompleteReset::export_all(&cfg).unwrap();
+    UpdateProfile::export_all(&cfg).unwrap();
+    ChangePassword::export_all(&cfg).unwrap();
+    PasswordChanged::export_all(&cfg).unwrap();
+    SessionsResponse::export_all(&cfg).unwrap();
+    SignedOutOthers::export_all(&cfg).unwrap();
+    MembersResponse::export_all(&cfg).unwrap();
+    UpdateMember::export_all(&cfg).unwrap();
+    CreateInvite::export_all(&cfg).unwrap();
+    CreatedInvite::export_all(&cfg).unwrap();
+    ResetLink::export_all(&cfg).unwrap();
 
     // A barrel so the UI imports from one place.
     let mut names: Vec<String> = std::fs::read_dir(dir)

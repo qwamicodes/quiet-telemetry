@@ -1,8 +1,15 @@
+mod accounts;
+mod admin;
 mod api;
+mod auth;
+mod auth_api;
 mod cli;
 mod export;
+mod flow;
+mod flow_api;
 mod hub;
 mod normalize;
+mod pipe;
 mod pipeline;
 mod receiver;
 mod retention;
@@ -10,6 +17,8 @@ mod search;
 mod search_api;
 mod server;
 mod store;
+mod tokens;
+mod tokens_api;
 mod web;
 
 #[cfg(test)]
@@ -31,6 +40,8 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         None => server::run(cli.server).await,
         Some(cli::Command::Server(args)) => server::run(args).await,
+        Some(cli::Command::Pipe(args)) => std::process::exit(pipe::run(args)),
+        Some(cli::Command::Admin(args)) => std::process::exit(admin::run(args)),
         Some(cli::Command::Healthcheck(args)) => {
             std::process::exit(if healthcheck(args.addr) { 0 } else { 1 })
         }

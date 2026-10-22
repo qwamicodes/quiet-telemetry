@@ -16,11 +16,44 @@ pub type Line = Arc<LogLine>;
 /// Per-source fan-out buffer. A client that falls further behind gets a `gap` frame.
 const FANOUT: usize = 8192;
 
+/// Which receiver a source's lines arrive through (the sources list shows it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceKind {
+    /// The local Docker socket.
     Docker,
+    /// Plain NDJSON / text over HTTP (`curl`, `quiet pipe`).
     Http,
+    /// Vector's `http` sink.
+    Vector,
+    /// Fluent Bit's `http` output.
+    Fluentbit,
+    /// OTLP/HTTP logs or traces.
+    Otlp,
+}
+
+impl SourceKind {
+    /// Stable name, as stored on disk.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceKind::Docker => "docker",
+            SourceKind::Http => "http",
+            SourceKind::Vector => "vector",
+            SourceKind::Fluentbit => "fluentbit",
+            SourceKind::Otlp => "otlp",
+        }
+    }
+
+    /// Inverse of [`SourceKind::as_str`]; anything unknown reads as `http`.
+    pub fn parse(s: &str) -> SourceKind {
+        match s {
+            "docker" => SourceKind::Docker,
+            "vector" => SourceKind::Vector,
+            "fluentbit" => SourceKind::Fluentbit,
+            "otlp" => SourceKind::Otlp,
+            _ => SourceKind::Http,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, TS)]
@@ -35,7 +68,9 @@ pub struct SourceMeta {
 
 pub struct Source {
     pub name: String,
-    pub kind: SourceKind,
+    /// The receiver of its first line. A source opened in the UI before any
+    /// line arrived is a placeholder (`http`) until its first line says otherwise.
+    kind: Mutex<SourceKind>,
     meta: Mutex<SourceMeta>,
     tx: broadcast::Sender<Line>,
 }
@@ -53,10 +88,14 @@ impl Source {
         f(&mut self.meta.lock().unwrap());
     }
 
+    pub fn kind(&self) -> SourceKind {
+        *self.kind.lock().unwrap()
+    }
+
     pub fn info(&self) -> SourceInfo {
         SourceInfo {
             name: self.name.clone(),
-            kind: self.kind,
+            kind: self.kind(),
             meta: self.meta(),
         }
     }
@@ -94,7 +133,7 @@ impl Hub {
                 let (tx, _) = broadcast::channel(FANOUT);
                 Arc::new(Source {
                     name: name.to_string(),
-                    kind,
+                    kind: Mutex::new(kind),
                     meta: Mutex::new(SourceMeta::default()),
                     tx,
                 })
@@ -118,6 +157,9 @@ impl Hub {
     pub fn broadcast(&self, line: &Line, kind: SourceKind) {
         let source = self.ensure_source(&line.source, kind);
         source.update_meta(|m| {
+            if m.lines == 0 {
+                *source.kind.lock().unwrap() = kind;
+            }
             m.lines += 1;
             m.last_ts = Some(m.last_ts.map_or(line.ts, |t| t.max(line.ts)));
         });
@@ -140,5 +182,18 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap().msg, "hello");
         assert_eq!(s.meta().lines, 1);
         assert_eq!(s.meta().last_ts, Some(7));
+    }
+
+    #[test]
+    fn placeholder_source_takes_the_kind_of_its_first_line() {
+        let hub = Hub::new();
+        let s = hub.ensure_source("edge", SourceKind::Http);
+        let line = Arc::new(normalize("x", "edge", None, 1));
+        hub.broadcast(&line, SourceKind::Vector);
+        hub.broadcast(&line, SourceKind::Otlp);
+        assert_eq!(s.kind(), SourceKind::Vector);
+        for k in ["docker", "http", "vector", "fluentbit", "otlp"] {
+            assert_eq!(SourceKind::parse(k).as_str(), k);
+        }
     }
 }

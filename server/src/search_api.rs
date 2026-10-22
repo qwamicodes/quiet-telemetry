@@ -5,11 +5,13 @@
 //! POST /api/export/token  { "query": "<the export query string>" }  → qx_ token
 //!
 //! `/api/export` accepts `Authorization: Bearer qx_…` (from "Copy curl"): the
-//! token must match the exact query it was issued for, works once, and lasts
-//! 15 minutes. Without a header the export is open like the rest of the API
-//! until accounts land (slice 5; quiet binds loopback until then).
+//! token must match the exact query it was issued for and is reusable for 15
+//! minutes; it needs no session. Without a header the export needs a session
+//! like the rest of the API. Members always export with PII masked, and only
+//! get a `qx_` token for a masked query.
 
 use crate::api::AppState;
+use crate::auth::Viewer;
 use crate::export::{canonical_query, ExportFormat, Formatter, TokenError, TOKEN_TTL_MS};
 use crate::hub::Line;
 use crate::normalize::{Level, LogLine};
@@ -19,7 +21,7 @@ use axum::extract::{Query, RawQuery, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use bytes::Bytes;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -214,6 +216,7 @@ fn file_name(p: &SearchQuery, fmt: ExportFormat, gzip: bool) -> String {
 
 async fn export(
     State(s): State<AppState>,
+    viewer: Option<Extension<Viewer>>,
     headers: HeaderMap,
     RawQuery(raw_query): RawQuery,
     Query(p): Query<SearchParams>,
@@ -256,9 +259,12 @@ async fn export(
     q.histogram = None;
     let format = e.format.unwrap_or_default();
     let gzip = on(&e.gzip);
+    // Members see PII masked (a qx_ token request has no viewer: its query,
+    // mask included, was checked when the token was issued).
+    let member = viewer.is_some_and(|v| !v.is_owner());
     let fmt = Formatter {
         format,
-        mask: on(&e.mask),
+        mask: on(&e.mask) || member,
         raw: on(&e.raw),
         columns: e
             .columns
@@ -379,16 +385,27 @@ pub struct ExportTokenResponse {
     pub path: String,
 }
 
-async fn issue_token(State(s): State<AppState>, Json(r): Json<ExportTokenRequest>) -> Response {
+async fn issue_token(
+    State(s): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    Json(r): Json<ExportTokenRequest>,
+) -> Response {
     // Validate now so a broken curl never gets a token.
     let parsed = (
         serde_urlencoded::from_str::<SearchParams>(&r.query),
         serde_urlencoded::from_str::<ExportParams>(&r.query),
     );
     match parsed {
-        (Ok(p), Ok(_)) => {
+        (Ok(p), Ok(e)) => {
             if let Err(e) = p.to_query(Order::Oldest) {
                 return bad(e);
+            }
+            if !v.is_owner() && !on(&e.mask) {
+                return crate::auth::error(
+                    StatusCode::FORBIDDEN,
+                    "mask_required",
+                    "members export with PII masked (mask=pii)",
+                );
             }
         }
         (Err(e), _) | (_, Err(e)) => return bad(e.to_string()),
@@ -419,7 +436,7 @@ mod tests {
 
     async fn app() -> (AppState, Router) {
         let pipeline = Pipeline::new(Arc::new(MemoryStore::new(1000)), Hub::new());
-        let st = AppState::new(pipeline, Arc::new(Mutex::new(DockerStatus::Disabled)));
+        let st = AppState::new(pipeline, Arc::new(Mutex::new(DockerStatus::Disabled))).auth_off();
         let now = chrono::Utc::now().timestamp_millis();
         let raws = [
             (

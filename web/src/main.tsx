@@ -5,8 +5,8 @@ import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
 import './styles.css'
 
-const router = makeRouter()
 const client = makeQueryClient()
+const router = makeRouter(undefined, client)
 
 // biome-ignore lint/style/noNonNullAssertion: index.html always has #root
 createRoot(document.getElementById('root')!).render(
