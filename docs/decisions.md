@@ -402,3 +402,4 @@ configurable because it ships as an update. Boards v0.1-06.7, 06.8, 03.8,
   sets and by UI tests.
 - The Sources page keeps the 06.1 stat cards above the filters (06.7 omits
   them; both are v0.1 boards).
+- **Field card values copy on click** (Fields tab only; keys and types unchanged): the value is its own button over a row-wide pick button, since a button can't nest in the row button; the rest of the row still picks the field for Filter by value.
