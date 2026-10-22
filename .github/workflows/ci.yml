@@ -14,13 +14,20 @@ jobs:
     defaults: { run: { working-directory: web } }
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version-file: web/package.json }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('web/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # bun.lock lists every platform's optional binaries (rolldown, lightningcss,
+      # tailwind oxide, biome, tsgo); --frozen-lockfile fails if it drifts.
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build
       - uses: actions/upload-artifact@v4
         with: { name: web-dist, path: web/dist, retention-days: 1 }
 
@@ -65,6 +72,10 @@ jobs:
           for i in $(seq 1 20); do curl -fs localhost:7070/ready && break; sleep 1; done
           curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci' --data-binary '{"msg":"hello"}'
           curl -fs localhost:7070/api/sources/ci/lines | grep -q hello
+          # SQLite search + export (the writer commits within milliseconds).
+          sleep 1
+          curl -fs 'localhost:7070/api/search?q=hello' | grep -q hello
+          curl -fs 'localhost:7070/api/export?format=csv&columns=msg' | grep -q hello
           curl -fs localhost:7070/ | grep -q '<div id="root">'
           for i in $(seq 1 40); do [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ] && break; sleep 1; done
           docker inspect --format 'health: {{.State.Health.Status}}' quiet-smoke

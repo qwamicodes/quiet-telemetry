@@ -7,7 +7,7 @@ COMPOSE := docker compose -f deploy/docker-compose.local.yml
 dev:
 	@trap 'kill 0' EXIT INT TERM; \
 	$(MAKE) --no-print-directory server & \
-	(cd web && npm run dev) & \
+	(cd web && bun run dev) & \
 	wait
 
 server:
@@ -15,7 +15,7 @@ server:
 
 ## sample: feed sample-api + sample-worker into a running server over HTTP
 sample:
-	QUIET_URL=http://127.0.0.1:7070 node deploy/sample/generate.mjs both
+	QUIET_URL=http://127.0.0.1:7070 bun deploy/sample/generate.mjs both
 
 ## up / down / logs: the local compose stack (quiet built from source + sample generator)
 up:
@@ -32,7 +32,7 @@ logs:
 check: check-web check-server
 
 check-web:
-	cd web && npm ci && npm run lint && npm run typecheck && npm test && npm run build
+	cd web && bun install --frozen-lockfile && bun run lint && bun run typecheck && bun run test && bun run build
 
 check-server:
 	cd server && cargo fmt --check && cargo clippy --all-targets -- -D warnings && QUIET_EXPECT_UI=1 cargo test
@@ -43,5 +43,5 @@ types:
 
 ## build: one release binary with the UI embedded
 build:
-	cd web && npm run build
+	cd web && bun run build
 	cd server && cargo build --release

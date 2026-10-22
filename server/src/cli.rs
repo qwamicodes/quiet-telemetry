@@ -1,9 +1,16 @@
 //! Command line. `quiet` with no subcommand runs the server, so the old
 //! env-only setup (`QUIET_ADDR=… quiet`) keeps working.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum StoreKind {
+    Sqlite,
+    Memory,
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -51,6 +58,24 @@ pub struct ServerArgs {
     #[arg(long, env = "QUIET_RING", default_value_t = 10_000)]
     pub ring: usize,
 
+    /// Where lines are kept: `sqlite` (searchable window on disk) or `memory`
+    /// (the live ring only, gone on restart).
+    #[arg(long, env = "QUIET_STORE", value_enum, default_value_t = StoreKind::Sqlite)]
+    pub store: StoreKind,
+
+    /// Directory for the SQLite database (`quiet.db`). Mount a volume here.
+    #[arg(long, env = "QUIET_DATA_DIR", default_value = "data")]
+    pub data_dir: PathBuf,
+
+    /// How long lines stay searchable: 1h … 7d (e.g. `24h`, `3d`, `7d`).
+    /// Whole hours are dropped, so a line can outlive it by up to an hour.
+    #[arg(long, env = "QUIET_RETENTION", default_value = "24h", value_parser = parse_retention)]
+    pub retention: Duration,
+
+    /// Disk cap for the database; the oldest hour goes first (e.g. `5GB`, `500MB`).
+    #[arg(long, env = "QUIET_MAX_DISK", default_value = "5GB", value_parser = parse_bytes)]
+    pub max_disk: u64,
+
     /// Serve the UI from this directory instead of the copy built into the binary.
     #[arg(long, env = "QUIET_WEB_DIR")]
     pub web_dir: Option<PathBuf>,
@@ -79,6 +104,54 @@ fn parse_switch(v: &str) -> Result<bool, String> {
     ))
 }
 
+/// `90m`, `24h`, `3d`, `1w` → a duration between one hour and seven days.
+fn parse_retention(v: &str) -> Result<Duration, String> {
+    let v = v.trim().to_ascii_lowercase();
+    let split = v.find(|c: char| !c.is_ascii_digit()).unwrap_or(v.len());
+    let (n, unit) = v.split_at(split);
+    let n: u64 = n
+        .parse()
+        .map_err(|_| format!("`{v}`: expected e.g. 24h, 3d, 7d"))?;
+    let secs = match unit {
+        "m" | "min" => n * 60,
+        "h" | "" => n * 3600,
+        "d" => n * 86_400,
+        "w" => n * 7 * 86_400,
+        _ => return Err(format!("`{v}`: unit must be m, h, d or w")),
+    };
+    if !(3600..=7 * 86_400).contains(&secs) {
+        return Err(format!("`{v}`: retention must be between 1h and 7d"));
+    }
+    Ok(Duration::from_secs(secs))
+}
+
+/// `5GB`, `500MB`, `1.5GiB`, `1048576` → bytes (KB/MB/GB/TB are powers of 1000).
+fn parse_bytes(v: &str) -> Result<u64, String> {
+    let v = v.trim();
+    let split = v
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(v.len());
+    let (n, unit) = v.split_at(split);
+    let n: f64 = n.parse().map_err(|_| format!("`{v}`: expected e.g. 5GB"))?;
+    let mult: f64 = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1.0,
+        "kb" | "k" => 1e3,
+        "mb" | "m" => 1e6,
+        "gb" | "g" => 1e9,
+        "tb" | "t" => 1e12,
+        "kib" => 1024.0,
+        "mib" => 1024f64.powi(2),
+        "gib" => 1024f64.powi(3),
+        "tib" => 1024f64.powi(4),
+        u => return Err(format!("`{v}`: unknown unit `{u}`")),
+    };
+    let bytes = (n * mult) as u64;
+    if bytes < 10_000_000 {
+        return Err(format!("`{v}`: the disk cap must be at least 10MB"));
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +177,35 @@ mod tests {
         }
         let cli = Cli::try_parse_from(["quiet", "agent", "--server", "x"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Agent(_))));
+    }
+
+    #[test]
+    fn storage_flags() {
+        let cli = Cli::try_parse_from(["quiet"]).unwrap();
+        assert_eq!(cli.server.store, StoreKind::Sqlite);
+        assert_eq!(cli.server.retention, Duration::from_secs(86_400));
+        assert_eq!(cli.server.max_disk, 5_000_000_000);
+        let cli = Cli::try_parse_from([
+            "quiet",
+            "--retention",
+            "7d",
+            "--max-disk",
+            "500MB",
+            "--store",
+            "memory",
+            "--data-dir",
+            "/data",
+        ])
+        .unwrap();
+        assert_eq!(cli.server.retention, Duration::from_secs(7 * 86_400));
+        assert_eq!(cli.server.max_disk, 500_000_000);
+        assert_eq!(cli.server.store, StoreKind::Memory);
+        assert_eq!(parse_retention("3d"), Ok(Duration::from_secs(3 * 86_400)));
+        assert_eq!(parse_bytes("1GiB"), Ok(1 << 30));
+        assert!(parse_retention("30m").is_err());
+        assert!(parse_retention("8d").is_err());
+        assert!(parse_bytes("5XB").is_err());
+        assert!(parse_bytes("1MB").is_err());
     }
 
     #[test]

@@ -5,11 +5,12 @@
 //! receivers → give up after `shutdown_timeout_ms`.
 
 use crate::api::{self, AppState};
-use crate::cli::ServerArgs;
+use crate::cli::{ServerArgs, StoreKind};
 use crate::hub::Hub;
 use crate::pipeline::Pipeline;
 use crate::receiver::{DockerReceiver, DockerStatus, NdjsonReceiver, Receiver};
-use crate::store::{MemoryStore, Store};
+use crate::retention::{self, Retention};
+use crate::store::{MemoryStore, SqliteOptions, SqliteStore, Store};
 use crate::web;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -17,8 +18,19 @@ use std::time::Duration;
 use tokio_util::task::TaskTracker;
 
 pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
-    let store: Arc<dyn Store> = Arc::new(MemoryStore::new(args.ring));
-    let pipeline = Pipeline::new(store, Hub::new());
+    let store: Arc<dyn Store> = match args.store {
+        StoreKind::Memory => Arc::new(MemoryStore::new(args.ring)),
+        StoreKind::Sqlite => {
+            let opts = SqliteOptions {
+                path: args.data_dir.join("quiet.db"),
+                ring: args.ring,
+            };
+            tracing::info!(path = %opts.path.display(), "opening sqlite store");
+            Arc::new(tokio::task::spawn_blocking(move || SqliteStore::open(opts)).await??)
+        }
+    };
+    let pipeline = Pipeline::new(store.clone(), Hub::new());
+    pipeline.restore().await?;
 
     let mut receivers: Vec<Arc<dyn Receiver>> =
         vec![Arc::new(NdjsonReceiver::new(pipeline.clone()))];
@@ -31,7 +43,8 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         Arc::new(Mutex::new(DockerStatus::Disabled))
     };
 
-    let state = AppState::new(pipeline, docker_status);
+    let retention_ms = args.retention.as_millis() as i64;
+    let state = AppState::new(pipeline, docker_status).with_retention(retention_ms);
     let shutdown = state.shutdown.clone();
     let ready = state.ready.clone();
 
@@ -47,11 +60,27 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
             }
         });
     }
+    tasks.spawn(retention::run(
+        store.clone(),
+        Retention {
+            window: args.retention,
+            max_bytes: args.max_disk,
+        },
+        shutdown.clone(),
+    ));
     tasks.close();
     let app = web::attach(app, args.web_dir.clone());
 
     let listener = tokio::net::TcpListener::bind(args.addr).await?;
-    tracing::info!(addr = %args.addr, docker = args.docker, ring = args.ring, "quiet listening");
+    tracing::info!(
+        addr = %args.addr,
+        docker = args.docker,
+        ring = args.ring,
+        store = store.kind(),
+        retention_h = args.retention.as_secs() / 3600,
+        max_disk_mb = args.max_disk / 1_000_000,
+        "quiet listening"
+    );
 
     let drain = Duration::from_millis(args.drain_ms);
     let hard = Duration::from_millis(args.shutdown_timeout_ms);
@@ -82,6 +111,9 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     }
     if tokio::time::timeout(hard, tasks.wait()).await.is_err() {
         tracing::warn!("receivers still running after timeout; exiting");
+    }
+    if let Err(e) = store.flush().await {
+        tracing::warn!(error = %e, "final flush failed");
     }
     tracing::info!("bye");
     Ok(())

@@ -15,6 +15,6 @@ There is no staging branch or environment.
 
 - **Wire types live in Rust.** Change a type in `server/src`, run `make types`, commit `web/src/gen/`. CI fails if they drift.
 - **New input?** Implement `Receiver` (`server/src/receiver/`). **New storage?** Implement `Store` (`server/src/store/`). Nothing else should need to change.
-- **UI primitives** are shadcn/ui on Base UI (`web/src/components/ui/`, add with `npx shadcn add <name>`). Use Base UI's `render` prop, never Radix `asChild`. Keep parts inside their Root/Portal/Positioner/Group (e.g. `Menu.GroupLabel` inside `Menu.Group`). Any new popup gets a jsdom test that opens it (`web/src/app.test.tsx`).
-- **Lint/format:** Biome for the web (`npm run format`), rustfmt + clippy for the server.
+- **UI primitives** are shadcn/ui on Base UI (`web/src/components/ui/`, add with `bunx shadcn add <name>`). Use Base UI's `render` prop, never Radix `asChild`. Keep parts inside their Root/Portal/Positioner/Group (e.g. `Menu.GroupLabel` inside `Menu.Group`). Any new popup gets a jsdom test that opens it (`web/src/app.test.tsx`).
+- **Lint/format:** Biome for the web (`bun run format`), rustfmt + clippy for the server.
 - Keep it calm: one host, one binary, stream → flow → card. Not a dashboard builder.

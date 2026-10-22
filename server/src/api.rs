@@ -6,9 +6,11 @@
 //! GET  /api/sources
 //! GET  /api/sources/:name/lines?limit=500
 //! GET  /api/stream?source=api&backlog=500&level=warn&q=text   (WebSocket)
+//! GET  /api/search, /api/export, POST /api/export/token       (see `search_api.rs`)
 //!
 //! Ingest endpoints belong to their receivers (see `receiver/`).
 
+use crate::export::ExportTokens;
 use crate::hub::{Line, SourceInfo, SourceKind};
 use crate::normalize::LogLine;
 use crate::pipeline::Pipeline;
@@ -38,6 +40,10 @@ pub struct AppState {
     pub ready: Arc<AtomicBool>,
     /// Cancelled when the drain period ends; open streams close then.
     pub shutdown: CancellationToken,
+    /// How far back search reaches by default (the retention window), ms.
+    pub retention_ms: i64,
+    /// Read-only `qx_` export tokens (hashed, 15 min, reusable).
+    pub tokens: Arc<ExportTokens>,
 }
 
 impl AppState {
@@ -48,7 +54,14 @@ impl AppState {
             started: chrono::Utc::now().timestamp_millis(),
             ready: Arc::new(AtomicBool::new(true)),
             shutdown: CancellationToken::new(),
+            retention_ms: 24 * 3_600_000,
+            tokens: Arc::new(ExportTokens::default()),
         }
+    }
+
+    pub fn with_retention(mut self, ms: i64) -> Self {
+        self.retention_ms = ms;
+        self
     }
 }
 
@@ -60,6 +73,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sources", get(sources))
         .route("/api/sources/:name/lines", get(lines))
         .route("/api/stream", get(stream))
+        .merge(crate::search_api::routes())
         .with_state(state)
 }
 
@@ -87,17 +101,30 @@ pub struct Health {
     /// Process start, unix ms.
     pub started: i64,
     pub docker: DockerStatus,
-    /// Where lines are kept: `memory` today, `sqlite` from slice 2.
+    /// Where lines are kept: `sqlite` or `memory`.
     pub store: String,
+    /// How long lines stay searchable, ms.
+    pub retention_ms: i64,
+    /// Bytes on disk (0 for the memory store).
+    pub disk_bytes: u64,
+    /// Lines in the searchable window.
+    pub stored_lines: u64,
+    /// Oldest stored event time, unix ms.
+    pub oldest: Option<i64>,
 }
 
 async fn health(State(s): State<AppState>) -> Json<Health> {
+    let usage = s.pipeline.store().usage().await.unwrap_or_default();
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION").to_string(),
         started: s.started,
         docker: s.docker.lock().unwrap().clone(),
         store: s.pipeline.store().kind().to_string(),
+        retention_ms: s.retention_ms,
+        disk_bytes: usage.bytes,
+        stored_lines: usage.lines,
+        oldest: usage.oldest,
     })
 }
 

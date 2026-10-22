@@ -27,6 +27,12 @@ tower-http = { version = "0.6", features = ["fs", "cors", "trace", "compression-
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.11.1"
+rand = "0.8"
+flate2 = "1.1.10"
+regex = "1.13.1"
+serde_urlencoded = "0.7.1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

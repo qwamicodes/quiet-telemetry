@@ -1,5 +1,5 @@
 // Sample canonical log lines for local testing. No dependencies.
-//   node deploy/sample/generate.mjs [api|worker|both]
+//   bun deploy/sample/generate.mjs [api|worker|both]
 // Env:
 //   RATE        requests per second (default 3)
 //   QUIET_URL   POST lines to <url>/ingest/ndjson (X-Quiet-Source: sample-api / sample-worker)

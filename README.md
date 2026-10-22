@@ -10,13 +10,13 @@ Built in slices. Each slice is one PR to `main`, tested locally first, then prom
 
 | Slice | What | State |
 |---|---|---|
-| 1 | Docker receiver → normalize → per-source ring → WebSocket → stream view | PR #1 |
-| — | Foundation: CLI, Receiver/Store traits, embedded UI, shared types, UI kit | this PR |
-| 2 | SQLite (WAL, hourly partitions) + FTS5 search over the window | next |
+| 1 | Docker receiver → normalize → per-source ring → WebSocket → stream view | merged |
+| — | Foundation: CLI, Receiver/Store traits, embedded UI, shared types, UI kit | merged |
+| 2 | SQLite (WAL, hourly partitions) + FTS5 search over the window, export (NDJSON/JSON/CSV, Copy curl), retention + disk cap job | this PR |
 | 3 | Flows: stitch lines by every correlation id, field card | |
 | 4 | HTTP ingest: Vector / Fluent Bit NDJSON, OTLP/HTTP logs + spans, ingest tokens | |
 | 5 | Accounts: owner first-run, members, copy-link invites | |
-| 6 | Retention (24h default, 3d/7d), ~5 GB cap, storage + per-source settings | |
+| 6 | Settings UI for retention / disk cap (the job itself ships in 2), storage + per-source settings | |
 
 Every slice goes **local → main → prod**: built and checked locally (`make check`, `make up`), merged to `main` by PR, then deployed to production once the `production` environment approves the release.
 
@@ -30,7 +30,7 @@ Follow these steps top to bottom. You should see live logs in about 10 minutes.
 |---|---|---|---|
 | Docker Desktop (macOS) or Docker Engine + Compose v2 (Linux) | runs quiet and reads container logs | https://docs.docker.com/get-docker/ | `docker compose version` |
 | Git | clone the repo | already on most machines | `git --version` |
-| Node 22+ | the web UI (only for `make dev` / `make check`) | https://nodejs.org or `nvm install 22` | `node -v` |
+| Bun 1.4+ | the web UI and the sample generator (only for `make dev` / `make check` / `make sample`) | `curl -fsSL https://bun.sh/install \| bash` | `bun -v` |
 | Rust stable | the server (only for `make dev` / `make check`) | `curl https://sh.rustup.rs -sSf \| sh` | `cargo -V` |
 | make | the shortcuts below | macOS: `xcode-select --install` | `make -v` |
 | cargo-watch (optional) | restarts the server when you save | `cargo install cargo-watch` | |
@@ -57,6 +57,8 @@ What you should see:
 - Sources on the left: `sample-api`, `sample-worker`, plus every other container running on your machine.
 - Pick `sample-api`: new lines arrive every second, newest at the bottom.
 - Click a line: the field card opens (Fields / JSON / Raw). Lines sharing a `request_id` with `sample-worker` are what flows will stitch (slice 3).
+- **Search** (sidebar): try `payout level:>=warn`, click a `request_id` value to narrow, switch *Group by flow* / *Lines*, then **Export** (CSV, gzip, Copy curl).
+- Restart (`make down && make up`): the sources, ids and search history are still there (the `quiet-data` volume).
 
 Useful while it runs:
 
@@ -68,7 +70,7 @@ make down    # stop and remove the stack
 ### 3B. Run it for development (hot reload)
 
 ```sh
-npm --prefix web ci   # once, and after package.json changes
+(cd web && bun install)   # once, and after package.json changes
 make dev              # server on :7070 + UI on :5173 with hot reload
 make sample           # second terminal: sample lines over HTTP
 ```
@@ -117,7 +119,7 @@ make build   # optional: one release binary at server/target/release/quiet with 
 | No containers in the source list | Docker isn't reachable. Check `docker ps` works. On Linux add yourself to the `docker` group (`sudo usermod -aG docker $USER`, then log out/in). With Colima/OrbStack/rootless Docker, set `DOCKER_HOST` (e.g. `export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock`) for `make dev`; for `make up`, change the socket path in `deploy/docker-compose.local.yml`. |
 | `port 7070 is already allocated` / `address in use` | Something else is on 7070: `make down`, or run with `QUIET_ADDR=127.0.0.1:7171 make dev`. |
 | UI shows "Reconnecting…" forever | The server isn't running or crashed: check the `make dev` terminal or `make logs`. |
-| Blank page at :7070 after `cargo run` | The binary embeds the UI at build time: run `npm --prefix web run build` first (or use `make build` / `make dev`). |
+| Blank page at :7070 after `cargo run` | The binary embeds the UI at build time: run `cd web && bun run build` first (or use `make build` / `make dev`). |
 | `make check` fails on stale types | Run `make types` and commit `web/src/gen`. |
 | `cargo fmt`/`clippy` errors | `cd server && cargo fmt` then fix what clippy prints; CI uses `-D warnings`. |
 | First `make up` is slow | Normal: Rust compiles everything once. Later builds reuse the cache. |
@@ -133,7 +135,11 @@ Every flag also reads its env var (`quiet --help`). `quiet` with no subcommand i
 |---|---|---|
 | `--addr` / `QUIET_ADDR` | `127.0.0.1:7070` | Loopback until accounts land (slice 5). The image uses `0.0.0.0:7070`. |
 | `--docker` / `QUIET_DOCKER` | `on` | `0`/`off` disables the Docker receiver. |
-| `--ring` / `QUIET_RING` | `10000` | Live lines kept in memory per source. |
+| `--ring` / `QUIET_RING` | `10000` | Live lines kept in memory per source (the stream backlog). |
+| `--store` / `QUIET_STORE` | `sqlite` | `sqlite`: the searchable window on disk. `memory`: the live ring only, nothing survives a restart, search covers the ring. |
+| `--data-dir` / `QUIET_DATA_DIR` | `data` (image: `/data`) | Where `quiet.db` (+ `-wal`) lives. **Mount a volume here** (`deploy/docker-compose.*.yml` do). |
+| `--retention` / `QUIET_RETENTION` | `24h` | How long lines stay searchable, `1h` … `7d` (e.g. `3d`, `7d`). Whole hours are dropped, so a line can outlive it by up to an hour. |
+| `--max-disk` / `QUIET_MAX_DISK` | `5GB` | Disk cap for the database (`500MB`, `5GB`, `1GiB`; min 10MB). Over it, the oldest hour goes first. Whichever of retention and cap hits first wins. |
 | `--web-dir` / `QUIET_WEB_DIR` | embedded | Serve the UI from a directory instead of the copy built into the binary. |
 | `--drain-ms` / `QUIET_DRAIN_MS` | `1000` | On SIGTERM, how long `/ready` is 503 before connections close. |
 | `--shutdown-timeout-ms` / `QUIET_SHUTDOWN_TIMEOUT_MS` | `10000` | Hard limit for a graceful stop. |
@@ -150,10 +156,10 @@ One host, one binary: `stream → flow → card`.
 
 ```
 receivers ──► pipeline ──► store ──► hub ──► WebSocket ──► UI
-(Docker,      normalize    (ring     (per-source
- HTTP NDJSON,  + ids        today,    broadcast)
- OTLP later)                SQLite
-                            slice 2)
+(Docker,      normalize    (ring +   (per-source
+ HTTP NDJSON,  + ids        SQLite)   broadcast)
+ OTLP later)                  │
+                              └──► /api/search · /api/export ──► Search UI
 ```
 
 Server (`server/src`, one crate):
@@ -161,14 +167,15 @@ Server (`server/src`, one crate):
 - `cli.rs`: clap; `server` (default), `agent` (stub), hidden `healthcheck` used by the image.
 - `receiver/`: the `Receiver` trait. Pull receivers (`docker.rs`) run a loop; push receivers (`http.rs`) mount routes. OTLP and the v0.2 agent are new impls here.
 - `pipeline.rs`: the only path a line takes: normalize → `Store::append` → hub broadcast, ids assigned in order.
-- `store/`: the `Store` trait (`append`, `query`, `tail`, `expire`) and `MemoryStore` (bounded ring per source). Slice 2 adds SQLite behind the same trait; per-minute rollups become another pipeline stage.
+- `store/`: the `Store` trait (`append`, `query` live tail, `search`, `expire`, `enforce_cap`, `flush`, `restore`, `usage`), `MemoryStore` (bounded ring per source; tests and `--store memory`) and `SqliteStore` (hourly partitions, FTS5, id index, ring in front). Per-minute rollups become another pipeline stage.
+- `search.rs`: the query language and `SearchQuery`; `search_api.rs`: `/api/search`, `/api/export`, export tokens; `export.rs`: formats, PII masking, `qx_` tokens; `retention.rs`: the hourly drop job.
 - `hub.rs`: source registry + per-source broadcast channel.
 - `api.rs`: `/health`, `/ready`, `/api/*`, the stream WebSocket.
 - `web.rs`: the built UI embedded with rust-embed (SPA fallback, ETags, immutable hashed assets, gzip/br).
 - `server.rs`: wiring and graceful shutdown (SIGTERM → `/ready` 503 → drain → close streams with 1012 → stop receivers → timeout).
 - `bindings.rs`: ts-rs exports the wire types to `web/src/gen/`; a test fails when they are stale (`make types` regenerates).
 
-Web (`web/src`): React 19 + Vite + TypeScript, Tailwind v4 and shadcn/ui (Lyra) on Base UI, TanStack Router (`/`, `/flow/$id`, `/settings`), TanStack Query, TanStack Virtual, cmdk (⌘K), sonner, lucide. `routes/` are pages, `components/` small pieces (`components/ui/` is the shadcn kit), `lib/` hooks and helpers (`use-stream.ts` is the WebSocket with jittered backoff). Biome lints and formats; Vitest + Testing Library test.
+Web (`web/src`): React 19 + Vite + TypeScript, Tailwind v4 and shadcn/ui (Lyra) on Base UI, TanStack Router (`/`, `/search`, `/flow/$id`, `/settings`; search params are zod schemas), TanStack Query, TanStack Virtual, cmdk (⌘K), sileo (toasts), zod, lucide. `routes/` are pages, `components/` small pieces (`components/ui/` is the shadcn kit), `lib/` hooks and helpers (`use-stream.ts` is the WebSocket with jittered backoff). Biome lints and formats; Vitest + Testing Library test.
 
 Keys: `/` filter · `j`/`k` move · `esc` close · `space` pause · `G` latest · `⌘K` jump.
 
@@ -189,9 +196,34 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 - Level: pino numbers (10–60) or names.
 - Every correlation id on the line is indexed (up to 4 levels deep, so a job's `data.request_id` counts). The row shows one by priority `request_id → job_id → trace_id → correlation_id`.
 
+## Search
+
+The box takes free text and filters, the same string the URL and the export curl carry:
+
+```
+dealer 88 level:>=warn source:order-worker status:500 -path:/health "exact phrase" -noise
+```
+
+- words and `"phrases"` match the whole raw line (FTS5; every word is a prefix, so `dealer` finds `dealers`); `-word` excludes
+- `level:warn` (or `>=warn`): minimum level · `source:name` (repeatable)
+- `id:…`, `request_id:…`, `job_id:…`, `trace_id:…`, `correlation_id:…`: any line carrying that id (indexed)
+- any other `key:value`: that field equals the value (`err.code:TIMEOUT` walks dots); `-key:value` excludes
+- click any value in a result to add it as a filter
+
+## Storage
+
+SQLite (bundled, WAL) in `--data-dir`. One set of tables per hour: the lines (only the raw line is stored; fields and ids are re-derived when read), a contentless FTS5 index over the raw line, and a side index of every correlation id. A writer thread coalesces queued lines into one transaction; the in-memory ring in front serves the live stream and is warmed from disk on start, so ids, sources and the backlog survive restarts. Every minute the retention job drops hours older than `--retention`, then the oldest hours while the database is over `--max-disk`, and hands the pages back to the OS (incremental vacuum).
+
+## Export
+
+From the stream (top bar) or a search (Export): NDJSON (the raw lines; plain-text lines are wrapped as `{"time","source","level","message"}` so every row is JSON), a JSON array of parsed lines, or CSV with chosen columns (dot paths work). Options: gzip, **mask PII** (on by default: `email`, `phone`, `*_name`, `ip`/`ip_address`/`client_ip`/`x-forwarded-for`, `user_agent` keys, plus emails and IPv4 addresses inside any text), include the raw line. **Download** streams the file; **Copy curl** copies a command with a `qx_` token (read-only, this query only, reusable for 15 min). Ingest tokens stay send-only.
+
 ## API
 
 - `GET /health` (liveness) · `GET /ready` (readiness, 503 while shutting down)
-- `GET /api/health` · `GET /api/sources` · `GET /api/sources/:name/lines?limit=`
+- `GET /api/health` (now also `retention_ms`, `disk_bytes`, `stored_lines`, `oldest`) · `GET /api/sources` · `GET /api/sources/:name/lines?limit=`
+- `GET /api/search?q=&source=a,b&level=&since=&until=&id=&order=newest|oldest&cursor=&limit=&buckets=` → `{ lines, next_cursor, total, bytes, histogram, searched, took_ms, since, until }`. Times are unix ms; missing bounds = the retention window ending now. `total`/`histogram` come with the first page when `buckets` is set.
+- `GET /api/export?<search params>&format=ndjson|json|csv&gzip=1&mask=pii&raw=1&columns=a,b` streams a file (oldest first). Optional `Authorization: Bearer qx_…`.
+- `POST /api/export/token {"query":"<export query string>"}` → `{ token, expires_at, path }`: a read-only `qx_` token for that one query, reusable for 15 minutes; only its SHA-256 is kept (in memory).
 - `WS /api/stream?source=&backlog=&level=&q=` → frames `backlog`, `lines` (batched every 75 ms), `gap` (client fell behind)
 - `POST /ingest/ndjson` with `X-Quiet-Source`

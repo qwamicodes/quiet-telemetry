@@ -1,9 +1,12 @@
 //! TypeScript bindings for the wire types, generated with ts-rs into
 //! `web/src/gen/`. This test fails when they are stale.
 //!
-//! Regenerate: `QUIET_UPDATE_TS=1 cargo test bindings` (or `npm run gen:types` in web/).
+//! Regenerate: `QUIET_UPDATE_TS=1 cargo test bindings` (or `bun run gen:types` in web/).
 
 use crate::api::{Frame, Health, LinesResponse, SourcesResponse};
+use crate::search_api::{
+    ExportParams, ExportTokenRequest, ExportTokenResponse, SearchParams, SearchResponse,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use ts_rs::{Config, TS};
@@ -19,6 +22,11 @@ fn export_into(dir: &Path) {
     Health::export_all(&cfg).unwrap();
     SourcesResponse::export_all(&cfg).unwrap();
     LinesResponse::export_all(&cfg).unwrap();
+    SearchParams::export_all(&cfg).unwrap();
+    SearchResponse::export_all(&cfg).unwrap();
+    ExportParams::export_all(&cfg).unwrap();
+    ExportTokenRequest::export_all(&cfg).unwrap();
+    ExportTokenResponse::export_all(&cfg).unwrap();
 
     // A barrel so the UI imports from one place.
     let mut names: Vec<String> = std::fs::read_dir(dir)
@@ -76,6 +84,6 @@ fn ts_bindings_are_fresh() {
     assert!(
         stale.is_empty(),
         "web/src/gen is stale ({stale:?}). Run `QUIET_UPDATE_TS=1 cargo test bindings` in server/ \
-         (or `npm run gen:types` in web/) and commit the result."
+         (or `bun run gen:types` in web/) and commit the result."
     );
 }

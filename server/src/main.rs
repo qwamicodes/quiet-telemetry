@@ -1,9 +1,13 @@
 mod api;
 mod cli;
+mod export;
 mod hub;
 mod normalize;
 mod pipeline;
 mod receiver;
+mod retention;
+mod search;
+mod search_api;
 mod server;
 mod store;
 mod web;

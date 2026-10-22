@@ -1,12 +1,14 @@
 # syntax=docker/dockerfile:1
 # quiet: one static binary with the web UI embedded. Build: web → server → scratch.
 
-FROM node:22-alpine AS web
+FROM oven/bun:1.4.4-alpine AS web
 WORKDIR /src/web
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
+COPY web/package.json web/bun.lock ./
+# bun.lock carries the musl binaries (rolldown, lightningcss, tailwind oxide) too.
+RUN bun install --frozen-lockfile
 COPY web/ ./
-RUN npm run build
+# --bun: run vite/tsc on Bun's runtime (the image has no Node).
+RUN bun --bun run build
 
 FROM rust:1-alpine AS server
 RUN apk add --no-cache musl-dev
@@ -21,7 +23,9 @@ RUN touch src/main.rs src/web.rs && cargo build --release && strip target/releas
 
 FROM scratch
 COPY --from=server /src/server/target/release/quiet /quiet
-ENV QUIET_ADDR=0.0.0.0:7070
+ENV QUIET_ADDR=0.0.0.0:7070 QUIET_DATA_DIR=/data
+# The searchable window (SQLite). Mount a volume here or it is lost with the container.
+VOLUME ["/data"]
 EXPOSE 7070
 # Runs as root: reading /var/run/docker.sock needs it (or the docker group's gid).
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 CMD ["/quiet", "healthcheck"]

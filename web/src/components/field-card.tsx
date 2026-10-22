@@ -1,12 +1,12 @@
 import { ChevronDownIcon, ChevronUpIcon, CopyIcon, XIcon } from 'lucide-react'
 import { useState } from 'react'
-import { toast } from 'sonner'
 import { LevelBadge } from '@/components/level-badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { LogLine } from '@/gen'
 import { bytes, fmtTime } from '@/lib/format'
+import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
 type Tab = 'fields' | 'json' | 'raw'
