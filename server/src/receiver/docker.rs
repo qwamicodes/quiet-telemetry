@@ -120,6 +120,92 @@ impl Receiver for DockerReceiver {
     }
 }
 
+/// Find the Docker engine the way the `docker` CLI would, so `make dev` works
+/// on Docker Desktop, OrbStack, Colima, Rancher Desktop and rootless Docker
+/// without extra setup. Order: `DOCKER_HOST`, the well-known socket paths,
+/// then the current `docker context`.
+fn connect() -> anyhow::Result<(Docker, String)> {
+    if let Ok(host) = std::env::var("DOCKER_HOST") {
+        if !host.is_empty() {
+            return Ok((Docker::connect_with_defaults()?, host));
+        }
+    }
+    #[cfg(windows)]
+    {
+        Ok((
+            Docker::connect_with_local_defaults()?,
+            "npipe:////./pipe/docker_engine".into(),
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        let candidates = socket_candidates(
+            std::env::var("HOME").ok().as_deref(),
+            std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+        );
+        let mut found = candidates
+            .iter()
+            .find(|p| std::path::Path::new(p.as_str()).exists())
+            .cloned();
+        if found.is_none() {
+            found = context_socket();
+        }
+        match found {
+            Some(path) => {
+                let docker = Docker::connect_with_socket(
+                    &path,
+                    120,
+                    bollard::API_DEFAULT_VERSION,
+                )?;
+                Ok((docker, format!("unix://{path}")))
+            }
+            None => anyhow::bail!(
+                "no Docker socket found (tried {}). Is Docker running? Or set DOCKER_HOST, e.g. DOCKER_HOST=$(docker context inspect -f '{{{{.Endpoints.docker.Host}}}}')",
+                candidates.join(", ")
+            ),
+        }
+    }
+}
+
+/// Well-known engine sockets, most common first.
+#[cfg(not(windows))]
+fn socket_candidates(home: Option<&str>, xdg_runtime: Option<&str>) -> Vec<String> {
+    let mut v = vec!["/var/run/docker.sock".to_string()];
+    if let Some(h) = home {
+        for rel in [
+            ".docker/run/docker.sock",     // Docker Desktop (macOS)
+            ".docker/desktop/docker.sock", // Docker Desktop (Linux)
+            ".orbstack/run/docker.sock",   // OrbStack
+            ".colima/default/docker.sock", // Colima
+            ".colima/docker.sock",         // Colima (older)
+            ".rd/docker.sock",             // Rancher Desktop
+        ] {
+            v.push(format!("{h}/{rel}"));
+        }
+    }
+    if let Some(x) = xdg_runtime {
+        v.push(format!("{x}/docker.sock")); // rootless Docker
+    }
+    v
+}
+
+/// The socket of the current `docker context`, if the CLI is installed.
+#[cfg(not(windows))]
+fn context_socket() -> Option<String> {
+    let out = std::process::Command::new("docker")
+        .args([
+            "context",
+            "inspect",
+            "--format",
+            "{{.Endpoints.docker.Host}}",
+        ])
+        .output()
+        .ok()?;
+    let host = String::from_utf8(out.stdout).ok()?;
+    let path = host.trim().strip_prefix("unix://")?.to_string();
+    std::path::Path::new(&path).exists().then_some(path)
+}
+
 impl DockerReceiver {
     pub fn new(pipeline: Arc<Pipeline>) -> Self {
         DockerReceiver {
@@ -130,8 +216,12 @@ impl DockerReceiver {
     }
 
     async fn session(&self, shutdown: &CancellationToken) -> anyhow::Result<()> {
-        let docker = Docker::connect_with_local_defaults()?;
-        docker.ping().await?;
+        let (docker, endpoint) = connect()?;
+        docker
+            .ping()
+            .await
+            .map_err(|e| anyhow::anyhow!("{endpoint}: {e}"))?;
+        tracing::info!(%endpoint, "docker connected");
 
         // Subscribe to start events before listing so nothing slips between.
         let mut filters = HashMap::new();
@@ -318,6 +408,18 @@ impl LineSplitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn socket_candidates_cover_desktop_engines() {
+        let v = socket_candidates(Some("/Users/k"), Some("/run/user/501"));
+        assert_eq!(v[0], "/var/run/docker.sock");
+        assert!(v.contains(&"/Users/k/.docker/run/docker.sock".to_string()));
+        assert!(v.contains(&"/Users/k/.orbstack/run/docker.sock".to_string()));
+        assert!(v.contains(&"/Users/k/.colima/default/docker.sock".to_string()));
+        assert!(v.contains(&"/run/user/501/docker.sock".to_string()));
+        assert_eq!(socket_candidates(None, None), vec!["/var/run/docker.sock"]);
+    }
 
     fn labels(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
