@@ -24,3 +24,8 @@ window.matchMedia ??= ((query: string) => ({
   removeEventListener: () => {},
   dispatchEvent: () => false,
 })) as typeof window.matchMedia
+
+// Session bits (CSRF token, "session expired") are module state: reset per test.
+import { resetSession } from '@/lib/session'
+
+afterEach(() => resetSession())

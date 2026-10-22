@@ -2,6 +2,7 @@ import { queryOptions, useQueries, useQuery } from '@tanstack/react-query'
 import type { FlowNotFound, FlowResponse, FlowSummary } from '@/gen'
 import { ApiError, fetchJson } from '@/lib/api'
 import { flowNotFound, flowResponse, flowSummariesResponse } from '@/lib/schemas'
+import { apiFetch } from '@/lib/session'
 
 /** What the flow page opens: a correlation id (any key) or one line. */
 export type FlowTarget = { id: string } | { line: number }
@@ -12,7 +13,7 @@ export type FlowResult = ({ found: true } & FlowResponse) | ({ found: false } & 
 export async function fetchFlow(t: FlowTarget, signal?: AbortSignal): Promise<FlowResult> {
   const qs = 'id' in t ? `id=${encodeURIComponent(t.id)}` : `line=${t.line}`
   const url = `/api/flow?${qs}`
-  const res = await fetch(url, { signal })
+  const res = await apiFetch(url, { signal })
   const body: unknown = await res.json().catch(() => null)
   if (res.ok) return { found: true, ...flowResponse.parse(body) }
   if (res.status === 404) {

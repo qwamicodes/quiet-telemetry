@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Flow, FlowNotFound, FlowResponse, FlowSummary, Health, LogLine, SourceInfo } from '@/gen'
 import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
+import { seedAuth } from '@/test/auth'
 
 const T = 1_760_000_000_000
 const sources: SourceInfo[] = [
@@ -257,9 +258,11 @@ afterEach(() => {
 })
 
 function renderAt(path: string) {
-  const router = makeRouter(createMemoryHistory({ initialEntries: [path] }))
+  const client = makeQueryClient()
+  seedAuth(client)
+  const router = makeRouter(createMemoryHistory({ initialEntries: [path] }), client)
   render(
-    <Providers client={makeQueryClient()}>
+    <Providers client={client}>
       <RouterProvider router={router} />
     </Providers>,
   )

@@ -6,6 +6,7 @@ import type { CreatedIngestToken, Health, IngestToken, SourceInfo } from '@/gen'
 import { firstArrival, maskToken, snippets } from '@/lib/connect'
 import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
+import { seedAuth } from '@/test/auth'
 
 const SECRET = `qi_${'8d1f0c2e9b7a44e5a1c3f2b6d90e'.padEnd(48, '0')}1a77`
 const health: Health = {
@@ -77,7 +78,8 @@ afterEach(() => {
 
 function renderAt(path: string) {
   const client = makeQueryClient()
-  const router = makeRouter(createMemoryHistory({ initialEntries: [path] }))
+  seedAuth(client)
+  const router = makeRouter(createMemoryHistory({ initialEntries: [path] }), client)
   render(
     <Providers client={client}>
       <RouterProvider router={router} />

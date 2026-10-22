@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Frame, LogLine } from '@/gen'
+import { markSessionLost } from '@/lib/session'
 
 export type ConnState = 'connecting' | 'live' | 'reconnecting'
 
@@ -105,7 +106,11 @@ export function useStream(o: StreamOptions) {
         pending.push(f)
         if (!raf) raf = requestAnimationFrame(drain)
       }
-      sock.onclose = () => {
+      sock.onclose = (ev?: { code?: number }) => {
+        // 4401: the session behind this stream ended (signed out elsewhere,
+        // removed). Show "session expired"; keep retrying so the stream
+        // resumes once the user signs in again.
+        if (ev?.code === 4401) markSessionLost()
         if (disposed || ws !== sock) return
         ws = null
         tries++
