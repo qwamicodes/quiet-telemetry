@@ -26,6 +26,11 @@ missing_parent: CorrId | null,
  */
 partial: boolean, 
 /**
+ * Some nodes have a parent span: the flow reads as a span tree
+ * (`parent` / `depth` on nodes, `child` edges).
+ */
+span_tree: boolean, 
+/**
  * Stable for one flow whichever of its ids opened it: the first line's id.
  */
 key: string, title: string, status: FlowStatus, 

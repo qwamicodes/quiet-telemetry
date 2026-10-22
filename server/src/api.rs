@@ -8,6 +8,7 @@
 //! GET  /api/stream?source=api&backlog=500&level=warn&q=text   (WebSocket)
 //! GET  /api/search, /api/export, POST /api/export/token       (see `search_api.rs`)
 //! GET  /api/flow, POST /api/flow-summaries                     (see `flow_api.rs`)
+//! GET/POST /api/ingest-tokens, DELETE /api/ingest-tokens/:id   (see `tokens_api.rs`)
 //!
 //! Ingest endpoints belong to their receivers (see `receiver/`).
 
@@ -15,8 +16,9 @@ use crate::export::ExportTokens;
 use crate::hub::{Line, SourceInfo, SourceKind};
 use crate::normalize::LogLine;
 use crate::pipeline::Pipeline;
-use crate::receiver::DockerStatus;
+use crate::receiver::{DockerStatus, IngestConfig, IngestInfo};
 use crate::store::{LineFilter, Query as StoreQuery};
+use crate::tokens::IngestTokens;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -45,6 +47,10 @@ pub struct AppState {
     pub retention_ms: i64,
     /// Read-only `qx_` export tokens (hashed, 15 min, reusable).
     pub tokens: Arc<ExportTokens>,
+    /// Send-only `qi_` ingest tokens (hashed, persisted).
+    pub ingest_tokens: Arc<IngestTokens>,
+    /// How HTTP ingest is gated and limited (shown on the connect screens).
+    pub ingest: IngestConfig,
 }
 
 impl AppState {
@@ -57,7 +63,15 @@ impl AppState {
             shutdown: CancellationToken::new(),
             retention_ms: 24 * 3_600_000,
             tokens: Arc::new(ExportTokens::default()),
+            ingest_tokens: Arc::new(IngestTokens::memory()),
+            ingest: IngestConfig::default(),
         }
+    }
+
+    pub fn with_ingest(mut self, tokens: Arc<IngestTokens>, config: IngestConfig) -> Self {
+        self.ingest_tokens = tokens;
+        self.ingest = config;
+        self
     }
 
     pub fn with_retention(mut self, ms: i64) -> Self {
@@ -76,6 +90,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stream", get(stream))
         .merge(crate::search_api::routes())
         .merge(crate::flow_api::routes())
+        .merge(crate::tokens_api::routes())
         .with_state(state)
 }
 
@@ -113,6 +128,8 @@ pub struct Health {
     pub stored_lines: u64,
     /// Oldest stored event time, unix ms.
     pub oldest: Option<i64>,
+    /// HTTP ingest: auth mode, limits, whether remote shippers can reach it.
+    pub ingest: IngestInfo,
 }
 
 async fn health(State(s): State<AppState>) -> Json<Health> {
@@ -127,6 +144,7 @@ async fn health(State(s): State<AppState>) -> Json<Health> {
         disk_bytes: usage.bytes,
         stored_lines: usage.lines,
         oldest: usage.oldest,
+        ingest: s.ingest.info(s.ingest_tokens.active()),
     })
 }
 
@@ -342,7 +360,7 @@ mod tests {
     use super::*;
     use crate::hub::Hub;
     use crate::pipeline::RawLine;
-    use crate::receiver::{NdjsonReceiver, Receiver};
+    use crate::receiver::{HttpReceiver, Receiver};
     use crate::store::MemoryStore;
     use axum::body::Body;
     use axum::http::Request;
@@ -355,7 +373,12 @@ mod tests {
     }
 
     fn app(st: &AppState) -> Router {
-        router(st.clone()).merge(NdjsonReceiver::new(st.pipeline.clone()).routes())
+        let open = IngestConfig {
+            auth: crate::receiver::IngestAuth::Open,
+            ..Default::default()
+        };
+        router(st.clone())
+            .merge(HttpReceiver::new(st.pipeline.clone(), st.ingest_tokens.clone(), open).routes())
     }
 
     async fn json_of(res: Response) -> serde_json::Value {

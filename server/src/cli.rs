@@ -1,6 +1,7 @@
 //! Command line. `quiet` with no subcommand runs the server, so the old
 //! env-only setup (`QUIET_ADDR=… quiet`) keeps working.
 
+use crate::receiver::IngestAuth;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -32,6 +33,8 @@ pub enum Command {
     Server(ServerArgs),
     /// Ship this host's container logs to a quiet server (v0.2).
     Agent(AgentArgs),
+    /// Send stdin to a quiet server, one line per row: `my-app | quiet pipe --name my-app`.
+    Pipe(PipeArgs),
     /// Exit 0 when the local server answers /ready (for container healthchecks).
     #[command(hide = true)]
     Healthcheck(HealthcheckArgs),
@@ -87,6 +90,38 @@ pub struct ServerArgs {
     /// Hard limit for a graceful stop after the drain (ms).
     #[arg(long, env = "QUIET_SHUTDOWN_TIMEOUT_MS", default_value_t = 10_000)]
     pub shutdown_timeout_ms: u64,
+
+    /// HTTP ingest auth: `token` (every request needs a `qi_` ingest token)
+    /// or `open` (tokenless requests accepted; for local development).
+    #[arg(long, env = "QUIET_INGEST_AUTH", value_enum, default_value_t = IngestAuth::Token)]
+    pub ingest_auth: IngestAuth,
+
+    /// Largest ingest body, after decompression (e.g. `16MB`, `512KB`).
+    #[arg(long, env = "QUIET_INGEST_MAX_BODY", default_value = "16MB", value_parser = parse_body_size)]
+    pub ingest_max_body: u64,
+
+    /// Lines per second per ingest token, bursts of 5 s worth (0 = unlimited).
+    #[arg(long, env = "QUIET_INGEST_RATE", default_value_t = 20_000)]
+    pub ingest_rate: u32,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct PipeArgs {
+    /// Source name the lines land in.
+    #[arg(long, short = 'n', env = "QUIET_SOURCE")]
+    pub name: String,
+
+    /// The quiet server (plain http; use curl or a shipper for https).
+    #[arg(long, env = "QUIET_URL", default_value = "http://127.0.0.1:7070")]
+    pub url: String,
+
+    /// An ingest token (`qi_…`).
+    #[arg(long, env = "QUIET_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
+
+    /// Don't echo stdin to stdout.
+    #[arg(long, short = 's')]
+    pub silent: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -125,8 +160,28 @@ fn parse_retention(v: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs(secs))
 }
 
-/// `5GB`, `500MB`, `1.5GiB`, `1048576` → bytes (KB/MB/GB/TB are powers of 1000).
+/// `5GB`, `500MB`, `1.5GiB`, `1048576` → bytes, at least 10MB (the disk cap).
 fn parse_bytes(v: &str) -> Result<u64, String> {
+    let bytes = bytes_of(v)?;
+    if bytes < 10_000_000 {
+        return Err(format!("`{v}`: the disk cap must be at least 10MB"));
+    }
+    Ok(bytes)
+}
+
+/// An ingest body cap: 1KB … 1GB.
+fn parse_body_size(v: &str) -> Result<u64, String> {
+    let bytes = bytes_of(v)?;
+    if !(1_000..=1_000_000_000).contains(&bytes) {
+        return Err(format!(
+            "`{v}`: the ingest body cap must be between 1KB and 1GB"
+        ));
+    }
+    Ok(bytes)
+}
+
+/// `5GB`, `500MB`, `1.5GiB`, `1048576` → bytes (KB/MB/GB/TB are powers of 1000).
+fn bytes_of(v: &str) -> Result<u64, String> {
     let v = v.trim();
     let split = v
         .find(|c: char| !(c.is_ascii_digit() || c == '.'))
@@ -145,11 +200,7 @@ fn parse_bytes(v: &str) -> Result<u64, String> {
         "tib" => 1024f64.powi(4),
         u => return Err(format!("`{v}`: unknown unit `{u}`")),
     };
-    let bytes = (n * mult) as u64;
-    if bytes < 10_000_000 {
-        return Err(format!("`{v}`: the disk cap must be at least 10MB"));
-    }
-    Ok(bytes)
+    Ok((n * mult) as u64)
 }
 
 #[cfg(test)]
@@ -206,6 +257,36 @@ mod tests {
         assert!(parse_retention("8d").is_err());
         assert!(parse_bytes("5XB").is_err());
         assert!(parse_bytes("1MB").is_err());
+    }
+
+    #[test]
+    fn ingest_flags_and_pipe() {
+        let cli = Cli::try_parse_from(["quiet"]).unwrap();
+        assert_eq!(cli.server.ingest_auth, IngestAuth::Token);
+        assert_eq!(cli.server.ingest_max_body, 16_000_000);
+        assert_eq!(cli.server.ingest_rate, 20_000);
+        let cli = Cli::try_parse_from([
+            "quiet",
+            "--ingest-auth",
+            "open",
+            "--ingest-max-body",
+            "512KB",
+            "--ingest-rate",
+            "0",
+        ])
+        .unwrap();
+        assert_eq!(cli.server.ingest_auth, IngestAuth::Open);
+        assert_eq!(cli.server.ingest_max_body, 512_000);
+        assert!(parse_body_size("10").is_err());
+        let cli = Cli::try_parse_from(["quiet", "pipe", "--name", "api", "-s"]).unwrap();
+        match cli.command {
+            Some(Command::Pipe(p)) => {
+                assert_eq!(p.name, "api");
+                assert!(p.silent);
+                assert_eq!(p.url, "http://127.0.0.1:7070");
+            }
+            other => panic!("expected pipe, got {other:?}"),
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::flow_api::{
 use crate::search_api::{
     ExportParams, ExportTokenRequest, ExportTokenResponse, SearchParams, SearchResponse,
 };
+use crate::tokens::{CreateIngestToken, CreatedIngestToken, IngestToken, IngestTokensResponse};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use ts_rs::{Config, TS};
@@ -35,6 +36,10 @@ fn export_into(dir: &Path) {
     FlowNotFound::export_all(&cfg).unwrap();
     FlowSummariesRequest::export_all(&cfg).unwrap();
     FlowSummariesResponse::export_all(&cfg).unwrap();
+    IngestToken::export_all(&cfg).unwrap();
+    IngestTokensResponse::export_all(&cfg).unwrap();
+    CreateIngestToken::export_all(&cfg).unwrap();
+    CreatedIngestToken::export_all(&cfg).unwrap();
 
     // A barrel so the UI imports from one place.
     let mut names: Vec<String> = std::fs::read_dir(dir)

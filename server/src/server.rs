@@ -8,9 +8,10 @@ use crate::api::{self, AppState};
 use crate::cli::{ServerArgs, StoreKind};
 use crate::hub::Hub;
 use crate::pipeline::Pipeline;
-use crate::receiver::{DockerReceiver, DockerStatus, NdjsonReceiver, Receiver};
+use crate::receiver::{DockerReceiver, DockerStatus, HttpReceiver, IngestConfig, Receiver};
 use crate::retention::{self, Retention};
 use crate::store::{MemoryStore, SqliteOptions, SqliteStore, Store};
+use crate::tokens::IngestTokens;
 use crate::web;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -32,8 +33,25 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let pipeline = Pipeline::new(store.clone(), Hub::new());
     pipeline.restore().await?;
 
-    let mut receivers: Vec<Arc<dyn Receiver>> =
-        vec![Arc::new(NdjsonReceiver::new(pipeline.clone()))];
+    // Ingest tokens live next to the lines (same quiet.db), or in memory.
+    let tokens_path = (args.store == StoreKind::Sqlite).then(|| args.data_dir.join("quiet.db"));
+    let rate = args.ingest_rate;
+    let ingest_tokens = Arc::new(
+        tokio::task::spawn_blocking(move || IngestTokens::open(tokens_path.as_deref(), rate))
+            .await??,
+    );
+    let ingest = IngestConfig {
+        auth: args.ingest_auth,
+        max_body: args.ingest_max_body,
+        rate: args.ingest_rate,
+        loopback: args.addr.ip().is_loopback(),
+    };
+
+    let mut receivers: Vec<Arc<dyn Receiver>> = vec![Arc::new(HttpReceiver::new(
+        pipeline.clone(),
+        ingest_tokens.clone(),
+        ingest,
+    ))];
     let docker_status = if args.docker {
         let docker = Arc::new(DockerReceiver::new(pipeline.clone()));
         let status = docker.status.clone();
@@ -44,7 +62,9 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     };
 
     let retention_ms = args.retention.as_millis() as i64;
-    let state = AppState::new(pipeline, docker_status).with_retention(retention_ms);
+    let state = AppState::new(pipeline, docker_status)
+        .with_retention(retention_ms)
+        .with_ingest(ingest_tokens.clone(), ingest);
     let shutdown = state.shutdown.clone();
     let ready = state.ready.clone();
 
@@ -79,8 +99,16 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         store = store.kind(),
         retention_h = args.retention.as_secs() / 3600,
         max_disk_mb = args.max_disk / 1_000_000,
+        ingest_auth = ?args.ingest_auth,
+        ingest_tokens = ingest_tokens.active(),
         "quiet listening"
     );
+    if ingest.loopback {
+        tracing::info!("listening on loopback only: shippers on other machines need QUIET_ADDR=0.0.0.0:7070 (ingest stays gated by qi_ tokens)");
+    }
+    if args.ingest_auth == crate::receiver::IngestAuth::Open {
+        tracing::warn!("--ingest-auth open: HTTP ingest accepts lines without a token");
+    }
 
     let drain = Duration::from_millis(args.drain_ms);
     let hard = Duration::from_millis(args.shutdown_timeout_ms);
@@ -111,6 +139,9 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     }
     if tokio::time::timeout(hard, tasks.wait()).await.is_err() {
         tracing::warn!("receivers still running after timeout; exiting");
+    }
+    if let Err(e) = ingest_tokens.flush() {
+        tracing::warn!(error = %e, "saving ingest token last-used times failed");
     }
     if let Err(e) = store.flush().await {
         tracing::warn!(error = %e, "final flush failed");

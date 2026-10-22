@@ -30,4 +30,16 @@ summary: string, error: boolean, warn: boolean,
 /**
  * `attempt` / `retry_attempt` when the line carries one.
  */
-attempt: number | null, children: Array<ChildStep>, };
+attempt: number | null, children: Array<ChildStep>, 
+/**
+ * The OTLP span this line is (or was logged in), hex.
+ */
+span_id: string | null, 
+/**
+ * The node of the parent span, when the flow has a span tree.
+ */
+parent: number | null, 
+/**
+ * Depth in the span tree (0 = a root, or no span tree).
+ */
+depth: number, };
