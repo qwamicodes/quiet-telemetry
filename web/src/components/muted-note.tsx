@@ -32,8 +32,8 @@ export function MutedNote({
       <EyeOffIcon className="size-3.5" />
       {included ? (
         <span>
-          <span className="text-foreground">{count.toLocaleString()}</span> muted{' '}
-          {count === 1 ? 'line' : 'lines'} included
+          <span className="text-foreground">{count.toLocaleString()}</span> muted {count === 1 ? 'line' : 'lines'}{' '}
+          included
         </span>
       ) : (
         <span>

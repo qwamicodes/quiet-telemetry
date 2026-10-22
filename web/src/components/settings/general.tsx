@@ -206,8 +206,8 @@ function GeneralForm({
           hint={
             <>
               Lines hidden by a source’s muted-lines rules show up in search results, dimmed and tagged{' '}
-              <span className="border px-1 font-mono text-[10px]">muted</span>. Sources can say otherwise in their
-              Muted lines settings. The stream always hides them.
+              <span className="border px-1 font-mono text-[10px]">muted</span>. Sources can say otherwise in their Muted
+              lines settings. The stream always hides them.
             </>
           }
           under={

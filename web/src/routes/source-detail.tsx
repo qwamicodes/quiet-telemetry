@@ -850,7 +850,11 @@ export function SourceSettingsForm({
                   <SelectTrigger aria-label="Include muted lines in search" size="sm" className="w-44">
                     <SelectValue>
                       {(v: string) =>
-                        v === 'inherit' ? `Inherit · ${instanceIncludesMuted ? 'on' : 'off'}` : v === 'on' ? 'On' : 'Off'
+                        v === 'inherit'
+                          ? `Inherit · ${instanceIncludesMuted ? 'on' : 'off'}`
+                          : v === 'on'
+                            ? 'On'
+                            : 'Off'
                       }
                     </SelectValue>
                   </SelectTrigger>

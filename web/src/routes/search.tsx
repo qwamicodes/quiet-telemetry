@@ -70,8 +70,7 @@ export function SearchPage() {
   // includes them in search, or `muted=include|hide` overrides it for this
   // search. Included ones are shown dimmed and tagged; all are counted.
   const { visible: lines, muted, hidden, mutedIds, included } = useSearchMuted(found, search.muted)
-  const toggleMuted = () =>
-    navigate({ search: (s) => ({ ...s, muted: included ? 'hide' : 'include' }), replace: true })
+  const toggleMuted = () => navigate({ search: (s) => ({ ...s, muted: included ? 'hide' : 'include' }), replace: true })
   // Exports follow what this search shows.
   const exportMuted: MutedMode = search.muted ?? 'auto'
   // Group by flow: one summary per display id stitches groups across ids.
