@@ -1,17 +1,18 @@
 import { Link } from '@tanstack/react-router'
 import { ArrowRightIcon, InfoIcon } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
+import { draftFrom, SourceGrouping, validLabel } from '@/components/settings/grouping'
 import { PageHeader, ReadOnlyNote, SettingRow } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import type { GeneralSettings, StreamDirection, TimestampFormat } from '@/gen'
+import type { GeneralSettings, GroupingSettings, StreamDirection, TimestampFormat } from '@/gen'
 import { useHealth } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { fmtRowTime, fmtTime, publicHost, validTimeZone } from '@/lib/format'
-import { useSaveGeneral, useSettings } from '@/lib/settings-api'
+import { useSaveGeneral, useSaveGrouping, useSettings } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
 
 const ZONES: string[] = (() => {
@@ -35,18 +36,38 @@ export function validPublicUrl(u: string | null): boolean {
 
 /** Settings → General (board v0.1-07.10). */
 export function General() {
-  const saved = useSettings().data?.general
+  const all = useSettings().data
   const health = useHealth().data
-  if (!saved) return <p className="text-muted-foreground">Loading…</p>
+  if (!all) return <p className="text-muted-foreground">Loading…</p>
   // Remount the form when the saved values change (after a save or another owner's edit).
-  return <GeneralForm key={JSON.stringify(saved)} saved={saved} version={health?.version} />
+  return (
+    <GeneralForm
+      key={JSON.stringify([all.general, all.grouping])}
+      saved={all.general}
+      grouping={all.grouping}
+      version={health?.version}
+    />
+  )
 }
 
-function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: string }) {
+function GeneralForm({
+  saved,
+  grouping,
+  version,
+}: {
+  saved: GeneralSettings
+  grouping: GroupingSettings
+  version?: string
+}) {
   const owner = isOwner(useMe())
   const save = useSaveGeneral()
+  const saveGrouping = useSaveGrouping()
   const [draft, setDraft] = useState(saved)
-  const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
+  const [groupDraft, setGroupDraft] = useState(draftFrom(grouping))
+  const groupDirty = JSON.stringify(groupDraft) !== JSON.stringify(draftFrom(grouping))
+  const groupOk = groupDraft.mode !== 'label' || validLabel(groupDraft.label)
+  const generalDirty = JSON.stringify(draft) !== JSON.stringify(saved)
+  const dirty = generalDirty || groupDirty
   const nameOk = draft.instance_name.trim().length > 0 && draft.instance_name.trim().length <= 40
   const tzOk = validTimeZone(draft.timezone)
   const urlOk = validPublicUrl(draft.public_url)
@@ -54,13 +75,16 @@ function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: str
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!nameOk || !tzOk || !urlOk) return
+    if (!nameOk || !tzOk || !urlOk || !groupOk) return
     try {
-      await save.mutateAsync({
-        ...draft,
-        instance_name: draft.instance_name.trim(),
-        public_url: draft.public_url?.trim() || null,
-      })
+      if (generalDirty)
+        await save.mutateAsync({
+          ...draft,
+          instance_name: draft.instance_name.trim(),
+          public_url: draft.public_url?.trim() || null,
+        })
+      if (groupDirty && !grouping.locked)
+        await saveGrouping.mutateAsync({ ...groupDraft, label: groupDraft.label.trim() })
       toast.success('Settings saved', { description: 'Everyone sees the new values on their next page load.' })
     } catch (err) {
       toast.error('Could not save', { description: (err as Error).message })
@@ -191,6 +215,7 @@ function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: str
             </ToggleGroupItem>
           </ToggleGroup>
         </SettingRow>
+        <SourceGrouping saved={grouping} draft={groupDraft} onChange={setGroupDraft} disabled={!owner} />
       </fieldset>
       <div className="mt-5 flex items-center gap-2 border border-dashed px-4 py-3 text-muted-foreground text-xs">
         <InfoIcon className="size-3.5" />
@@ -201,10 +226,21 @@ function GeneralForm({ saved, version }: { saved: GeneralSettings; version?: str
       </div>
       {owner && (
         <div className="mt-5 flex justify-end gap-2">
-          <Button type="button" variant="ghost" disabled={!dirty} onClick={() => setDraft(saved)}>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={!dirty}
+            onClick={() => {
+              setDraft(saved)
+              setGroupDraft(draftFrom(grouping))
+            }}
+          >
             Discard
           </Button>
-          <Button type="submit" disabled={!dirty || !nameOk || !tzOk || !urlOk || save.isPending}>
+          <Button
+            type="submit"
+            disabled={!dirty || !nameOk || !tzOk || !urlOk || !groupOk || save.isPending || saveGrouping.isPending}
+          >
             Save changes
           </Button>
         </div>

@@ -62,6 +62,7 @@ const settings: SettingsResponse = {
     flag_max_disk: 5e9,
     at_cap: 'drop_oldest_hour',
   },
+  grouping: { mode: 'auto', label: 'quiet.group', origin: 'default', locked: false },
   flow_ids: { order: ['request_id', 'job_id', 'trace_id', 'correlation_id'], match_by: 'value' },
   sources: {},
 }
@@ -228,6 +229,72 @@ describe('sources list (06.1)', () => {
     expect(screen.getByRole('region', { name: 'Ingest' })).toHaveTextContent('traefik')
     await user.click(within(group).getByRole('button', { expanded: true }))
     expect(within(group).queryByRole('link', { name: /legivent-api/ })).not.toBeInTheDocument()
+    // Collapse all from the SOURCES heading, then expand all again.
+    await user.click(screen.getAllByRole('button', { name: 'Collapse all groups' })[0])
+    expect(screen.getByRole('region', { name: 'Ingest' })).not.toHaveTextContent('traefik')
+    await user.click(screen.getAllByRole('button', { name: 'Expand all groups' })[0])
+    expect(screen.getByRole('region', { name: 'Ingest' })).toHaveTextContent('traefik')
+  })
+
+  it('a collapsed group header shows member dots; group actions search the group and ignore it', async () => {
+    const user = userEvent.setup()
+    const router = renderAt('/sources')
+    const table = await screen.findByRole('table', {}, { timeout: 5000 })
+    const apps = within(table).getByRole('button', { name: /^legivent-os-local-apps ·/ })
+    await user.click(apps)
+    expect(within(apps).getAllByTestId('group-dots')).toHaveLength(1)
+    expect(within(table).getByText('compose')).toBeInTheDocument()
+    expect(within(table).getByText('push')).toBeInTheDocument()
+
+    await user.click(within(table).getByRole('button', { name: 'legivent-os-local-apps actions' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Ignore all 2 sources' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Ignore 2 sources' }))
+    await waitFor(() => expect(calls.filter((c) => c.url.startsWith('/api/settings/sources/'))).toHaveLength(2))
+    expect(calls.find((c) => c.url === '/api/settings/sources/order-worker')?.body).toMatchObject({
+      paused: true,
+      hidden: true,
+    })
+
+    await user.click(within(table).getByRole('button', { name: 'Search legivent-os-local-apps · 24h' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/search'))
+    expect(router.state.location.search).toMatchObject({ source: 'legivent-api,order-worker', range: '24h' })
+  })
+
+  it('?group= shows one group with a note and Show all', async () => {
+    const user = userEvent.setup()
+    renderAt('/sources?group=compose%3Alegivent-os-local-apps')
+    const table = await screen.findByRole('table', {}, { timeout: 5000 })
+    expect(within(table).getByText('legivent-api')).toBeInTheDocument()
+    expect(within(table).queryByText('redis')).not.toBeInTheDocument()
+    expect(screen.getByText(/2 of 4 sources · hiding/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Show all/ }))
+    expect(await within(table).findByText('redis')).toBeInTheDocument()
+  })
+})
+
+describe('stream source picker (03.8)', () => {
+  it('lists sources by group, folds with the arrow keys and streams one source on enter', async () => {
+    vi.stubGlobal(
+      'WebSocket',
+      class {
+        onopen = null
+        onmessage = null
+        onclose = null
+        close() {}
+      },
+    )
+    const user = userEvent.setup()
+    const router = renderAt('/?source=legivent-api')
+    await user.click(await screen.findByRole('button', { name: 'Pick a source' }, { timeout: 5000 }))
+    const list = await screen.findByRole('listbox', { name: 'Sources' })
+    expect(within(list).getByRole('button', { name: /^legivent-os-local-apps ·/ })).toBeInTheDocument()
+    expect(within(list).getByRole('option', { name: /legivent-api/ })).toHaveAttribute('aria-selected', 'true')
+    const filter = screen.getByRole('textbox', { name: 'Filter sources' })
+    await user.type(filter, 'order')
+    expect(within(list).queryByRole('option', { name: /redis/ })).not.toBeInTheDocument()
+    await user.keyboard('{ArrowDown}{Enter}')
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ source: 'order-worker' }))
   })
 })
 
@@ -273,5 +340,19 @@ describe('source detail (06.2 / 06.4 / 06.5)', () => {
     await user.click(screen.getByRole('button', { name: /View all 6/ }))
     expect(await screen.findByRole('tab', { name: 'Malformed 6', selected: true })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /paystack transfer/ })).toHaveAttribute('href', '/line/41')
+  })
+})
+
+describe('⌘K with groups (03.9)', () => {
+  it('shows sources under their group and a Groups section that opens Sources filtered', async () => {
+    const user = userEvent.setup()
+    const router = renderAt('/sources')
+    await screen.findByRole('table', {}, { timeout: 5000 })
+    await user.click(screen.getByRole('button', { name: /Jump to/ }))
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByRole('combobox'), 'worker')
+    expect(await within(dialog).findByText('Groups')).toBeInTheDocument()
+    await user.click(within(dialog).getByText('show on Sources'))
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ group: 'compose:legivent-os-local-apps' }))
   })
 })

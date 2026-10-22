@@ -15,6 +15,7 @@
 //! the pipeline reads `paused` per batch, and the correlation-id policy is
 //! re-installed for `normalize` (see `idpolicy.rs`).
 
+use crate::grouping::{self, GroupMode, Grouping, DEFAULT_GROUP_LABEL};
 use crate::idpolicy::{self, IdPolicy};
 use crate::normalize::{IdKey, Level};
 use rusqlite::{params, Connection};
@@ -231,6 +232,7 @@ pub struct SourceSettings {
 pub struct SettingsResponse {
     pub general: GeneralSettings,
     pub storage: StorageSettings,
+    pub grouping: GroupingSettings,
     pub flow_ids: FlowIdSettings,
     pub sources: BTreeMap<String, SourceSettings>,
 }
@@ -238,10 +240,15 @@ pub struct SettingsResponse {
 // ---- store ---------------------------------------------------------------------------
 
 /// The flag/env values, the layer under saved settings.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Defaults {
     pub retention_ms: i64,
     pub max_disk: u64,
+    /// `--group-by` / `QUIET_GROUP_BY`. When set it wins over the UI and
+    /// locks the Source grouping control (unlike storage, where the UI wins).
+    pub group_by: Option<GroupMode>,
+    /// `--group-label` / `QUIET_GROUP_LABEL` (also locks the control).
+    pub group_label: Option<String>,
 }
 
 impl Default for Defaults {
@@ -249,8 +256,29 @@ impl Default for Defaults {
         Defaults {
             retention_ms: DEFAULT_RETENTION_MS,
             max_disk: DEFAULT_MAX_DISK,
+            group_by: None,
+            group_label: None,
         }
     }
+}
+
+/// Settings → General → Source grouping, as saved (`PUT /api/settings/grouping`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct UpdateGrouping {
+    pub mode: GroupMode,
+    /// The Docker label read in `label` mode (kept, unused, in the others).
+    pub label: String,
+}
+
+/// The source grouping in effect and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct GroupingSettings {
+    pub mode: GroupMode,
+    pub label: String,
+    /// `flag` when QUIET_GROUP_BY / QUIET_GROUP_LABEL is set (then `locked`).
+    pub origin: Origin,
+    /// Set in the server's environment: the UI shows it read-only.
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -263,6 +291,7 @@ struct StorageOverride {
 struct State {
     general: GeneralSettings,
     storage: StorageOverride,
+    grouping: Option<UpdateGrouping>,
     flow_ids: FlowIdSettings,
     sources: BTreeMap<String, SourceSettings>,
 }
@@ -338,6 +367,7 @@ impl Settings {
                 let ok = match k.as_str() {
                     "general" => serde_json::from_str(&v).map(|x| state.general = x),
                     "storage" => serde_json::from_str(&v).map(|x| state.storage = x),
+                    "grouping" => serde_json::from_str(&v).map(|x| state.grouping = Some(x)),
                     "flow_ids" => serde_json::from_str(&v).map(|x| state.flow_ids = x),
                     k => match k.strip_prefix("source:") {
                         Some(name) => serde_json::from_str(&v).map(|x| {
@@ -385,6 +415,11 @@ impl Settings {
         if !self.publish {
             return;
         }
+        let g = self.grouping();
+        grouping::install(Grouping {
+            mode: g.mode,
+            label: g.label,
+        });
         let st = self.state.read().unwrap();
         idpolicy::install(IdPolicy {
             global: st.flow_ids.order.clone(),
@@ -403,7 +438,7 @@ impl Settings {
     }
 
     pub fn storage(&self) -> StorageSettings {
-        let d = *self.defaults.read().unwrap();
+        let d = self.defaults.read().unwrap().clone();
         let o = self.state.read().unwrap().storage.clone();
         let flag_origin = |is_default: bool| {
             if is_default {
@@ -480,6 +515,7 @@ impl Settings {
         SettingsResponse {
             general: self.general(),
             storage: self.storage(),
+            grouping: self.grouping(),
             flow_ids: self.flow_ids(),
             sources: self.sources(),
         }
@@ -555,6 +591,70 @@ impl Settings {
         self.state.write().unwrap().storage = o;
         self.changed.notify_one();
         Ok(self.storage())
+    }
+
+    pub fn grouping(&self) -> GroupingSettings {
+        let d = self.defaults.read().unwrap().clone();
+        let saved = self.state.read().unwrap().grouping.clone();
+        let locked = d.group_by.is_some() || d.group_label.is_some();
+        let (mode, label, origin) = match (locked, saved) {
+            (false, Some(u)) => (u.mode, u.label, Origin::Setting),
+            (false, None) => (
+                GroupMode::Auto,
+                DEFAULT_GROUP_LABEL.to_string(),
+                Origin::Default,
+            ),
+            (true, saved) => {
+                let base = saved.unwrap_or(UpdateGrouping {
+                    mode: GroupMode::Auto,
+                    label: DEFAULT_GROUP_LABEL.into(),
+                });
+                (
+                    d.group_by.unwrap_or(base.mode),
+                    d.group_label.unwrap_or(base.label),
+                    Origin::Flag,
+                )
+            }
+        };
+        GroupingSettings {
+            mode,
+            label,
+            origin,
+            locked,
+        }
+    }
+
+    /// Save the source grouping, or `None` for the default (auto).
+    /// Applies at once: `/api/sources` regroups on its next read. Refused
+    /// while QUIET_GROUP_BY / QUIET_GROUP_LABEL is set.
+    pub fn put_grouping(
+        &self,
+        u: Option<UpdateGrouping>,
+        by: Option<i64>,
+    ) -> Result<GroupingSettings, SettingsError> {
+        if self.grouping().locked {
+            return invalid("grouping: set by QUIET_GROUP_BY / QUIET_GROUP_LABEL on the server");
+        }
+        let u = match u {
+            Some(mut u) => {
+                u.label = u.label.trim().to_string();
+                if u.label.is_empty() && u.mode != GroupMode::Label {
+                    u.label = DEFAULT_GROUP_LABEL.into();
+                }
+                if !grouping::valid_label(&u.label) {
+                    return invalid(
+                        "label: a Docker label key (letters, digits, . - _ /), up to 128 characters",
+                    );
+                }
+                Some(u)
+            }
+            None => None,
+        };
+        let value = u.as_ref().map(serde_json::to_string).transpose()?;
+        self.save("grouping", value, by)?;
+        self.state.write().unwrap().grouping = u;
+        self.install_policy();
+        Ok(self.grouping())
     }
 
     pub fn put_flow_ids(
@@ -705,13 +805,62 @@ mod tests {
     }
 
     #[test]
+    fn grouping_saves_and_env_wins_and_locks() {
+        let path = tmp();
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        let g = s.grouping();
+        assert_eq!(
+            (g.mode, g.label.as_str(), g.origin, g.locked),
+            (GroupMode::Auto, "quiet.group", Origin::Default, false)
+        );
+        let bad = |label: &str| UpdateGrouping {
+            mode: GroupMode::Label,
+            label: label.into(),
+        };
+        assert!(s.put_grouping(Some(bad("a b")), None).is_err());
+        assert!(s.put_grouping(Some(bad(" ")), None).is_err());
+        let g = s
+            .put_grouping(
+                Some(UpdateGrouping {
+                    mode: GroupMode::Off,
+                    label: String::new(),
+                }),
+                Some(1),
+            )
+            .unwrap();
+        assert_eq!(
+            (g.mode, g.label.as_str(), g.origin),
+            (GroupMode::Off, "quiet.group", Origin::Setting)
+        );
+        drop(s);
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        assert_eq!(s.grouping().mode, GroupMode::Off, "survives a restart");
+        assert_eq!(s.put_grouping(None, None).unwrap().mode, GroupMode::Auto);
+        drop(s);
+
+        // Env set: it wins over the saved value and the control is locked.
+        let env = Defaults {
+            group_by: Some(GroupMode::Label),
+            group_label: Some("team".into()),
+            ..Default::default()
+        };
+        let s = Settings::open(Some(&path), env, false).unwrap();
+        let g = s.grouping();
+        assert_eq!(
+            (g.mode, g.label.as_str(), g.origin, g.locked),
+            (GroupMode::Label, "team", Origin::Flag, true)
+        );
+        assert!(s.put_grouping(None, None).is_err());
+    }
+
+    #[test]
     fn saved_storage_beats_flags_which_beat_defaults_and_survives_restart() {
         let path = tmp();
         let flags = Defaults {
             retention_ms: 3 * 24 * HOUR_MS,
-            max_disk: DEFAULT_MAX_DISK,
+            ..Default::default()
         };
-        let s = Settings::open(Some(&path), flags, false).unwrap();
+        let s = Settings::open(Some(&path), flags.clone(), false).unwrap();
         let st = s.storage();
         assert_eq!(st.retention_ms, 3 * 24 * HOUR_MS);
         assert_eq!(st.retention_origin, Origin::Flag);

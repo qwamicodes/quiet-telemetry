@@ -18,6 +18,7 @@
 use crate::accounts::Accounts;
 use crate::auth::{AuthConfig, LoginLimiter, Viewer};
 use crate::export::ExportTokens;
+use crate::grouping::{GroupKind, GroupMode, Grouping};
 use crate::hub::{Line, SourceInfo, SourceKind};
 use crate::normalize::LogLine;
 use crate::pipeline::Pipeline;
@@ -127,6 +128,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/about", get(about))
         .route("/api/sources", get(sources))
+        .route("/api/sources/grouping-preview", get(grouping_preview))
         .route("/api/sources/:name/lines", get(lines))
         .route("/api/stream", get(stream))
         .merge(crate::search_api::routes())
@@ -222,6 +224,97 @@ async fn sources(State(s): State<AppState>) -> Json<SourcesResponse> {
         }
     }
     Json(SourcesResponse { sources })
+}
+
+#[derive(Deserialize)]
+struct PreviewQuery {
+    mode: Option<GroupMode>,
+    label: Option<String>,
+}
+
+/// One group in the Settings → Source grouping preview.
+#[derive(Debug, Serialize, TS)]
+pub struct PreviewGroup {
+    pub name: String,
+    pub kind: GroupKind,
+    pub sources: Vec<String>,
+}
+
+/// `GET /api/sources/grouping-preview?mode=&label=`: how sources would group
+/// (Settings → General, live as the owner types). Labels stay on the server.
+#[derive(Debug, Serialize, TS)]
+pub struct GroupingPreview {
+    pub groups: Vec<PreviewGroup>,
+    /// Docker sources carrying `label` (the "found on N of M" hint).
+    #[ts(type = "number")]
+    pub found: u64,
+    #[ts(type = "number")]
+    pub docker: u64,
+    #[ts(type = "number")]
+    pub total: u64,
+}
+
+async fn grouping_preview(
+    State(s): State<AppState>,
+    Query(q): Query<PreviewQuery>,
+) -> Json<GroupingPreview> {
+    let current = crate::grouping::current();
+    let g = Grouping {
+        mode: q.mode.unwrap_or(current.mode),
+        label: q
+            .label
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .unwrap_or(current.label),
+    };
+    Json(preview(&s.pipeline.hub().labels(), &g))
+}
+
+pub fn preview(
+    sources: &[(
+        String,
+        SourceKind,
+        std::collections::HashMap<String, String>,
+    )],
+    g: &Grouping,
+) -> GroupingPreview {
+    let mut sorted: Vec<_> = sources.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut groups: Vec<PreviewGroup> = Vec::new();
+    for (name, kind, labels) in &sorted {
+        if let Some((gname, gkind)) = g.group_of(*kind, labels) {
+            match groups
+                .iter_mut()
+                .find(|x| x.name == gname && x.kind == gkind)
+            {
+                Some(x) => x.sources.push(name.clone()),
+                None => groups.push(PreviewGroup {
+                    name: gname,
+                    kind: gkind,
+                    sources: vec![name.clone()],
+                }),
+            }
+        }
+    }
+    let rank = |k: GroupKind| match k {
+        GroupKind::Standalone => 1,
+        GroupKind::Ingest => 2,
+        _ => 0,
+    };
+    groups.sort_by(|a, b| rank(a.kind).cmp(&rank(b.kind)).then(a.name.cmp(&b.name)));
+    let docker: Vec<_> = sorted
+        .iter()
+        .filter(|s| s.1 == SourceKind::Docker)
+        .collect();
+    GroupingPreview {
+        groups,
+        found: docker
+            .iter()
+            .filter(|s| s.2.get(&g.label).is_some_and(|v| !v.trim().is_empty()))
+            .count() as u64,
+        docker: docker.len() as u64,
+        total: sorted.len() as u64,
+    }
 }
 
 #[derive(Deserialize)]
@@ -598,6 +691,53 @@ mod tests {
         assert_eq!(lines[0]["display_id"]["key"], "request_id");
         assert_eq!(lines[0]["display_id"]["value"], "r1");
         assert_eq!(lines[3]["msg"], "b");
+    }
+
+    #[test]
+    fn grouping_preview_groups_by_the_draft_label() {
+        use crate::grouping::GroupMode;
+        let l = |p: &[(&str, &str)]| {
+            p.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        let src = vec![
+            (
+                "api".to_string(),
+                SourceKind::Docker,
+                l(&[
+                    ("quiet.group", "platform"),
+                    (crate::grouping::COMPOSE_PROJECT, "apps"),
+                ]),
+            ),
+            (
+                "worker".to_string(),
+                SourceKind::Docker,
+                l(&[(crate::grouping::COMPOSE_PROJECT, "apps")]),
+            ),
+            ("redis".to_string(), SourceKind::Docker, l(&[])),
+            ("cron".to_string(), SourceKind::Fluentbit, l(&[])),
+        ];
+        let g = Grouping {
+            mode: GroupMode::Label,
+            label: "quiet.group".into(),
+        };
+        let p = preview(&src, &g);
+        let names: Vec<_> = p
+            .groups
+            .iter()
+            .map(|g| (g.name.as_str(), g.sources.len()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("platform", 1), ("Standalone", 2), ("Ingest", 1)]
+        );
+        assert_eq!((p.found, p.docker, p.total), (1, 3, 4));
+        let off = Grouping {
+            mode: GroupMode::Off,
+            ..Default::default()
+        };
+        assert!(preview(&src, &off).groups.is_empty());
     }
 
     #[tokio::test]

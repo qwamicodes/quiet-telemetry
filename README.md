@@ -149,6 +149,8 @@ Every flag also reads its env var (`quiet --help`). `quiet` with no subcommand i
 | `--store` / `QUIET_STORE` | `sqlite` | `sqlite`: the searchable window on disk. `memory`: the live ring only, nothing survives a restart, search covers the ring. |
 | `--data-dir` / `QUIET_DATA_DIR` | `data` (image: `/data`) | Where `quiet.db` (+ `-wal`) lives. **Mount a volume here** (`deploy/docker-compose.*.yml` do). |
 | `--retention` / `QUIET_RETENTION` | `24h` | How long lines stay searchable, `1h` … `7d` (e.g. `3d`, `7d`). Whole hours are dropped, so a line can outlive it by up to an hour. **A value saved in Settings → Storage wins over this flag** (see [Settings](#settings)). |
+| `--group-by` / `QUIET_GROUP_BY` | unset (`auto`) | How sources group in the UI: `auto` (a `quiet.group` label, then the Compose project, then the Swarm stack, else Standalone), `label` (by `QUIET_GROUP_LABEL`) or `off`. **When set it wins over Settings → General and locks that control.** |
+| `--group-label` / `QUIET_GROUP_LABEL` | unset (`quiet.group`) | The Docker label `label` mode reads. Containers without it are Standalone. Also locks the control when set. |
 | `--max-disk` / `QUIET_MAX_DISK` | `5GB` | Disk cap for the database (`500MB`, `5GB`, `1GiB`; min 10MB). Over it, the oldest hour goes first. Whichever of retention and cap hits first wins. **A value saved in Settings → Storage wins over this flag.** |
 | `--web-dir` / `QUIET_WEB_DIR` | embedded | Serve the UI from a directory instead of the copy built into the binary. |
 | `--drain-ms` / `QUIET_DRAIN_MS` | `1000` | On SIGTERM, how long `/ready` is 503 before connections close. |
@@ -250,6 +252,8 @@ SQLite (bundled, WAL) in `--data-dir`. One set of tables per hour: the lines (on
 ## Settings
 
 Owners change these in the UI; members see them read-only. Writes need a session and the CSRF header, like every `/api` write. Everything is stored in the `settings` table of `quiet.db` (kept on disk even with `--store memory`) and applies at once, without a restart.
+
+**Precedence (source grouping):** the opposite of storage. `QUIET_GROUP_BY` / `QUIET_GROUP_LABEL` → a value saved in Settings → General → Source grouping → `auto`. With either variable set, the control is read-only and says so.
 
 **Precedence (storage):** a value saved in Settings → Storage → the `--retention` / `--max-disk` flag or `QUIET_RETENTION` / `QUIET_MAX_DISK` → the built-in default (24h, 5GB). The page shows where each value comes from (*set here*, *from flag*, *default*); "use flag" deletes the saved value so the flag applies again. If a flag seems ignored, check Settings → Storage.
 

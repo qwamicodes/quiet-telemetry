@@ -262,29 +262,54 @@ session, `qi_`/`qx_` tokens keep working without one.
 - New `components/ui/dropdown-menu.tsx` on Base UI Menu with no GroupLabel
   export (the legivent #162 crash); a jsdom test opens it.
 
-## Docker sources grouped by stack (2026-10-22, PR #11)
+## Source grouping (2026-10-22, PR #11)
 
-Asked by Kwaame, modelled on a container manager's Containers view.
+Asked by Kwaame (modelled on a container manager's Containers view), then made
+configurable because it ships as an update. Boards v0.1-06.7, 06.8, 03.8,
+03.9, 07.11.
 
-- **Group from labels**, read when quiet starts following a container:
-  `com.docker.stack.namespace` (Swarm stack) wins over
-  `com.docker.compose.project` (Compose), else the container is
-  **Standalone**. An empty label counts as none. A `quiet.source=` rename keeps
-  the container's project or stack. The first container seen sets a source's
-  group (replicas share it).
-- **Pushed sources** (HTTP, Vector, Fluent Bit, OTLP) form one **Ingest**
-  group: they have no Docker labels, and per-token grouping can come later.
-- **API**: `SourceInfo.group` is always filled (`Standalone` / `Ingest` as
-  fallbacks) and `group_kind` is `compose | stack | standalone | ingest`, so
-  the UI never guesses from the kind.
-- **UI**: Sources page and sidebar render group headers (`N/M sending · K
-  shown`, sending = a line in the last minute), projects and stacks by name,
-  then Standalone, then Ingest. The sidebar drops headers when there is only
-  one group. Collapse state is per group in localStorage
-  (`quiet.source-groups.collapsed`), shared by both lists; the open source
-  stays visible in a collapsed sidebar group. Collapsed rows on the Sources
-  page stay mounted (hidden) so the Erroring count and stopped banner still
-  see them. "Group by host" (receiver) stays as an option.
+- **Labels, not names.** Docker sources keep the first container's labels
+  (server memory only, never sent to the browser). The group is worked out on
+  every `/api/sources` read, so changing the setting regroups live with no
+  restart and no change to stored lines.
+- **Modes** (Settings → General → Source grouping): **auto** (default):
+  `quiet.group` label → `com.docker.compose.project` → `com.docker.stack.namespace`
+  → Standalone. Compose comes before stack because Kwaame listed it that way
+  (the first cut had stack first; a container rarely has both). The
+  `quiet.group` override in auto was asked for "if trivial": it is one lookup.
+  **label**: one Docker label key the owner names (default suggestion
+  `quiet.group`); containers without it are Standalone. **off**: no groups;
+  `group`/`group_kind` are `null` and every list is flat.
+- **Pushed sources** (HTTP, Vector, Fluent Bit, OTLP) are one **Ingest** group
+  in auto and label mode: they have no Docker labels.
+- **Precedence: env wins and locks.** `QUIET_GROUP_BY` / `QUIET_GROUP_LABEL`
+  (or `--group-by` / `--group-label`), when set, override the saved value and
+  the control becomes read-only ("set by env"); `PUT /api/settings/grouping`
+  answers 400. This is the opposite of storage (UI wins over flags). Kwaame
+  first asked for UI > env, then the 07.11 board and his follow-up said env
+  wins and locks; the later instruction is what is built.
+- **Preview** (`GET /api/sources/grouping-preview?mode=&label=`) groups the
+  current sources with a draft mode/label on the server, plus "found on N of
+  M" for the label, so the Settings preview updates as the owner types without
+  exposing labels (they can hold secrets, e.g. proxy auth).
+- **UI**: Sources page (group rows with kind tag compose / stack / label /
+  docker / push, `N/M sending · K shown`, aggregate lines/s, Search this group
+  · 24h, ⋯ menu: search these N sources, collapse group, collapse all, copy
+  project name, ignore all N; member dots on collapsed headers; "all stopped"
+  tag + explanation row; indent guide on nested 36px rows), sidebar (compact
+  headers, single-line 28px items, collapse/expand all), stream top-bar source
+  picker (group / name; ↑↓ move, ← → fold, ↵ streams), ⌘K (sources under their
+  group, a Groups section that opens `/sources?group=…`, "Search <group> ·
+  24h"), and the All · Standalone · Compose / Stack filter (custom-label groups
+  count as Compose / Stack). "Sending" = a line in the last 60 s.
+- **Collapse state** is one list in localStorage (`quiet.source-groups.collapsed`),
+  shared live by the Sources page, sidebar and picker. The open source stays
+  visible in a collapsed sidebar group. Collapsed rows on the Sources page stay
+  mounted (hidden) so the Erroring count and stopped banner still see them.
+- **Ignore all N** = pause ingest + hide each source (the per-source settings
+  already have both), after a confirm dialog; reversible per source. Stored
+  lines stay until they expire.
 - **Not built**: streaming a whole group. The stream stays one source at a
-  time for v0.1; a merged multi-source stream needs its own filter and
-  ordering work.
+  time for v0.1; a group in ⌘K opens Sources, never the stream.
+- The Sources page keeps the 06.1 stat cards above the filters (06.7 omits
+  them; both are v0.1 boards).

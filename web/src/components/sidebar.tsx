@@ -1,5 +1,5 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { KeyboardIcon, PlugIcon, PlusIcon, RowsIcon, SearchIcon, SettingsIcon } from 'lucide-react'
+import { ChevronsDownUpIcon, KeyboardIcon, PlugIcon, PlusIcon, RowsIcon, SearchIcon, SettingsIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Logo } from '@/components/logo'
 import { SourceGroupHeader } from '@/components/source-group-header'
@@ -53,9 +53,10 @@ export function Sidebar({
   // Hidden sources stay under Sources and in search, not here (unless open now).
   const listed = sources?.filter((s) => !s.hidden || s.name === activeSource)
   const groups = groupSources(listed ?? [], listed ?? [])
-  // One group (say, only Ingest): no headers, just the list.
+  // Grouping off, or a single group (say, only Ingest): no headers, just the list.
   const flat = groups.length <= 1
-  const { isCollapsed, toggle } = useCollapsedGroups()
+  const { isCollapsed, toggle, toggleAll, allCollapsed } = useCollapsedGroups()
+  const keys = groups.map((g) => g.key)
   const onStream = useRouterState({ select: (s) => s.location.pathname === '/' })
 
   return (
@@ -99,7 +100,20 @@ export function Sidebar({
 
       <div className="mt-6 flex items-center justify-between px-4 pb-1.5 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
         <span>Sources</span>
-        <span>{listed?.length ?? ''}</span>
+        <span className="flex items-center gap-1">
+          {listed?.length ?? ''}
+          {!flat && (
+            <button
+              type="button"
+              aria-label={allCollapsed(keys) ? 'Expand all groups' : 'Collapse all groups'}
+              title={allCollapsed(keys) ? 'Expand all groups' : 'Collapse all groups'}
+              onClick={() => toggleAll(keys)}
+              className="flex size-4 items-center justify-center hover:text-foreground [&_svg]:size-3"
+            >
+              <ChevronsDownUpIcon />
+            </button>
+          )}
+        </span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3">
         {sources?.length === 0 && (
@@ -108,13 +122,15 @@ export function Sidebar({
             <span className="text-muted-foreground text-xs">Sources appear here as soon as they send a line.</span>
           </div>
         )}
-        {groups.map((g) => {
+        {(groups.length ? groups : [{ key: 'all', name: 'Sources', rows: listed ?? [] }]).map((g) => {
           // The open source stays visible even in a collapsed group.
           const collapsed = !flat && isCollapsed(g.key)
           const rows = collapsed ? g.rows.filter((s) => onStream && s.name === activeSource) : g.rows
           return (
             <section key={g.key} aria-label={g.name}>
-              {!flat && <SourceGroupHeader group={g} collapsed={collapsed} onToggle={() => toggle(g.key)} compact />}
+              {!flat && 'kind' in g && (
+                <SourceGroupHeader group={g} collapsed={collapsed} onToggle={() => toggle(g.key)} compact />
+              )}
               {rows.map((s) => (
                 <SourceItem
                   key={s.name}

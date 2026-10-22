@@ -35,6 +35,8 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let defaults = Defaults {
         retention_ms: args.retention.as_millis() as i64,
         max_disk: args.max_disk,
+        group_by: args.group_by,
+        group_label: args.group_label.clone(),
     };
     let settings_path = args.data_dir.join("quiet.db");
     let settings = Arc::new(

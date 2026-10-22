@@ -5,7 +5,7 @@
 //! Containers that share a name (replicas, restarts) merge into one source.
 
 use super::Receiver;
-use crate::hub::{GroupKind, SourceKind};
+use crate::hub::SourceKind;
 use crate::pipeline::{Pipeline, RawLine};
 use async_trait::async_trait;
 use bollard::container::{ListContainersOptions, LogOutput, LogsOptions};
@@ -21,9 +21,8 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 const SWARM_SERVICE: &str = "com.docker.swarm.service.name";
-const SWARM_STACK: &str = "com.docker.stack.namespace";
+use crate::grouping::SWARM_STACK;
 const COMPOSE_SERVICE: &str = "com.docker.compose.service";
-const COMPOSE_PROJECT: &str = "com.docker.compose.project";
 /// Opt a container out: `quiet.ignore=true`. Rename: `quiet.source=name`.
 const QUIET_IGNORE: &str = "quiet.ignore";
 const QUIET_SOURCE: &str = "quiet.source";
@@ -31,20 +30,6 @@ const QUIET_SOURCE: &str = "quiet.source";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Naming {
     pub source: String,
-    pub group: Option<String>,
-    pub group_kind: GroupKind,
-}
-
-/// The container's group: Swarm stack, else Compose project, else standalone.
-pub fn group_for(labels: &HashMap<String, String>) -> (Option<String>, GroupKind) {
-    let label = |k: &str| labels.get(k).filter(|v| !v.is_empty()).cloned();
-    if let Some(st) = label(SWARM_STACK) {
-        return (Some(st), GroupKind::Stack);
-    }
-    if let Some(p) = label(COMPOSE_PROJECT) {
-        return (Some(p), GroupKind::Compose);
-    }
-    (None, GroupKind::Standalone)
 }
 
 pub fn name_for(container_name: &str, labels: &HashMap<String, String>) -> Option<Naming> {
@@ -55,12 +40,7 @@ pub fn name_for(container_name: &str, labels: &HashMap<String, String>) -> Optio
     {
         return None;
     }
-    let (group, group_kind) = group_for(labels);
-    let naming = |source: String| Naming {
-        source,
-        group: group.clone(),
-        group_kind,
-    };
+    let naming = |source: String| Naming { source };
     if let Some(s) = labels.get(QUIET_SOURCE) {
         return Some(naming(s.clone()));
     }
@@ -308,9 +288,9 @@ impl DockerReceiver {
             if !m.containers.contains(&short) {
                 m.containers.push(short.clone());
             }
-            if m.group.is_none() {
-                m.group = naming.group.clone();
-                m.group_kind = Some(naming.group_kind);
+            // The first container's labels decide the group (replicas share them).
+            if m.labels.is_empty() {
+                m.labels = labels.clone();
             }
         });
 
@@ -415,6 +395,7 @@ impl LineSplitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grouping::COMPOSE_PROJECT;
 
     #[cfg(not(windows))]
     #[test]
@@ -450,8 +431,6 @@ mod tests {
             n,
             Naming {
                 source: "api".into(),
-                group: Some("shop".into()),
-                group_kind: GroupKind::Stack,
             }
         );
 
@@ -461,27 +440,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(n.source, "worker");
-        assert_eq!(n.group.as_deref(), Some("proj"));
-        assert_eq!(n.group_kind, GroupKind::Compose);
-
-        let n = name_for("/redis", &labels(&[])).unwrap();
-        assert_eq!(n.source, "redis");
-        assert_eq!((n.group, n.group_kind), (None, GroupKind::Standalone));
-        // A renamed container keeps its project.
-        let n = name_for(
-            "/x",
-            &labels(&[(QUIET_SOURCE, "payments"), (COMPOSE_PROJECT, "shop")]),
-        )
-        .unwrap();
-        assert_eq!(
-            (n.source.as_str(), n.group_kind),
-            ("payments", GroupKind::Compose)
-        );
-        // An empty label is no group.
-        assert_eq!(
-            group_for(&labels(&[(COMPOSE_PROJECT, "")])),
-            (None, GroupKind::Standalone)
-        );
+        assert_eq!(name_for("/redis", &labels(&[])).unwrap().source, "redis");
         assert_eq!(
             name_for("/x", &labels(&[(QUIET_SOURCE, "payments")]))
                 .unwrap()

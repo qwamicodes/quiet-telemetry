@@ -4,6 +4,8 @@ import type {
   DiskStatus,
   FlowIdSettings,
   GeneralSettings,
+  GroupingPreview,
+  GroupingSettings,
   HourUsage,
   IngestHealth,
   Issue,
@@ -20,6 +22,7 @@ import type {
   StorageSettings,
   StoreStatus,
   SystemStatus,
+  UpdateGrouping,
   UpdateStorage,
 } from '@/gen'
 import { fetchJson, sendJson } from '@/lib/api'
@@ -72,9 +75,25 @@ export const sourceSettings = z.object({
   unmasked: z.array(piiKind),
 }) satisfies z.ZodType<SourceSettings>
 
+export const groupMode = z.enum(['auto', 'label', 'off'])
+export const groupingSettings = z.object({
+  mode: groupMode,
+  label: z.string(),
+  origin: z.enum(['setting', 'flag', 'default']),
+  locked: z.boolean(),
+}) satisfies z.ZodType<GroupingSettings>
+const groupKind = z.enum(['compose', 'stack', 'custom', 'standalone', 'ingest'])
+export const groupingPreview = z.object({
+  groups: z.array(z.object({ name: z.string(), kind: groupKind, sources: z.array(z.string()) })),
+  found: z.number(),
+  docker: z.number(),
+  total: z.number(),
+}) satisfies z.ZodType<GroupingPreview>
+
 export const settingsResponse = z.object({
   general: generalSettings,
   storage: storageSettings,
+  grouping: groupingSettings.catch({ mode: 'auto', label: 'quiet.group', origin: 'default', locked: false }),
   flow_ids: flowIdSettings,
   sources: z.record(z.string(), sourceSettings),
 }) satisfies z.ZodType<SettingsResponse>
@@ -247,6 +266,42 @@ export function useSaveGeneral() {
     mutationFn: (g: GeneralSettings) => fetchJson('/api/settings/general', generalSettings, put(g)),
     // The name shows signed out too (auth state carries it).
     onSuccess: () => refresh([AUTH_KEY]),
+  })
+}
+
+export function useSaveGrouping() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: (g: UpdateGrouping | null) => fetchJson('/api/settings/grouping', groupingSettings, put(g)),
+    onSuccess: () => refresh([['sources']]),
+  })
+}
+
+/** How sources would group with a draft mode / label (Settings → General preview). */
+export function useGroupingPreview(mode: string, label: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['grouping-preview', mode, label],
+    queryFn: ({ signal }) =>
+      fetchJson(`/api/sources/grouping-preview?${new URLSearchParams({ mode, label })}`, groupingPreview, { signal }),
+    enabled,
+    placeholderData: (prev) => prev,
+  })
+}
+
+/** Ignore several sources at once: pause ingest and hide them (each stays reversible in its settings). */
+export function useIgnoreSources() {
+  const refresh = useRefresh()
+  return useMutation({
+    mutationFn: async (items: { name: string; settings: SourceSettings }[]) => {
+      for (const { name, settings } of items) {
+        await fetchJson(
+          `/api/settings/sources/${encodeURIComponent(name)}`,
+          sourceSettings,
+          put({ ...settings, paused: true, hidden: true }),
+        )
+      }
+    },
+    onSuccess: () => refresh([['sources'], ['storage']]),
   })
 }
 

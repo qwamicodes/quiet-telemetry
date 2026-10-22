@@ -4,6 +4,7 @@
 //! is stored; UI streams call [`Source::subscribe`]. Lines themselves live in
 //! the [`Store`](crate::store::Store), not here.
 
+use crate::grouping::GroupKind;
 use crate::normalize::LogLine;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -56,33 +57,18 @@ impl SourceKind {
     }
 }
 
-/// What a source's group is (Sources page / sidebar grouping, like a
-/// container manager's Containers view).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum GroupKind {
-    /// `com.docker.compose.project`
-    Compose,
-    /// `com.docker.stack.namespace` (Swarm)
-    Stack,
-    /// A Docker container in no project or stack.
-    Standalone,
-    /// Pushed over HTTP, Vector, Fluent Bit or OTLP.
-    Ingest,
-}
-
-/// Group names for sources without a project or stack.
-pub const STANDALONE_GROUP: &str = "Standalone";
-pub const INGEST_GROUP: &str = "Ingest";
-
 #[derive(Debug, Clone, Default, Serialize, TS)]
 pub struct SourceMeta {
     /// Containers feeding this source (docker only).
     pub containers: Vec<String>,
-    /// Compose project or Swarm stack; `Standalone` / `Ingest` otherwise
-    /// (filled in by [`Source::info`]).
+    /// Labels of the first container seen (docker only); groups are read
+    /// from them (see `grouping.rs`).
+    #[serde(skip)]
+    #[ts(skip)]
+    pub labels: HashMap<String, String>,
+    /// Its group under the current Settings → Source grouping (`null` when
+    /// grouping is off). Filled in by [`Source::info`].
     pub group: Option<String>,
-    /// What `group` is. Docker sets it from labels; [`Source::info`] fills the rest.
     pub group_kind: Option<GroupKind>,
     pub lines: u64,
     pub last_ts: Option<i64>,
@@ -117,13 +103,9 @@ impl Source {
     pub fn info(&self) -> SourceInfo {
         let kind = self.kind();
         let mut meta = self.meta();
-        let (group, group_kind) = match (kind, meta.group_kind, meta.group.take()) {
-            (SourceKind::Docker, Some(k), Some(g)) if k != GroupKind::Standalone => (g, k),
-            (SourceKind::Docker, _, _) => (STANDALONE_GROUP.to_string(), GroupKind::Standalone),
-            _ => (INGEST_GROUP.to_string(), GroupKind::Ingest),
-        };
-        meta.group = Some(group);
-        meta.group_kind = Some(group_kind);
+        let g = crate::grouping::current().group_of(kind, &meta.labels);
+        meta.group = g.as_ref().map(|(name, _)| name.clone());
+        meta.group_kind = g.map(|(_, k)| k);
         SourceInfo {
             name: self.name.clone(),
             kind,
@@ -181,6 +163,22 @@ impl Hub {
             .clone()
     }
 
+    /// `(name, kind, container labels)` of every source, for the grouping preview.
+    pub fn labels(&self) -> Vec<(String, SourceKind, HashMap<String, String>)> {
+        self.sources
+            .read()
+            .unwrap()
+            .values()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.kind(),
+                    s.meta.lock().unwrap().labels.clone(),
+                )
+            })
+            .collect()
+    }
+
     pub fn list(&self) -> Vec<SourceInfo> {
         let mut v: Vec<_> = self
             .sources
@@ -213,13 +211,13 @@ mod tests {
     use crate::normalize::normalize;
 
     #[test]
-    fn groups_fall_back_to_standalone_and_ingest() {
+    fn info_groups_from_container_labels() {
         let hub = Hub::new();
-        let c = hub.ensure_source("api", SourceKind::Docker);
-        c.update_meta(|m| {
-            m.group = Some("shop".into());
-            m.group_kind = Some(GroupKind::Compose);
-        });
+        hub.ensure_source("api", SourceKind::Docker)
+            .update_meta(|m| {
+                m.labels
+                    .insert(crate::grouping::COMPOSE_PROJECT.into(), "shop".into());
+            });
         hub.ensure_source("redis", SourceKind::Docker);
         hub.ensure_source("payments", SourceKind::Otlp);
         let by = |n: &str| {
@@ -227,11 +225,8 @@ mod tests {
             (i.meta.group.unwrap(), i.meta.group_kind.unwrap())
         };
         assert_eq!(by("api"), ("shop".into(), GroupKind::Compose));
-        assert_eq!(
-            by("redis"),
-            (STANDALONE_GROUP.into(), GroupKind::Standalone)
-        );
-        assert_eq!(by("payments"), (INGEST_GROUP.into(), GroupKind::Ingest));
+        assert_eq!(by("redis"), ("Standalone".into(), GroupKind::Standalone));
+        assert_eq!(by("payments"), ("Ingest".into(), GroupKind::Ingest));
     }
 
     #[tokio::test]

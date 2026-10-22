@@ -1,24 +1,55 @@
-import { Link } from '@tanstack/react-router'
-import { BoxIcon, EllipsisIcon, PlusIcon, SearchIcon, TriangleAlertIcon } from 'lucide-react'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
+import {
+  BoxIcon,
+  ChevronsDownUpIcon,
+  EllipsisIcon,
+  FilterIcon,
+  InfoIcon,
+  PlusIcon,
+  SearchIcon,
+  TriangleAlertIcon,
+  XIcon,
+} from 'lucide-react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { SourceGroupHeader } from '@/components/source-group-header'
 import { Sparkline } from '@/components/sparkline'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { SourceInfo } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
 import { fmtAgo, fmtBytes, fmtCount, fmtWindow, isRecent } from '@/lib/format'
+import { DEFAULT_SOURCE_SETTINGS, useIgnoreSources, useSettings } from '@/lib/settings-api'
 import {
   type GroupFilter,
+  groupKey,
+  groupOf,
+  groupRate,
   groupSources,
   inGroupFilter,
+  KIND_TAG,
   type SourceGroup,
   useCollapsedGroups,
 } from '@/lib/source-groups'
 import { useSourceFields, useStreamStats } from '@/lib/stream-api'
+import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { useRates } from '@/lib/use-rates'
 import { cn } from '@/lib/utils'
@@ -82,8 +113,16 @@ function SourceRow({
   useEffect(() => onStats(s.name, { erroring, stopped }), [s.name, erroring, stopped])
   const live = isRecent(s.last_ts)
   return (
-    <tr className="h-11 border-b last:border-b-0 hover:bg-row-hover" hidden={hidden}>
-      <td className={nested ? 'pr-4 pl-9' : 'px-4'}>
+    <tr
+      className={cn(
+        'border-b last:border-b-0 hover:bg-row-hover',
+        nested ? 'h-9' : 'h-11',
+        nested && !live && !stopped && 'text-muted-foreground [&_a]:text-muted-foreground',
+      )}
+      hidden={hidden}
+    >
+      <td className={nested ? 'relative pr-4 pl-10' : 'px-4'}>
+        {nested && <span aria-hidden className="absolute inset-y-0 left-6 w-px bg-border" />}
         <Link
           to="/sources/$name"
           params={{ name: s.name }}
@@ -147,8 +186,14 @@ export function SourcesPage() {
   const [filter, setFilter] = useState<Filter>('all')
   const [text, setText] = useState('')
   const [grouping, setGrouping] = useState<'stack' | 'host' | 'none'>('stack')
-  const [groupFilter, setGroupFilter] = useState<GroupFilter>('all')
-  const { isCollapsed, toggle } = useCollapsedGroups()
+  const search = useSearch({ from: '/sources' })
+  const navigate = useNavigate({ from: '/sources' })
+  const groupFilter: GroupFilter = search.kind ?? 'all'
+  const setGroupFilter = (k: GroupFilter) =>
+    navigate({ search: (p) => ({ ...p, kind: k === 'all' ? undefined : k }), replace: true })
+  const onlyGroup = search.group
+  const { isCollapsed, toggle, set: setCollapsed, toggleAll, allCollapsed } = useCollapsedGroups()
+  const [ignoring, setIgnoring] = useState<SourceGroup | null>(null)
   const [flags, setFlags] = useState<Record<string, { erroring: boolean; stopped: boolean }>>({})
   const onStats = (name: string, v: { erroring: boolean; stopped: boolean }) =>
     setFlags((f) => (f[name]?.erroring === v.erroring && f[name]?.stopped === v.stopped ? f : { ...f, [name]: v }))
@@ -167,14 +212,22 @@ export function SourcesPage() {
             : true,
     )
     .filter((s) => inGroupFilter(s, groupFilter))
+    .filter((s) => {
+      if (!onlyGroup) return true
+      const g = groupOf(s)
+      return g != null && groupKey(g) === onlyGroup
+    })
     .filter((s) => !text.trim() || s.name.toLowerCase().includes(text.trim().toLowerCase()))
   const total = Object.values(rates).reduce((a, b) => a + b, 0)
   const erroring = all.filter((s) => flags[s.name]?.erroring).length
   const stoppedOne = all.find((s) => flags[s.name]?.stopped)
+  const grouped = all.some((s) => groupOf(s))
+  const stackGroups = grouping === 'stack' && grouped ? groupSources(all, shown) : []
+  const hidden = all.filter((s) => !shown.includes(s))
   type Group = { key: string; host?: ReturnType<typeof hostOf>; stack?: SourceGroup; rows: SourceInfo[] }
   const groups: Group[] =
-    grouping === 'stack'
-      ? groupSources(all, shown).map((g) => ({ key: g.key, stack: g, rows: g.rows }))
+    grouping === 'stack' && grouped
+      ? stackGroups.map((g) => ({ key: g.key, stack: g, rows: g.rows }))
       : grouping === 'host'
         ? [...new Set(shown.map((s) => hostOf(s).key))].map((k) => ({
             key: k,
@@ -189,7 +242,9 @@ export function SourcesPage() {
         <div className="flex flex-col gap-1">
           <h1 className="font-semibold text-xl">Sources</h1>
           <p className="text-muted-foreground text-sm">
-            Everything that sends lines to quiet. Pick one for its settings, rejected requests and stream.
+            {grouped && grouping === 'stack'
+              ? 'Grouped by Compose project or Swarm stack; HTTP, OTLP, Vector and Fluent Bit pushes sit under Ingest. Pick one to stream it.'
+              : 'Everything that sends lines to quiet. Pick one for its settings, rejected requests and stream.'}
           </p>
         </div>
         <Button variant="outline" nativeButton={false} render={<Link to="/connect" />}>
@@ -241,29 +296,31 @@ export function SourcesPage() {
             </button>
           ))}
         </div>
-        <div className="flex border" role="tablist" aria-label="Group kind">
-          {(
-            [
-              ['all', 'All'],
-              ['standalone', 'Standalone'],
-              ['stack', 'Compose / Stack'],
-            ] as const
-          ).map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              role="tab"
-              aria-selected={groupFilter === k}
-              onClick={() => setGroupFilter(k)}
-              className={cn(
-                'h-7 px-3 text-muted-foreground text-xs outline-none focus-visible:bg-muted',
-                groupFilter === k && 'bg-muted text-foreground',
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {grouped && (
+          <div className="flex border" role="tablist" aria-label="Group kind">
+            {(
+              [
+                ['all', 'All'],
+                ['standalone', 'Standalone'],
+                ['stack', 'Compose / Stack'],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                role="tab"
+                aria-selected={groupFilter === k}
+                onClick={() => setGroupFilter(k)}
+                className={cn(
+                  'h-7 px-3 text-muted-foreground text-xs outline-none focus-visible:bg-muted',
+                  groupFilter === k && 'bg-muted text-foreground',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         <span className="flex-1" />
         <div className="flex items-center gap-2">
           <div className="relative w-60">
@@ -290,8 +347,44 @@ export function SourcesPage() {
               <SelectItem value="none">No grouping</SelectItem>
             </SelectContent>
           </Select>
+          {stackGroups.length > 0 && (
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label={allCollapsed(stackGroups.map((g) => g.key)) ? 'Expand all groups' : 'Collapse all groups'}
+              title={allCollapsed(stackGroups.map((g) => g.key)) ? 'Expand all groups' : 'Collapse all groups'}
+              onClick={() => toggleAll(stackGroups.map((g) => g.key))}
+            >
+              <ChevronsDownUpIcon />
+            </Button>
+          )}
         </div>
       </div>
+
+      {(groupFilter !== 'all' || onlyGroup) && hidden.length > 0 && (
+        <div className="flex items-center gap-2 border border-dashed px-3 py-2 font-mono text-[11px] text-muted-foreground">
+          <FilterIcon className="size-3.5" />
+          <span className="text-foreground">
+            {onlyGroup
+              ? (stackGroups[0]?.name ?? onlyGroup.split(':').slice(1).join(':'))
+              : groupFilter === 'stack'
+                ? 'Compose / Stack'
+                : 'Standalone'}
+          </span>
+          <span className="truncate">
+            · {shown.length} of {all.length} sources · hiding {describeHidden(hidden)}. Groups with nothing left to show
+            drop out.
+          </span>
+          <span className="flex-1" />
+          <button
+            type="button"
+            className="flex items-center gap-1 text-foreground hover:underline"
+            onClick={() => navigate({ search: {}, replace: true })}
+          >
+            <XIcon className="size-3.5" /> Show all
+          </button>
+        </div>
+      )}
 
       {stoppedOne && (
         <div
@@ -348,9 +441,23 @@ export function SourcesPage() {
               return (
                 <Fragment key={g.key}>
                   {g.stack && (
-                    <tr className="border-b bg-muted/20" data-group={g.key}>
-                      <td colSpan={8} className="px-4">
-                        <SourceGroupHeader group={g.stack} collapsed={collapsed} onToggle={() => toggle(g.key)} />
+                    <tr className="border-b bg-muted/30" data-group={g.key}>
+                      <td colSpan={8} className="pr-3 pl-4">
+                        <SourceGroupHeader
+                          group={g.stack}
+                          collapsed={collapsed}
+                          onToggle={() => toggle(g.key)}
+                          rate={groupRate(g.stack.rows, rates)}
+                          actions={
+                            <GroupActions
+                              group={g.stack}
+                              collapsed={collapsed}
+                              onCollapse={() => setCollapsed(g.key, !collapsed)}
+                              onCollapseAll={() => toggleAll(stackGroups.map((x) => x.key))}
+                              onIgnore={() => setIgnoring(g.stack ?? null)}
+                            />
+                          }
+                        />
                       </td>
                     </tr>
                   )}
@@ -378,6 +485,25 @@ export function SourcesPage() {
                       hidden={collapsed}
                     />
                   ))}
+                  {g.stack && !collapsed && g.stack.sending === 0 && g.stack.kind !== 'ingest' && (
+                    <tr className="border-b">
+                      <td colSpan={8} className="py-2.5 pr-4 pl-9">
+                        <span className="flex items-start gap-2.5">
+                          <InfoIcon className="mt-0.5 size-3.5 text-muted-foreground" />
+                          <span className="flex flex-col gap-0.5">
+                            <span className="text-[13px]">
+                              {g.stack.total === 1 ? 'Its container is' : `All ${g.stack.total} containers are`} quiet ·
+                              nothing sending
+                            </span>
+                            <span className="font-mono text-[11px] text-muted-foreground">
+                              lines stay searchable until they leave the {fmtWindow(health?.retention_ms ?? 86_400_000)}{' '}
+                              window · the group comes back to life when they log again
+                            </span>
+                          </span>
+                        </span>
+                      </td>
+                    </tr>
+                  )}
                 </Fragment>
               )
             })}
@@ -391,6 +517,128 @@ export function SourcesPage() {
           </tbody>
         </table>
       )}
+      <IgnoreGroupDialog group={ignoring} onClose={() => setIgnoring(null)} />
     </div>
+  )
+}
+
+/** `Ingest (cron)`, `Standalone (redis, minio)`, `3 sources`. */
+function describeHidden(hidden: SourceInfo[]): string {
+  const byGroup = new Map<string, string[]>()
+  for (const s of hidden) {
+    const g = groupOf(s)?.name ?? 'other'
+    byGroup.set(g, [...(byGroup.get(g) ?? []), s.display_name ?? s.name])
+  }
+  const parts = [...byGroup].map(
+    ([g, names]) => `${g} (${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''})`,
+  )
+  return parts.length <= 2 ? parts.join(', ') : `${hidden.length} sources`
+}
+
+/** Search this group · 24h, and the ⋯ menu (board v0.1-06.8). */
+function GroupActions({
+  group,
+  collapsed,
+  onCollapse,
+  onCollapseAll,
+  onIgnore,
+}: {
+  group: SourceGroup
+  collapsed: boolean
+  onCollapse: () => void
+  onCollapseAll: () => void
+  onIgnore: () => void
+}) {
+  const navigate = useNavigate()
+  const names = group.rows.map((s) => s.name)
+  const searchGroup = () => navigate({ to: '/search', search: { source: names.join(','), range: '24h' } })
+  const n = names.length
+  return (
+    <span className="flex shrink-0 items-center gap-1 border-l pl-2">
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        aria-label={`Search ${group.name} · 24h`}
+        title={`Search ${group.name} · 24h`}
+        onClick={searchGroup}
+      >
+        <SearchIcon />
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger render={<Button variant="ghost" size="icon-xs" aria-label={`${group.name} actions`} />}>
+          <EllipsisIcon />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-60">
+          <DropdownMenuItem onClick={searchGroup}>
+            Search {n === 1 ? 'this source' : `these ${n} sources`} · 24h
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onCollapse}>{collapsed ? 'Expand group' : 'Collapse group'}</DropdownMenuItem>
+          <DropdownMenuItem onClick={onCollapseAll}>Collapse all groups</DropdownMenuItem>
+          {group.kind !== 'ingest' && group.kind !== 'standalone' && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(group.name)
+                    toast.success('Name copied', { description: group.name })
+                  } catch {
+                    toast.error('Could not copy')
+                  }
+                }}
+              >
+                Copy {group.kind === 'stack' ? 'stack' : group.kind === 'compose' ? 'project' : 'group'} name
+                <span className="ml-auto font-mono text-[10px] text-muted-foreground">{KIND_TAG[group.kind]}</span>
+              </DropdownMenuItem>
+            </>
+          )}
+          <DropdownMenuItem variant="destructive" onClick={onIgnore}>
+            Ignore {n === 1 ? 'this source' : `all ${n} sources`}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </span>
+  )
+}
+
+/** Ignore = pause ingest + hide, for every source in the group (each reversible in its settings). */
+function IgnoreGroupDialog({ group, onClose }: { group: SourceGroup | null; onClose: () => void }) {
+  const settings = useSettings().data
+  const ignore = useIgnoreSources()
+  const n = group?.rows.length ?? 0
+  const go = async () => {
+    if (!group) return
+    try {
+      await ignore.mutateAsync(
+        group.rows.map((s) => ({ name: s.name, settings: settings?.sources[s.name] ?? DEFAULT_SOURCE_SETTINGS })),
+      )
+      toast.success(`Ignoring ${group.name}`, {
+        description: `${n} ${n === 1 ? 'source' : 'sources'} paused and hidden. Undo from each source's settings.`,
+      })
+      onClose()
+    } catch (err) {
+      toast.error('Could not ignore', { description: (err as Error).message })
+    }
+  }
+  return (
+    <Dialog open={group != null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Ignore {group?.name}?</DialogTitle>
+          <DialogDescription>
+            New lines from {n === 1 ? 'its source' : `its ${n} sources`} are dropped and the sources leave the sidebar.
+            Lines already stored stay searchable until they expire. Each source can be turned back on from its settings.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="destructive" onClick={go} disabled={ignore.isPending}>
+            Ignore {n === 1 ? 'source' : `${n} sources`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

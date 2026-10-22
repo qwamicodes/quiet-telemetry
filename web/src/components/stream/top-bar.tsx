@@ -1,5 +1,6 @@
 import { FileDownIcon, PauseIcon, PlayIcon } from 'lucide-react'
 import { StatusDot } from '@/components/status-dot'
+import { SourcePicker } from '@/components/stream/source-picker'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -96,11 +97,10 @@ export function TopBar({
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b px-6">
       <StatusDot status={state === 'live' ? 'ok' : state === 'offline' ? 'idle' : 'warn'} />
-      <h1 className="truncate font-medium text-base">{source?.display_name ?? name ?? 'No source'}</h1>
+      <SourcePicker source={source} name={name} />
       {source && (
         <span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{source.kind}</span>
       )}
-      {source?.group && <span className="font-mono text-muted-foreground text-xs">· {source.group}</span>}
       {stitchedBy !== undefined && (
         <span className="font-mono text-muted-foreground text-xs">
           · {stitchedBy ? `stitched by ${stitchedBy}` : 'no flow id found'}

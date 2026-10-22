@@ -12,6 +12,7 @@ import {
   SunIcon,
 } from 'lucide-react'
 import { useState } from 'react'
+import { GroupIcon } from '@/components/source-group-header'
 import { StatusDot } from '@/components/status-dot'
 import {
   Command,
@@ -24,12 +25,13 @@ import {
   CommandShortcut,
 } from '@/components/ui/command'
 import { Kbd } from '@/components/ui/kbd'
-import type { CorrId } from '@/gen'
+import type { CorrId, SourceInfo } from '@/gen'
 import { fetchJson, useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, isRecent } from '@/lib/format'
 import { searchResponse } from '@/lib/schemas'
+import { groupSources, KIND_TAG } from '@/lib/source-groups'
 import { useTheme } from '@/lib/theme'
 import { useDebounced } from '@/lib/use-debounced'
 import { useRates } from '@/lib/use-rates'
@@ -76,6 +78,27 @@ export function CommandPalette({
   const summaries = useFlowSummaries(matches.map((m) => m.id.value))
   const onStream = typeof window !== 'undefined' && window.location.pathname === '/'
 
+  // Sources under their group (board v0.1-03.9); a group opens Sources filtered, it never streams.
+  const grouped = groupSources(sources, sources)
+  const sourceItem = (s: SourceInfo) => {
+    const rate = rates[s.name]
+    const live = isRecent(s.last_ts)
+    return (
+      <CommandItem
+        key={s.name}
+        value={`source ${s.name} ${s.display_name ?? ''} ${s.kind} ${s.group ?? ''}`}
+        onSelect={() => run(() => navigate({ to: '/', search: { source: s.name } }))}
+      >
+        <StatusDot status={s.paused ? 'warn' : live ? 'ok' : 'idle'} />
+        <span className="font-mono">{s.display_name ?? s.name}</span>
+        <span className="font-mono text-muted-foreground text-xs">
+          {kindLabel(s.kind)} ·{' '}
+          {s.paused ? 'paused' : live && rate ? `${rate < 10 ? rate.toFixed(1) : Math.round(rate)} lines/s` : 'idle'}
+        </span>
+      </CommandItem>
+    )
+  }
+
   const run = (fn: () => void) => {
     onOpenChange(false)
     setQuery('')
@@ -110,30 +133,39 @@ export function CommandPalette({
         </div>
         <CommandList className="max-h-[28rem]">
           <CommandEmpty>Nothing matches.</CommandEmpty>
-          {sources.length > 0 && (
-            <CommandGroup heading="Sources">
-              {sources.map((s) => {
-                const rate = rates[s.name]
-                const live = isRecent(s.last_ts)
-                return (
-                  <CommandItem
-                    key={s.name}
-                    value={`source ${s.name} ${s.display_name ?? ''} ${s.kind}`}
-                    onSelect={() => run(() => navigate({ to: '/', search: { source: s.name } }))}
-                  >
-                    <StatusDot status={s.paused ? 'warn' : live ? 'ok' : 'idle'} />
-                    <span className="font-mono">{s.display_name ?? s.name}</span>
-                    <span className="font-mono text-muted-foreground text-xs">
-                      {kindLabel(s.kind)} ·{' '}
-                      {s.paused
-                        ? 'paused'
-                        : live && rate
-                          ? `${rate < 10 ? rate.toFixed(1) : Math.round(rate)} lines/s`
-                          : 'idle'}
-                    </span>
-                  </CommandItem>
-                )
-              })}
+          {grouped.length === 0 && sources.length > 0 && (
+            <CommandGroup heading="Sources">{sources.map(sourceItem)}</CommandGroup>
+          )}
+          {grouped.map((g, i) => (
+            <CommandGroup
+              key={g.key}
+              heading={
+                <span className="flex items-center gap-1.5">
+                  {i === 0 && <span className="sr-only">Sources · </span>}
+                  <GroupIcon kind={g.kind} className="size-3" />
+                  <span className="font-mono normal-case tracking-normal">{g.name}</span>
+                </span>
+              }
+            >
+              {g.rows.map(sourceItem)}
+            </CommandGroup>
+          ))}
+          {grouped.length > 0 && (
+            <CommandGroup heading="Groups">
+              {grouped.map((g) => (
+                <CommandItem
+                  key={g.key}
+                  value={`group ${g.name} ${g.rows.map((s) => s.name).join(' ')}`}
+                  onSelect={() => run(() => navigate({ to: '/sources', search: { group: g.key } }))}
+                >
+                  <GroupIcon kind={g.kind} />
+                  <span className="font-mono">{g.name}</span>
+                  <span className="font-mono text-muted-foreground text-xs">
+                    {KIND_TAG[g.kind]} · {g.sending}/{g.total} sending
+                  </span>
+                  <CommandShortcut className="tracking-normal">show on Sources</CommandShortcut>
+                </CommandItem>
+              ))}
             </CommandGroup>
           )}
           {id.length >= 3 && (
@@ -178,6 +210,29 @@ export function CommandPalette({
               {id ? <>Search last 24h for “{id}”</> : 'Search last 24h'}
               <CommandShortcut>⌘↵</CommandShortcut>
             </CommandItem>
+            {id.length > 0 &&
+              grouped
+                .filter((g) => g.kind !== 'ingest' && g.kind !== 'standalone')
+                .map((g) => (
+                  <CommandItem
+                    key={`search-${g.key}`}
+                    value={`search group ${g.name} ${g.rows.map((s) => s.name).join(' ')}`}
+                    onSelect={() =>
+                      run(() =>
+                        navigate({
+                          to: '/search',
+                          search: { source: g.rows.map((s) => s.name).join(','), range: '24h' },
+                        }),
+                      )
+                    }
+                  >
+                    <SearchIcon />
+                    Search {g.name} · 24h
+                    <span className="font-mono text-muted-foreground text-xs">
+                      {g.total} {g.total === 1 ? 'source' : 'sources'}
+                    </span>
+                  </CommandItem>
+                ))}
             {onStream && (
               <CommandItem
                 value="pause stream resume"

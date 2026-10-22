@@ -76,6 +76,7 @@ function fresh() {
       flag_max_disk: 5e9,
       at_cap: 'drop_oldest_hour',
     },
+    grouping: { mode: 'auto', label: 'quiet.group', origin: 'default', locked: false },
     flow_ids: { order: ['request_id', 'job_id', 'trace_id', 'correlation_id'], match_by: 'value' },
     sources: {},
   }
@@ -185,6 +186,22 @@ beforeEach(() => {
       }
       if (url === '/api/storage/purge') return json({ lines: 42, source: body.source ?? null })
       if (url === '/api/about') return json(aboutInfo)
+      if (url.startsWith('/api/sources/grouping-preview')) {
+        const label = new URL(url, 'http://x').searchParams.get('label')
+        return json({
+          groups: [
+            { name: label === 'team' ? 'growth' : 'apps', kind: 'custom', sources: ['api', 'web'] },
+            { name: 'Standalone', kind: 'standalone', sources: ['redis'] },
+          ],
+          found: 2,
+          docker: 3,
+          total: 3,
+        })
+      }
+      if (url === '/api/settings/grouping') {
+        settings.grouping = { ...body, origin: 'setting', locked: false }
+        return json(settings.grouping)
+      }
       if (url.startsWith('https://api.github.com/')) {
         githubCalls += 1
         return json({
@@ -498,5 +515,38 @@ describe('Settings → About (07.6)', () => {
     expect(callout).toHaveTextContent('Parser tolerates duplicate keys')
     expect(callout).toHaveTextContent('docker compose pull quiet && docker compose up -d quiet')
     expect(githubCalls).toBe(1)
+  })
+})
+
+describe('Settings → General → Source grouping (07.11)', () => {
+  it('custom label shows the found hint and a live preview, and saves', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings')
+    const section = await screen.findByRole('region', { name: 'Source grouping' })
+    await user.click(within(section).getByRole('radio', { name: 'Custom label' }))
+    const input = within(section).getByLabelText('Docker label key')
+    expect(input).toHaveValue('quiet.group')
+    expect(await within(section).findByText('found on 2 of 3')).toBeInTheDocument()
+    await user.clear(input)
+    await user.type(input, 'team')
+    expect(await within(section).findByText('growth')).toBeInTheDocument()
+    expect(within(section).getByText('no label')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        url: '/api/settings/grouping',
+        method: 'PUT',
+        body: { mode: 'label', label: 'team' },
+      }),
+    )
+  })
+
+  it('is locked when the server environment sets it', async () => {
+    settings.grouping = { mode: 'off', label: 'quiet.group', origin: 'flag', locked: true }
+    renderAt('/settings')
+    const section = await screen.findByRole('region', { name: 'Source grouping' })
+    expect(within(section).getByText('set by env')).toBeInTheDocument()
+    expect(within(section).getByRole('radio', { name: 'Off' })).toBeChecked()
+    expect(within(section).getByRole('radio', { name: 'Auto' })).toHaveAttribute('aria-disabled', 'true')
   })
 })

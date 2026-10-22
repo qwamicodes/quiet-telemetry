@@ -79,6 +79,13 @@ export const sourceParams = z.object({
     .refine((v) => !/[\u0000-\u001f\u007f]/.test(v)),
 })
 
+/** `/sources?group=compose:apps&kind=stack`: the Sources page filtered to one group (⌘K Groups). */
+export const sourcesSearch = z.object({
+  group: z.string().max(300).optional().catch(undefined),
+  kind: z.enum(['all', 'standalone', 'stack']).optional().catch(undefined),
+})
+export type SourcesSearch = z.infer<typeof sourcesSearch>
+
 /** `/sources/$name?tab=` */
 export const sourceSearch = z.object({
   tab: z.enum(['rejected', 'malformed', 'settings']).optional().catch(undefined),

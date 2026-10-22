@@ -20,11 +20,7 @@ paused: boolean,
  */
 containers: Array<string>, 
 /**
- * Compose project or Swarm stack; `Standalone` / `Ingest` otherwise
- * (filled in by [`Source::info`]).
+ * Its group under the current Settings → Source grouping (`null` when
+ * grouping is off). Filled in by [`Source::info`].
  */
-group: string | null, 
-/**
- * What `group` is. Docker sets it from labels; [`Source::info`] fills the rest.
- */
-group_kind: GroupKind | null, lines: number, last_ts: number | null, };
+group: string | null, group_kind: GroupKind | null, lines: number, last_ts: number | null, };

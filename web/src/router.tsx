@@ -21,6 +21,7 @@ import {
   searchSearch,
   sourceParams,
   sourceSearch,
+  sourcesSearch,
   streamSearch,
 } from '@/lib/search-params'
 import { makeQueryClient } from '@/providers'
@@ -145,6 +146,7 @@ export const connectRoute = createRoute({
 const sourcesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sources',
+  validateSearch: sourcesSearch,
   component: SourcesPage,
 })
 

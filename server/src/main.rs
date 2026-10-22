@@ -7,6 +7,7 @@ mod cli;
 mod export;
 mod flow;
 mod flow_api;
+mod grouping;
 mod hub;
 mod idpolicy;
 mod normalize;

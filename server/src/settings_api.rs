@@ -3,6 +3,7 @@
 //! GET    /api/settings                    → everything (any signed-in user)
 //! PUT    /api/settings/general            GeneralSettings          (owner)
 //! PUT    /api/settings/storage            UpdateStorage            (owner)
+//! PUT    /api/settings/grouping           UpdateGrouping | null    (owner; null = auto; 400 when env-locked)
 //! PUT    /api/settings/flow-ids           FlowIdSettings           (owner)
 //! PUT    /api/settings/sources/:name      SourceSettings           (owner)
 //! DELETE /api/settings/sources/:name      back to instance defaults (owner)
@@ -17,7 +18,8 @@
 use crate::api::AppState;
 use crate::auth::{require_owner, Viewer};
 use crate::settings::{
-    FlowIdSettings, GeneralSettings, SettingsError, SourceSettings, StorageSettings, UpdateStorage,
+    FlowIdSettings, GeneralSettings, SettingsError, SourceSettings, StorageSettings,
+    UpdateGrouping, UpdateStorage,
 };
 use crate::store::{HourUsage, SourceUsage};
 use crate::system::{self, Readings, Rejection};
@@ -35,6 +37,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/settings", get(all))
         .route("/api/settings/general", put(put_general))
         .route("/api/settings/storage", put(put_storage))
+        .route("/api/settings/grouping", put(put_grouping))
         .route("/api/settings/flow-ids", put(put_flow_ids))
         .route(
             "/api/settings/sources/:name",
@@ -111,6 +114,31 @@ async fn put_general(
     match write(&s, move |st| st.put_general(g, by)).await {
         Ok(g) => {
             tracing::info!(by = v.user.id, instance = %g.instance_name, "general settings changed");
+            Json(g).into_response()
+        }
+        Err(r) => r,
+    }
+}
+
+async fn put_grouping(
+    State(s): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    body: Option<Json<Option<UpdateGrouping>>>,
+) -> Response {
+    if let Err(r) = require_owner(&v) {
+        return r;
+    }
+    let Some(Json(u)) = body else {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "expected { mode: auto | label | off, label } or null",
+        );
+    };
+    let by = Some(v.user.id);
+    match write(&s, move |st| st.put_grouping(u, by)).await {
+        Ok(g) => {
+            tracing::info!(by = v.user.id, mode = ?g.mode, label = %g.label, "source grouping changed");
             Json(g).into_response()
         }
         Err(r) => r,
@@ -578,6 +606,35 @@ mod tests {
         assert_eq!(v["general"]["instance_name"], "quiet");
         assert_eq!(v["storage"]["retention_ms"], 24 * HOUR);
         assert_eq!(v["storage"]["retention_origin"], "default");
+        assert_eq!(v["grouping"]["mode"], "auto");
+        assert_eq!(v["grouping"]["origin"], "default");
+
+        let (s, v) = call(
+            &st,
+            Method::PUT,
+            "/api/settings/grouping",
+            Some(json!({"mode": "label", "label": "team"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["origin"], "setting");
+        let (s, _) = call(
+            &st,
+            Method::PUT,
+            "/api/settings/grouping",
+            Some(json!({"mode": "label", "label": "a b"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, v) = call(
+            &st,
+            Method::PUT,
+            "/api/settings/grouping",
+            Some(json!(null)),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["mode"], "auto");
 
         let (s, v) = call(
             &st,
