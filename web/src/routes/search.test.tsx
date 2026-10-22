@@ -239,6 +239,72 @@ describe('search route', () => {
     expect(await screen.findByText(/^3 lines$/)).toBeInTheDocument()
   })
 
+  it('a new query keeps the previous results dimmed; "no lines match" only once it settles empty', async () => {
+    // Hold the `nothing` search until the test lets it through.
+    let release = () => {}
+    let held = false
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const inner = globalThis.fetch
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.startsWith('/api/search?') && url.includes('limit=200') && url.includes('q=nothing')) {
+          held = true
+          await gate
+        }
+        return inner(url, init)
+      }),
+    )
+    const router = renderAt('/search?q=dealer&view=lines')
+    expect(await screen.findByText(/^3 lines$/, {}, { timeout: 5000 })).toBeInTheDocument()
+
+    await router.navigate({ to: '/search', search: (s) => ({ ...s, q: 'nothing' }) })
+    await waitFor(() => expect(held).toBe(true))
+    await new Promise((r) => setTimeout(r, 50))
+    // In flight: the old rows stay (dimmed, busy) and no empty state or skeleton replaces them.
+    expect(screen.queryByText(/No lines match/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('search-loading')).not.toBeInTheDocument()
+    expect(screen.getByText('GET /health', { exact: false })).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Search results' }).parentElement).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByTestId('search-refreshing')).toBeInTheDocument()
+    expect(screen.getByText('Searching…')).toBeInTheDocument()
+
+    release()
+    expect(await screen.findByText('No lines match in the last 6h')).toBeInTheDocument()
+    expect(screen.queryByText('GET /health', { exact: false })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('search-refreshing')).not.toBeInTheDocument()
+  })
+
+  it('a query after an empty one shows skeletons, not the old empty state, while it loads', async () => {
+    let release = () => {}
+    let held = false
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const inner = globalThis.fetch
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.startsWith('/api/search?') && url.includes('limit=200') && url.includes('q=nothing_else')) {
+          held = true
+          await gate
+        }
+        return inner(url, init)
+      }),
+    )
+    const router = renderAt('/search?q=nothing&range=1h')
+    expect(await screen.findByText('No lines match in the last 1h', {}, { timeout: 5000 })).toBeInTheDocument()
+    await router.navigate({ to: '/search', search: (s) => ({ ...s, q: 'nothing_else' }) })
+    await waitFor(() => expect(held).toBe(true))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByText(/No lines match/)).not.toBeInTheDocument()
+    expect(screen.getByTestId('search-loading')).toBeInTheDocument()
+    release()
+    expect(await screen.findByText('No lines match in the last 1h')).toBeInTheDocument()
+  })
+
   it('no results suggests similar values seen in the window (05.3)', async () => {
     const user = userEvent.setup()
     const router = renderAt('/search?q=nothing_settled&range=1h')
