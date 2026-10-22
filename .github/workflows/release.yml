@@ -76,7 +76,8 @@ jobs:
     steps:
       - name: skip (Dokploy secrets not set)
         if: env.DOKPLOY_URL == '' || env.DOKPLOY_API_KEY == '' || env.APP_ID == ''
-        run: echo "Dokploy secrets are not configured; nothing deployed. Image: $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "Dokploy secrets are not configured; nothing deployed. Image: $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
       - name: point the Dokploy app at the new digest and deploy
         if: env.DOKPLOY_URL != '' && env.DOKPLOY_API_KEY != '' && env.APP_ID != ''
         run: |
