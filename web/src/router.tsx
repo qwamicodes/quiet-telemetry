@@ -1,8 +1,13 @@
-import { createRootRoute, createRoute, createRouter, type RouterHistory } from '@tanstack/react-router'
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  lazyRouteComponent,
+  type RouterHistory,
+} from '@tanstack/react-router'
 import { AppShell } from '@/components/app-shell'
 import { flowSearch, searchSearch, streamSearch } from '@/lib/search-params'
 import { FlowPage } from '@/routes/flow'
-import { SearchPage } from '@/routes/search'
 import { SettingsPage } from '@/routes/settings'
 import { StreamPage } from '@/routes/stream'
 
@@ -26,7 +31,8 @@ export const searchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/search',
   validateSearch: searchSearch,
-  component: SearchPage,
+  // Its own chunk: search + export aren't needed to watch the stream.
+  component: lazyRouteComponent(() => import('@/routes/search'), 'SearchPage'),
 })
 
 const settingsRoute = createRoute({

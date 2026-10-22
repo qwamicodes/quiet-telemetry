@@ -15,8 +15,9 @@ export default defineConfig({
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
-  // One self-hosted UI served from the binary: a single ~210 kB (gzip) bundle is fine.
-  build: { chunkSizeWarningLimit: 800 },
+  // One self-hosted UI served from the binary. Main chunk ~285 kB gzip (sileo brings
+  // motion; zod); /search is its own chunk.
+  build: { chunkSizeWarningLimit: 1000 },
   server: {
     proxy: {
       '/api/stream': { target: server.replace(/^http/, 'ws'), ws: true },
