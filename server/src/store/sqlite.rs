@@ -313,11 +313,7 @@ impl Store for SqliteStore {
                     let kind: String = r.get(1)?;
                     Ok(StoredSource {
                         name: r.get(0)?,
-                        kind: if kind == "docker" {
-                            SourceKind::Docker
-                        } else {
-                            SourceKind::Http
-                        },
+                        kind: SourceKind::parse(&kind),
                         lines: r.get::<_, i64>(2)? as u64,
                         last_ts: r.get(3)?,
                     })
@@ -508,14 +504,10 @@ impl Writer {
             .execute(params![n, bytes, lo, hi, h])?;
         }
         for (name, (kind, n, last)) in srcs {
-            let kind = if kind == SourceKind::Docker {
-                "docker"
-            } else {
-                "http"
-            };
+            let kind = kind.as_str();
             tx.prepare_cached(
                 "INSERT INTO sources (name, kind, lines, last_ts) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT (name) DO UPDATE SET kind = ?2, lines = lines + ?3,
+                 ON CONFLICT (name) DO UPDATE SET lines = lines + ?3,
                      last_ts = MAX(COALESCE(last_ts, ?4), ?4)",
             )?
             .execute(params![name, kind, n, last])?;
