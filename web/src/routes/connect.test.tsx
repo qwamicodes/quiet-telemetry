@@ -92,7 +92,8 @@ describe('connect a source', () => {
   it('first run shows the welcome tiles; a tile opens the connect panel for that kind', async () => {
     const user = userEvent.setup()
     const { router } = renderAt('/')
-    expect(await screen.findByText('Nothing is sending lines yet.')).toBeInTheDocument()
+    // First render pays the lazy route chunk cost on a cold CI runner.
+    expect(await screen.findByText('Nothing is sending lines yet.', undefined, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.getByText('Nothing connected yet')).toBeInTheDocument()
     await user.click(screen.getByRole('link', { name: /Fluent Bit/ }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/connect'))
