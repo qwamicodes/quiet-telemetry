@@ -102,6 +102,27 @@ async function copy(text: string, what: string) {
   }
 }
 
+/** The text a value copies as: strings unquoted, the rest as JSON (`42`, `true`, `null`, `{…}`). */
+export const copyText = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v))
+
+/** A Fields-tab value: underlined on hover, click (or Enter/Space) copies the full value. */
+function ValueCopy({ k, v }: { k: string; v: unknown }) {
+  return (
+    <button
+      type="button"
+      title="Copy value"
+      aria-label="Copy value"
+      onClick={(e) => {
+        e.stopPropagation()
+        copy(copyText(v), k)
+      }}
+      className="relative z-10 max-w-full cursor-pointer break-all text-left decoration-dotted underline-offset-2 outline-none hover:underline focus-visible:underline"
+    >
+      <Value v={v} />
+    </button>
+  )
+}
+
 function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <Tooltip>
@@ -112,8 +133,6 @@ function IconButton({ label, onClick, children }: { label: string; onClick: () =
     </Tooltip>
   )
 }
-
-const asText = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v))
 
 /** One JSON line, coloured: keys periwinkle, strings, numbers amber, literals green. */
 function JsonLine({ text }: { text: string }) {
@@ -252,7 +271,7 @@ export function FieldCard({
 
   const filter = () => {
     if (picked == null) return
-    const v = asText(pickedValue)
+    const v = copyText(pickedValue)
     navigate({ to: '/search', search: { q: `${picked}:${/\s/.test(v) ? `"${v}"` : v}` } })
   }
 
@@ -328,24 +347,28 @@ export function FieldCard({
               </div>
               <fieldset aria-label={g.name} className="m-0 min-w-0 border-0 p-0">
                 {g.rows.map(([k, v]) => (
-                  <button
-                    type="button"
+                  <div
                     key={k}
-                    aria-pressed={picked === k}
-                    onClick={() => setPicked(picked === k ? null : k)}
                     className={cn(
-                      'grid w-full grid-cols-[minmax(0,2fr)_minmax(0,3fr)_32px] gap-3 border-border/60 border-b py-1.5 text-left hover:bg-row-hover',
+                      'relative grid w-full grid-cols-[minmax(0,2fr)_minmax(0,3fr)_32px] gap-3 border-border/60 border-b py-1.5 text-left hover:bg-row-hover',
                       picked === k && 'bg-row-selected',
                     )}
                   >
-                    <span className="truncate text-syntax-key" title={k}>
-                      {k}
-                    </span>
+                    {/* The whole row picks the field (for "Filter by value"); the value copies. */}
+                    <button
+                      type="button"
+                      aria-label={k}
+                      aria-pressed={picked === k}
+                      title={k}
+                      onClick={() => setPicked(picked === k ? null : k)}
+                      className="absolute inset-0 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                    />
+                    <span className="truncate text-syntax-key">{k}</span>
                     <span className="break-all">
-                      <Value v={v} />
+                      <ValueCopy k={k} v={v} />
                     </span>
                     <span className="text-right text-[11px] text-muted-foreground">{kind(v)}</span>
-                  </button>
+                  </div>
                 ))}
               </fieldset>
             </div>
