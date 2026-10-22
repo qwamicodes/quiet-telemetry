@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import type { DetectedField, IdCoverage, LevelTally, MalformedLine, SourceFields, StreamStats } from '@/gen'
 import { fetchJson } from '@/lib/api'
@@ -55,8 +55,8 @@ export const sourceFields = z.object({
  * Level counts (24h window) and the last hour's volume for the stream. Counted
  * on the server; refreshed every 15s, and the page adds live lines in between.
  */
-export function useStreamStats(source: string | null, q: string | undefined) {
-  return useQuery({
+export const streamStatsQuery = (source: string | null, q: string | undefined) =>
+  queryOptions({
     queryKey: ['stream-stats', source, q ?? ''],
     queryFn: ({ signal }) => {
       const p = new URLSearchParams({ source: source ?? '' })
@@ -65,8 +65,14 @@ export function useStreamStats(source: string | null, q: string | undefined) {
     },
     enabled: Boolean(source),
     refetchInterval: 15_000,
-    placeholderData: keepPreviousData,
   })
+
+/**
+ * Keeps the previous filter's counts while new ones load: callers must check
+ * `isPlaceholderData` before reading them as the current filter's.
+ */
+export function useStreamStats(source: string | null, q: string | undefined) {
+  return useQuery({ ...streamStatsQuery(source, q), placeholderData: keepPreviousData })
 }
 
 export function useSourceFields(name: string) {
