@@ -72,6 +72,8 @@ const page = (ls: LogLine[]): SearchResponse => ({
   histogram: Array.from({ length: 60 }, (_, i) => ({
     start: T + i,
     count: i === 59 ? ls.length : 0,
+    debug: 0,
+    info: i === 59 ? ls.length : 0,
     warn: 0,
     error: 0,
   })),
@@ -240,7 +242,7 @@ describe('export dialog', () => {
 
     // CSV: columns appear, one more can be added, gzip off.
     await user.click(within(dialog).getByRole('radio', { name: 'CSV' }))
-    await user.click(within(dialog).getByRole('button', { name: 'job_id' }))
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Add job_id' }))
     await user.click(within(dialog).getByRole('switch', { name: 'Gzip' }))
     href = within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? ''
     expect(decodeURIComponent(href)).toContain(
