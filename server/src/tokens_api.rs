@@ -4,17 +4,17 @@
 //! POST   /api/ingest-tokens        { name, source? } → { token, secret }   (201)
 //! DELETE /api/ingest-tokens/:id    → the revoked token
 //!
-//! Open until accounts land (slice 5), like the rest of `/api`: whoever can
-//! reach the UI can mint a token. Keep quiet on loopback (the default) or
-//! behind an authenticating proxy until then.
+//! Needs a session like the rest of `/api`. Anyone signed in can list tokens
+//! (previews only, never secrets); only owners can create or revoke them.
 
 use crate::api::AppState;
+use crate::auth::{require_owner, Viewer};
 use crate::tokens::{CreateIngestToken, IngestTokensResponse};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde_json::json;
 
 pub fn routes() -> Router<AppState> {
@@ -44,7 +44,14 @@ pub fn valid_source(s: &str) -> bool {
     !s.is_empty() && s.chars().count() <= 128 && !s.chars().any(char::is_control)
 }
 
-async fn create(State(s): State<AppState>, body: Option<Json<CreateIngestToken>>) -> Response {
+async fn create(
+    State(s): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    body: Option<Json<CreateIngestToken>>,
+) -> Response {
+    if let Err(r) = require_owner(&v) {
+        return r;
+    }
     let Some(Json(req)) = body else {
         return bad(StatusCode::BAD_REQUEST, "expected JSON { name, source? }");
     };
@@ -63,21 +70,28 @@ async fn create(State(s): State<AppState>, body: Option<Json<CreateIngestToken>>
     let now = chrono::Utc::now().timestamp_millis();
     match s.ingest_tokens.create(name, source, now) {
         Ok(created) => {
-            tracing::info!(id = created.token.id, name, source = ?source, "ingest token created");
+            tracing::info!(id = created.token.id, by = v.user.id, name, source = ?source, "ingest token created");
             (StatusCode::CREATED, Json(created)).into_response()
         }
         Err(e) => store_error(e),
     }
 }
 
-async fn revoke(State(s): State<AppState>, Path(id): Path<String>) -> Response {
+async fn revoke(
+    State(s): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(r) = require_owner(&v) {
+        return r;
+    }
     let Ok(id) = id.parse::<i64>() else {
         return bad(StatusCode::BAD_REQUEST, "token id must be a number");
     };
     let now = chrono::Utc::now().timestamp_millis();
     match s.ingest_tokens.revoke(id, now) {
         Ok(Some(t)) => {
-            tracing::info!(id, "ingest token revoked");
+            tracing::info!(id, by = v.user.id, "ingest token revoked");
             Json(t).into_response()
         }
         Ok(None) => bad(StatusCode::NOT_FOUND, "no such token"),
@@ -113,7 +127,8 @@ mod tests {
         let st = AppState::new(
             Pipeline::new(Arc::new(MemoryStore::new(10)), Hub::new()),
             Arc::new(Mutex::new(DockerStatus::Disabled)),
-        );
+        )
+        .auth_off();
         let app = crate::api::router(st);
         let post = |b: &str| {
             Request::post("/api/ingest-tokens")

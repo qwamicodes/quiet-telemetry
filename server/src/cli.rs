@@ -1,6 +1,7 @@
 //! Command line. `quiet` with no subcommand runs the server, so the old
 //! env-only setup (`QUIET_ADDR=… quiet`) keeps working.
 
+use crate::auth::{AuthMode, CookieSecure};
 use crate::receiver::IngestAuth;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
@@ -35,6 +36,8 @@ pub enum Command {
     Agent(AgentArgs),
     /// Send stdin to a quiet server, one line per row: `my-app | quiet pipe --name my-app`.
     Pipe(PipeArgs),
+    /// Account recovery on the host: `quiet admin reset-password <email>`.
+    Admin(AdminArgs),
     /// Exit 0 when the local server answers /ready (for container healthchecks).
     #[command(hide = true)]
     Healthcheck(HealthcheckArgs),
@@ -48,10 +51,49 @@ pub struct HealthcheckArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct AdminArgs {
+    #[command(subcommand)]
+    pub command: AdminCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum AdminCommand {
+    /// Print a one-time password-reset link for a user (valid for 1 hour).
+    /// For a locked-out owner; owners can make links for members in Settings → Members.
+    ResetPassword {
+        /// The account's email.
+        email: String,
+        /// Directory holding `quiet.db` (the server's --data-dir).
+        #[arg(long, env = "QUIET_DATA_DIR", default_value = "data")]
+        data_dir: PathBuf,
+        /// The address people open quiet at, to print a full link
+        /// (e.g. https://quiet.example.com). Without it only the path is printed.
+        #[arg(long, env = "QUIET_PUBLIC_URL")]
+        url: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Args)]
 pub struct ServerArgs {
-    /// Listen address. Loopback until accounts land (slice 5).
+    /// Listen address. Everything but /health, /ready and token-gated ingest
+    /// needs a signed-in session, so 0.0.0.0 is fine behind TLS.
     #[arg(long, env = "QUIET_ADDR", default_value = "127.0.0.1:7070")]
     pub addr: SocketAddr,
+
+    /// Sign-in: `on` (accounts, the default) or `off` (no sign-in, every
+    /// request is a local owner; only allowed on a loopback address).
+    #[arg(long, env = "QUIET_AUTH", value_enum, default_value_t = AuthMode::On)]
+    pub auth: AuthMode,
+
+    /// Session cookie `Secure` flag: `auto` (when the proxy says
+    /// `X-Forwarded-Proto: https`), `on` or `off`.
+    #[arg(long, env = "QUIET_COOKIE_SECURE", value_enum, default_value_t = CookieSecure::Auto)]
+    pub cookie_secure: CookieSecure,
+
+    /// Read the client address from `X-Forwarded-For` / `X-Real-IP` (sign-in
+    /// backoff, session list). Turn on only behind a reverse proxy that sets them.
+    #[arg(long, env = "QUIET_TRUST_PROXY", default_value = "off", value_parser = parse_switch, action = clap::ArgAction::Set)]
+    pub trust_proxy: bool,
 
     /// Read container logs from the local Docker socket (on/off).
     #[arg(long, env = "QUIET_DOCKER", default_value = "on", value_parser = parse_switch, action = clap::ArgAction::Set)]
@@ -257,6 +299,48 @@ mod tests {
         assert!(parse_retention("8d").is_err());
         assert!(parse_bytes("5XB").is_err());
         assert!(parse_bytes("1MB").is_err());
+    }
+
+    #[test]
+    fn auth_flags_and_admin() {
+        let cli = Cli::try_parse_from(["quiet"]).unwrap();
+        assert_eq!(cli.server.auth, AuthMode::On);
+        assert_eq!(cli.server.cookie_secure, CookieSecure::Auto);
+        assert!(!cli.server.trust_proxy);
+        let cli = Cli::try_parse_from([
+            "quiet",
+            "--auth",
+            "off",
+            "--cookie-secure",
+            "on",
+            "--trust-proxy",
+            "on",
+        ])
+        .unwrap();
+        assert_eq!(cli.server.auth, AuthMode::Off);
+        assert_eq!(cli.server.cookie_secure, CookieSecure::On);
+        assert!(cli.server.trust_proxy);
+        let cli = Cli::try_parse_from([
+            "quiet",
+            "admin",
+            "reset-password",
+            "k@x.co",
+            "--data-dir",
+            "/data",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Admin(AdminArgs {
+                command:
+                    AdminCommand::ResetPassword {
+                        email, data_dir, ..
+                    },
+            })) => {
+                assert_eq!(email, "k@x.co");
+                assert_eq!(data_dir, PathBuf::from("/data"));
+            }
+            other => panic!("expected admin, got {other:?}"),
+        }
     }
 
     #[test]

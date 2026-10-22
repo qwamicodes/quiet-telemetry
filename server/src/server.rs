@@ -4,7 +4,9 @@
 //! stop accepting, close open streams (code 1012, the UI reconnects) and stop
 //! receivers → give up after `shutdown_timeout_ms`.
 
-use crate::api::{self, AppState};
+use crate::accounts::Accounts;
+use crate::api::{self, AppState, HostInfo};
+use crate::auth::{AuthConfig, AuthMode};
 use crate::cli::{ServerArgs, StoreKind};
 use crate::hub::Hub;
 use crate::pipeline::Pipeline;
@@ -19,6 +21,13 @@ use std::time::Duration;
 use tokio_util::task::TaskTracker;
 
 pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
+    if args.auth == AuthMode::Off && !args.addr.ip().is_loopback() {
+        anyhow::bail!(
+            "QUIET_AUTH=off only works on a loopback address (QUIET_ADDR={}): without sign-in \
+             anyone who can reach quiet can read every log. Use 127.0.0.1, or keep auth on.",
+            args.addr
+        );
+    }
     let store: Arc<dyn Store> = match args.store {
         StoreKind::Memory => Arc::new(MemoryStore::new(args.ring)),
         StoreKind::Sqlite => {
@@ -61,10 +70,26 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         Arc::new(Mutex::new(DockerStatus::Disabled))
     };
 
+    // Accounts always live on disk (even with --store memory): forgetting them
+    // on restart would offer owner setup to whoever arrives first.
+    let accounts_path = args.data_dir.join("quiet.db");
+    let accounts =
+        Arc::new(tokio::task::spawn_blocking(move || Accounts::open(Some(&accounts_path))).await??);
+    let auth = AuthConfig {
+        mode: args.auth,
+        cookie_secure: args.cookie_secure,
+        trust_proxy: args.trust_proxy,
+    };
+
     let retention_ms = args.retention.as_millis() as i64;
     let state = AppState::new(pipeline, docker_status)
         .with_retention(retention_ms)
-        .with_ingest(ingest_tokens.clone(), ingest);
+        .with_ingest(ingest_tokens.clone(), ingest)
+        .with_accounts(accounts.clone(), auth)
+        .with_host(HostInfo {
+            data_dir: Some(args.data_dir.clone()),
+            max_disk: args.max_disk,
+        });
     let shutdown = state.shutdown.clone();
     let ready = state.ready.clone();
 
@@ -89,7 +114,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         shutdown.clone(),
     ));
     tasks.close();
-    let app = web::attach(app, args.web_dir.clone());
+    let app = security_headers(web::attach(app, args.web_dir.clone()));
 
     let listener = tokio::net::TcpListener::bind(args.addr).await?;
     tracing::info!(
@@ -101,10 +126,21 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         max_disk_mb = args.max_disk / 1_000_000,
         ingest_auth = ?args.ingest_auth,
         ingest_tokens = ingest_tokens.active(),
+        auth = ?args.auth,
         "quiet listening"
     );
     if ingest.loopback {
-        tracing::info!("listening on loopback only: shippers on other machines need QUIET_ADDR=0.0.0.0:7070 (ingest stays gated by qi_ tokens)");
+        tracing::info!("listening on loopback only: shippers on other machines need QUIET_ADDR=0.0.0.0:7070 (ingest stays gated by qi_ tokens, the UI and /api by sign-in)");
+    }
+    match args.auth {
+        AuthMode::Off => tracing::warn!(
+            "QUIET_AUTH=off: no sign-in, every request acts as a local owner (development only)"
+        ),
+        AuthMode::On => {
+            if accounts.setup_required().unwrap_or(false) {
+                tracing::warn!("no owner yet: open the UI to create the owner account (first visitor becomes owner)");
+            }
+        }
     }
     if args.ingest_auth == crate::receiver::IngestAuth::Open {
         tracing::warn!("--ingest-auth open: HTTP ingest accepts lines without a token");
@@ -127,8 +163,12 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         });
     }
 
-    let server =
-        axum::serve(listener, app).with_graceful_shutdown(shutdown.clone().cancelled_owned());
+    // Peer addresses feed sign-in backoff and the sessions list.
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown.clone().cancelled_owned());
     let deadline = async {
         shutdown.cancelled().await;
         tokio::time::sleep(hard).await;
@@ -148,6 +188,26 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     }
     tracing::info!("bye");
     Ok(())
+}
+
+/// Headers on every response: no framing (clickjacking on the sign-in page),
+/// no sniffing, and no Referer leaving the origin (invite and reset links
+/// carry their token in the path).
+fn security_headers(app: axum::Router) -> axum::Router {
+    use axum::http::{header, HeaderValue};
+    use tower_http::set_header::SetResponseHeaderLayer;
+    app.layer(SetResponseHeaderLayer::if_not_present(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("DENY"),
+    ))
+    .layer(SetResponseHeaderLayer::if_not_present(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    ))
+    .layer(SetResponseHeaderLayer::if_not_present(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    ))
 }
 
 async fn wait_for_signal() -> &'static str {

@@ -290,7 +290,7 @@ mod tests {
             )
             .await
             .unwrap();
-        AppState::new(pipeline, Arc::new(Mutex::new(DockerStatus::Disabled)))
+        AppState::new(pipeline, Arc::new(Mutex::new(DockerStatus::Disabled))).auth_off()
     }
 
     async fn call(st: &AppState, req: Request<Body>) -> (StatusCode, serde_json::Value) {
