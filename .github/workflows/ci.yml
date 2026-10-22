@@ -61,10 +61,13 @@ jobs:
           cache-to: type=gha,mode=max
       - name: smoke test
         run: |
-          docker run -d --name q -e QUIET_DOCKER=0 -p 7070:7070 quiet:ci
+          docker run -d --name quiet-smoke -e QUIET_DOCKER=0 -p 7070:7070 quiet:ci
           for i in $(seq 1 20); do curl -fs localhost:7070/ready && break; sleep 1; done
           curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci' --data-binary '{"msg":"hello"}'
           curl -fs localhost:7070/api/sources/ci/lines | grep -q hello
           curl -fs localhost:7070/ | grep -q '<div id="root">'
-          docker inspect --format '{{.State.Health.Status}}' q
-          docker stop q
+          for i in $(seq 1 20); do [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ] && break; sleep 1; done
+          docker inspect --format 'health: {{.State.Health.Status}}' quiet-smoke
+          [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ]
+          docker stop quiet-smoke
+          docker logs quiet-smoke 2>&1 | tail -5
