@@ -345,8 +345,15 @@ impl DockerReceiver {
                 s.update_meta(|m| m.containers.retain(|c| c != &short));
             }
             let n = following.lock().unwrap().len();
-            if let DockerStatus::Connected { .. } = *status.lock().unwrap() {
-                *status.lock().unwrap() = DockerStatus::Connected { containers: n };
+            // One guard: the `if let` scrutinee's guard lives through the block,
+            // so locking again inside it self-deadlocked the std Mutex whenever a
+            // followed container stopped, wedging a runtime worker (and then
+            // every reader of `status`) until quiet stopped answering /ready.
+            {
+                let mut st = status.lock().unwrap();
+                if let DockerStatus::Connected { .. } = *st {
+                    *st = DockerStatus::Connected { containers: n };
+                }
             }
             tracing::info!(container = %short, "stopped following");
         });
