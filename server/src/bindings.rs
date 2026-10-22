@@ -20,7 +20,9 @@ use crate::search_api::{
 use crate::settings::{
     FlowIdSettings, GeneralSettings, SettingsResponse, SourceSettings, UpdateStorage,
 };
-use crate::settings_api::{PurgeRequest, Purged, SourceActivity, StorageReport};
+use crate::settings_api::{
+    PurgeRequest, Purged, RemoveSource, RemovedSource, SourceActivity, StorageReport,
+};
 use crate::stream_api::{IdCoverageReport, SourceFields, StreamStats};
 use crate::system::SystemStatus;
 use crate::tokens::{CreateIngestToken, CreatedIngestToken, IngestToken, IngestTokensResponse};
@@ -93,6 +95,8 @@ fn export_into(dir: &Path) {
     UpdateStorage::export_all(&cfg).unwrap();
     FlowIdSettings::export_all(&cfg).unwrap();
     SourceSettings::export_all(&cfg).unwrap();
+    RemoveSource::export_all(&cfg).unwrap();
+    RemovedSource::export_all(&cfg).unwrap();
     StorageReport::export_all(&cfg).unwrap();
     PurgeRequest::export_all(&cfg).unwrap();
     Purged::export_all(&cfg).unwrap();

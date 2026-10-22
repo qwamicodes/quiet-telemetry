@@ -225,7 +225,24 @@ pub struct SourceSettings {
     pub mask_fields: Vec<String>,
     /// Built-in PII groups NOT masked for this source.
     pub unmasked: Vec<PiiKind>,
+    /// Muted lines (board 06.3): lines matching any rule are hidden from the
+    /// stream and search by default ("N muted · show"); still stored,
+    /// counted and searchable. Matching happens in the browser.
+    pub muted: Vec<MuteRule>,
 }
+
+/// One muted-lines rule. With `field`, the field's value (dot path, compared
+/// as text) equals `value`, where `*` matches any run of characters
+/// (`/api/v1/health*`). Without, `value` appears anywhere in the raw line
+/// (case-insensitive).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MuteRule {
+    pub field: Option<String>,
+    pub value: String,
+}
+
+/// At most this many muted-lines rules per source.
+pub const MAX_MUTE_RULES: usize = 32;
 
 /// `GET /api/settings`: everything at once (any signed-in user).
 #[derive(Debug, Clone, Serialize, TS)]
@@ -714,6 +731,36 @@ impl Settings {
             return invalid("mask_fields: at most 64 keys");
         }
         s.mask_fields = fields;
+        let mut muted: Vec<MuteRule> = Vec::new();
+        for r in &s.muted {
+            let field = r
+                .field
+                .as_deref()
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .map(String::from);
+            let value = r.value.trim().to_string();
+            if value.is_empty() {
+                continue;
+            }
+            if value.chars().count() > 256
+                || value.chars().any(char::is_control)
+                || field.as_ref().is_some_and(|f| {
+                    f.chars().count() > 128
+                        || f.chars().any(|c| c.is_control() || c.is_whitespace())
+                })
+            {
+                return invalid("muted: field up to 128 characters (no spaces), value up to 256");
+            }
+            let rule = MuteRule { field, value };
+            if !muted.contains(&rule) {
+                muted.push(rule);
+            }
+        }
+        if muted.len() > MAX_MUTE_RULES {
+            return invalid(format!("muted: at most {MAX_MUTE_RULES} rules"));
+        }
+        s.muted = muted;
         s.unmasked.sort_by_key(|k| *k as u8);
         s.unmasked.dedup();
 
@@ -994,6 +1041,67 @@ mod tests {
         .unwrap();
         assert_eq!(old.max_line_bytes, DEFAULT_MAX_LINE_BYTES);
         assert!(old.keep_non_json && !old.check_updates);
+    }
+
+    #[test]
+    fn muted_rules_are_trimmed_deduped_and_bounded() {
+        let s = Settings::memory();
+        let rule = |f: Option<&str>, v: &str| MuteRule {
+            field: f.map(String::from),
+            value: v.into(),
+        };
+        let saved = s
+            .put_source(
+                "api",
+                SourceSettings {
+                    muted: vec![
+                        rule(Some(" path "), " /api/v1/health "),
+                        rule(Some("path"), "/api/v1/health"),
+                        rule(Some(""), "kube-probe"),
+                        rule(None, "  "),
+                    ],
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            saved.muted,
+            vec![
+                rule(Some("path"), "/api/v1/health"),
+                rule(None, "kube-probe")
+            ]
+        );
+        assert_eq!(s.source("api").muted.len(), 2);
+        let bad = |r: MuteRule| {
+            s.put_source(
+                "api",
+                SourceSettings {
+                    muted: vec![r],
+                    ..Default::default()
+                },
+                None,
+            )
+            .is_err()
+        };
+        assert!(bad(rule(Some("a b"), "x")));
+        assert!(bad(rule(None, &"x".repeat(257))));
+        let many = (0..=MAX_MUTE_RULES)
+            .map(|i| rule(None, &format!("r{i}")))
+            .collect();
+        assert!(s
+            .put_source(
+                "api",
+                SourceSettings {
+                    muted: many,
+                    ..Default::default()
+                },
+                None
+            )
+            .is_err());
+        // Old saved settings (no `muted` key) still read.
+        let old: SourceSettings = serde_json::from_str(r#"{"hidden":true}"#).unwrap();
+        assert!(old.muted.is_empty() && old.hidden);
     }
 
     #[test]
