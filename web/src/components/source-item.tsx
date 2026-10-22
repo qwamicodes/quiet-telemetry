@@ -18,13 +18,19 @@ export function SourceItem({ source, active, rate }: { source: SourceInfo; activ
           'bg-sidebar-accent text-foreground before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-brand',
       )}
     >
-      <StatusDot status={live ? 'ok' : 'idle'} />
+      <StatusDot status={source.paused ? 'warn' : live ? 'ok' : 'idle'} />
       <span className="flex min-w-0 flex-1 flex-col leading-tight">
-        <span className="truncate text-[13px]">{source.name}</span>
+        <span className="truncate text-[13px]" title={source.display_name ? source.name : undefined}>
+          {source.display_name ?? source.name}
+        </span>
         <span className="truncate font-mono text-[11px] text-muted-foreground">{kindLabel(source.kind)}</span>
       </span>
       <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-        {rate != null && rate > 0 ? `${rate < 10 ? rate.toFixed(1) : Math.round(rate)}/s` : '—'}
+        {source.paused
+          ? 'paused'
+          : rate != null && rate > 0
+            ? `${rate < 10 ? rate.toFixed(1) : Math.round(rate)}/s`
+            : '—'}
       </span>
     </Link>
   )

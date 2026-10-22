@@ -352,6 +352,7 @@ function InviteDead({ problem }: { problem: InviteProblem }) {
 export function InvitePage() {
   const { token } = inviteRoute.useParams()
   const lookup = useQuery(inviteQuery(token))
+  const auth = useAuth().data
   const accept = useAcceptInvite()
   const navigate = useNavigate()
   const [name, setName] = useState('')
@@ -385,6 +386,7 @@ export function InvitePage() {
     )
   }
   const inv = lookup.data.invite
+  const instance = auth?.instance_name || 'quiet'
   const submit = (e: FormEvent) => {
     e.preventDefault()
     accept.mutate(
@@ -401,7 +403,7 @@ export function InvitePage() {
     <AuthFrame>
       <AuthCard>
         <Heading
-          title="Join quiet"
+          title={`Join ${instance}`}
           sub={
             inv.role === 'owner'
               ? 'A calm view of this team’s logs. Owners also manage members, invites and ingest tokens.'

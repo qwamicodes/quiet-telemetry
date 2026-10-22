@@ -14,12 +14,30 @@ import { BrokenLink } from '@/components/broken-link'
 import { ServerUnreachable } from '@/components/server-unreachable'
 import { authQuery, inviteParams, resetParams, signInSearch } from '@/lib/auth-api'
 import { connectSearch } from '@/lib/connect'
-import { flowParams, flowSearch, lineParams, searchSearch, streamSearch } from '@/lib/search-params'
+import {
+  flowParams,
+  flowSearch,
+  lineParams,
+  searchSearch,
+  sourceParams,
+  sourceSearch,
+  streamSearch,
+} from '@/lib/search-params'
 import { makeQueryClient } from '@/providers'
 import { BrokenAuthLink, InvitePage, ResetPage, SetupPage, SignInPage } from '@/routes/auth'
 import { ConnectPage } from '@/routes/connect'
 import { FlowPage, LineFlowPage } from '@/routes/flow'
-import { SettingsAccount, SettingsGeneral, SettingsLayout, SettingsMembers, SettingsTokens } from '@/routes/settings'
+import {
+  SettingsAccount,
+  SettingsAppearance,
+  SettingsFlowIds,
+  SettingsGeneral,
+  SettingsLayout,
+  SettingsMembers,
+  SettingsStorage,
+  SettingsTokens,
+} from '@/routes/settings'
+import { SourceDetailPage } from '@/routes/source-detail'
 import { SourcesPage } from '@/routes/sources'
 import { StreamPage } from '@/routes/stream'
 
@@ -129,6 +147,15 @@ const sourcesRoute = createRoute({
   component: SourcesPage,
 })
 
+export const sourceDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sources/$name',
+  params: { parse: (p) => sourceParams.parse(p), stringify: ({ name }) => ({ name }) },
+  validateSearch: sourceSearch,
+  component: SourceDetailPage,
+  errorComponent: BrokenLink,
+})
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
@@ -154,6 +181,21 @@ const settingsMembersRoute = createRoute({
   path: '/members',
   component: SettingsMembers,
 })
+const settingsStorageRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/storage',
+  component: SettingsStorage,
+})
+const settingsFlowIdsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/flow-id-order',
+  component: SettingsFlowIds,
+})
+const settingsAppearanceRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/appearance',
+  component: SettingsAppearance,
+})
 
 export const routeTree = rootRoute.addChildren([
   setupRoute,
@@ -166,7 +208,16 @@ export const routeTree = rootRoute.addChildren([
   lineRoute,
   connectRoute,
   sourcesRoute,
-  settingsRoute.addChildren([settingsIndexRoute, settingsAccountRoute, settingsMembersRoute, settingsTokensRoute]),
+  sourceDetailRoute,
+  settingsRoute.addChildren([
+    settingsIndexRoute,
+    settingsAccountRoute,
+    settingsMembersRoute,
+    settingsTokensRoute,
+    settingsFlowIdsRoute,
+    settingsStorageRoute,
+    settingsAppearanceRoute,
+  ]),
 ])
 
 /**

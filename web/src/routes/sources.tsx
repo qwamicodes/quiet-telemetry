@@ -44,7 +44,9 @@ export function SourcesPage() {
       <header className="flex items-start justify-between">
         <div className="flex flex-col gap-1">
           <h1 className="font-semibold text-xl">Sources</h1>
-          <p className="text-muted-foreground text-sm">Everything that sends lines to quiet. Pick one to stream it.</p>
+          <p className="text-muted-foreground text-sm">
+            Everything that sends lines to quiet. Pick one for its settings, rejected requests and stream.
+          </p>
         </div>
         <Button variant="outline" nativeButton={false} render={<Link to="/connect" />}>
           <PlusIcon /> Connect a source
@@ -131,12 +133,14 @@ export function SourcesPage() {
               <tr key={s.name} className="h-11 border-b last:border-b-0 hover:bg-row-hover">
                 <td className="px-4">
                   <Link
-                    to="/"
-                    search={{ source: s.name }}
+                    to="/sources/$name"
+                    params={{ name: s.name }}
                     className="flex items-center gap-2.5 font-medium text-[13px] outline-none hover:underline"
                   >
-                    <StatusDot status={isRecent(s.last_ts) ? 'ok' : 'idle'} />
-                    {s.name}
+                    <StatusDot status={s.paused ? 'warn' : isRecent(s.last_ts) ? 'ok' : 'idle'} />
+                    {s.display_name ?? s.name}
+                    {s.paused && <span className="font-mono text-[11px] text-status-warn">paused</span>}
+                    {s.hidden && <span className="font-mono text-[11px] text-muted-foreground">hidden</span>}
                   </Link>
                 </td>
                 <td>

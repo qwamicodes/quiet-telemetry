@@ -1,8 +1,21 @@
 import { Link, Outlet } from '@tanstack/react-router'
-import { KeyRoundIcon, MoonIcon, SettingsIcon, SunIcon, UserIcon, UsersIcon } from 'lucide-react'
+import {
+  DatabaseIcon,
+  KeyRoundIcon,
+  MoonIcon,
+  NetworkIcon,
+  PaletteIcon,
+  SettingsIcon,
+  SunIcon,
+  UserIcon,
+  UsersIcon,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Account } from '@/components/settings/account'
+import { General } from '@/components/settings/general'
+import { FlowIdOrder } from '@/components/settings/id-order'
 import { Members } from '@/components/settings/members'
+import { Storage } from '@/components/settings/storage'
 import { IngestTokens } from '@/components/tokens/token-table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useHealth } from '@/lib/api'
@@ -25,7 +38,14 @@ function NavLink({
   icon,
   children,
 }: {
-  to: '/settings' | '/settings/account' | '/settings/members' | '/settings/ingest-tokens'
+  to:
+    | '/settings'
+    | '/settings/account'
+    | '/settings/members'
+    | '/settings/ingest-tokens'
+    | '/settings/flow-id-order'
+    | '/settings/storage'
+    | '/settings/appearance'
   icon: ReactNode
   children: ReactNode
 }) {
@@ -41,7 +61,7 @@ function NavLink({
   )
 }
 
-/** Settings: a nav on the left. Storage and per-source settings arrive with their slices. */
+/** Settings: the v0.1 nav on the left (per-source settings live on each source's page). */
 export function SettingsLayout() {
   return (
     <div className="flex min-h-0 flex-1 overflow-y-auto">
@@ -61,6 +81,15 @@ export function SettingsLayout() {
         <NavLink to="/settings/ingest-tokens" icon={<KeyRoundIcon />}>
           Ingest tokens
         </NavLink>
+        <NavLink to="/settings/flow-id-order" icon={<NetworkIcon />}>
+          Flow id order
+        </NavLink>
+        <NavLink to="/settings/storage" icon={<DatabaseIcon />}>
+          Storage
+        </NavLink>
+        <NavLink to="/settings/appearance" icon={<PaletteIcon />}>
+          Appearance
+        </NavLink>
       </nav>
       <div className="min-w-0 flex-1 px-8 py-8">
         <Outlet />
@@ -69,13 +98,25 @@ export function SettingsLayout() {
   )
 }
 
-/** Appearance + about. */
 export function SettingsGeneral() {
+  return <General />
+}
+
+export function SettingsStorage() {
+  return <Storage />
+}
+
+export function SettingsFlowIds() {
+  return <FlowIdOrder />
+}
+
+/** Appearance (this browser) + about. */
+export function SettingsAppearance() {
   const { theme, setTheme } = useTheme()
   const health = useHealth().data
   return (
     <div className="max-w-2xl">
-      <h2 className="font-semibold text-xl">General</h2>
+      <h2 className="font-semibold text-xl">Appearance</h2>
       <Row label="Theme" hint="Dark is the default.">
         <ToggleGroup
           variant="outline"
@@ -99,7 +140,8 @@ export function SettingsGeneral() {
         </span>
       </Row>
       <p className="pt-4 text-muted-foreground text-xs">
-        Storage, retention and per-source settings arrive with their slices.
+        Theme is kept per browser. Where the newest stream line sits is set for everyone in General, and each browser
+        can flip it from the stream's view button.
       </p>
     </div>
   )

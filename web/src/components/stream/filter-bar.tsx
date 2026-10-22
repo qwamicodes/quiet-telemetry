@@ -1,4 +1,4 @@
-import { FilterIcon, XIcon } from 'lucide-react'
+import { ArrowDownWideNarrowIcon, ArrowUpWideNarrowIcon, FilterIcon, XIcon } from 'lucide-react'
 import type { Ref } from 'react'
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group'
 import { Kbd } from '@/components/ui/kbd'
@@ -21,6 +21,8 @@ export function FilterBar({
   onLevel,
   counts,
   inputRef,
+  direction,
+  onDirection,
 }: {
   text: string
   onText: (t: string) => void
@@ -28,6 +30,8 @@ export function FilterBar({
   onLevel: (l: LevelFilter) => void
   counts: Record<string, number>
   inputRef?: Ref<HTMLInputElement>
+  direction?: 'bottom' | 'top'
+  onDirection?: (d: 'bottom' | 'top') => void
 }) {
   return (
     <div className="flex shrink-0 items-center gap-2 px-6 pt-4 pb-3">
@@ -83,6 +87,25 @@ export function FilterBar({
           </Tooltip>
         ))}
       </ToggleGroup>
+      {direction && onDirection && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label={direction === 'bottom' ? 'Newest at bottom' : 'Newest at top'}
+                onClick={() => onDirection(direction === 'bottom' ? 'top' : 'bottom')}
+                className="flex size-8 items-center justify-center border hover:bg-muted [&_svg]:size-3.5"
+              />
+            }
+          >
+            {direction === 'bottom' ? <ArrowDownWideNarrowIcon /> : <ArrowUpWideNarrowIcon />}
+          </TooltipTrigger>
+          <TooltipContent>
+            {direction === 'bottom' ? 'Newest at bottom' : 'Newest at top'} · click to flip (this browser)
+          </TooltipContent>
+        </Tooltip>
+      )}
     </div>
   )
 }

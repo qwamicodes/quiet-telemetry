@@ -39,6 +39,8 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
   const health = useHealth().data
   const sources = useSources().data
   const rates = useRates(sources)
+  // Hidden sources stay under Sources and in search, not here (unless open now).
+  const listed = sources?.filter((s) => !s.hidden || s.name === activeSource)
   const onStream = useRouterState({ select: (s) => s.location.pathname === '/' })
 
   return (
@@ -82,7 +84,7 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
 
       <div className="mt-6 flex items-center justify-between px-4 pb-1.5 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
         <span>Sources</span>
-        <span>{sources?.length ?? ''}</span>
+        <span>{listed?.length ?? ''}</span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3">
         {sources?.length === 0 && (
@@ -91,7 +93,7 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
             <span className="text-muted-foreground text-xs">Sources appear here as soon as they send a line.</span>
           </div>
         )}
-        {sources?.map((s) => (
+        {listed?.map((s) => (
           <SourceItem
             key={s.name}
             source={s}
