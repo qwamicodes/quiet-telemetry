@@ -99,6 +99,8 @@ export const sourcesResponse = z.object({ sources: z.array(sourceInfo) }) satisf
 export const bucket = z.object({
   start: z.number(),
   count: z.number(),
+  debug: z.number(),
+  info: z.number(),
   warn: z.number(),
   error: z.number(),
 }) satisfies z.ZodType<Bucket>

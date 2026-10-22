@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { LEVEL_FILTERS } from '@/lib/format'
+import { normalizeLevelParam } from '@/lib/levels'
 
 /**
  * URL search params for every route, as zod schemas (Standard Schema, so
@@ -8,11 +8,12 @@ import { LEVEL_FILTERS } from '@/lib/format'
  * of throwing, and the page still opens.
  */
 const text = z.string().trim().min(1).optional().catch(undefined)
-/** The stream's level: `all` overrides a source's default level filter. */
-const streamLevel = z
-  .enum([...LEVEL_FILTERS, 'all'])
-  .optional()
-  .catch(undefined)
+/**
+ * The stream's level chips: a comma list (`level=warn,error`), or `all` to
+ * override a source's default level. Kept as a string so the URL stays
+ * readable; `levelsFromParam` turns it into chips.
+ */
+const streamLevel = z.string().transform(normalizeLevelParam).optional().catch(undefined)
 
 /** `/` — the live stream of one source. */
 export const streamSearch = z.object({
