@@ -89,12 +89,15 @@ const page = (ls: LogLine[]): SearchResponse => ({
 
 let calls: string[] = []
 let jobReady = false
+/** `GET /api/settings`; null → 404 (no muted-lines rules). */
+let settingsBody: unknown = null
 let bodies: Record<string, string> = {}
 
 beforeEach(() => {
   calls = []
   bodies = {}
   jobReady = false
+  settingsBody = null
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -157,6 +160,7 @@ beforeEach(() => {
         if (q.includes('huge')) return json({ ...page(lines), total: 250_000, bytes: 960_000_000 })
         return json(page(q.includes('nothing') ? [] : lines))
       }
+      if (url === '/api/settings' && settingsBody) return json(settingsBody)
       return json({ error: 'nope' }, 404)
     }),
   )
@@ -273,6 +277,106 @@ describe('search route', () => {
     await user.click(screen.getByRole('combobox', { name: 'Source' }))
     await user.click(await screen.findByRole('option', { name: 'worker' }))
     await waitFor(() => expect(router.state.location.search.source).toBe('worker'))
+  })
+})
+
+describe('muted lines in search (06.3)', () => {
+  const settingsWith = (instance: boolean, apiInclude: boolean | null = null) => ({
+    general: {
+      instance_name: 'quiet',
+      stream_direction: 'bottom',
+      timezone: 'local',
+      public_url: null,
+      timestamps: 'millis',
+      max_line_bytes: 65536,
+      keep_non_json: true,
+      check_updates: false,
+      search_include_muted: instance,
+    },
+    storage: {
+      retention_ms: 86_400_000,
+      retention_origin: 'default',
+      max_disk: 5e9,
+      max_disk_origin: 'default',
+      flag_retention_ms: 86_400_000,
+      flag_max_disk: 5e9,
+      at_cap: 'drop_oldest_hour',
+    },
+    muted_search: { include: instance, origin: 'setting', flag: false },
+    grouping: { mode: 'auto', label: 'quiet.group', origin: 'default', locked: false },
+    flow_ids: { order: ['request_id', 'job_id', 'trace_id', 'correlation_id'], match_by: 'value' },
+    sources: {
+      api: {
+        display_name: null,
+        hidden: false,
+        paused: false,
+        retention_ms: null,
+        id_keys: null,
+        default_level: null,
+        mask_fields: [],
+        unmasked: [],
+        muted: [{ field: 'msg', value: 'GET /health*' }],
+        search_include_muted: apiInclude,
+      },
+    },
+  })
+  const downloadHref = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole('button', { name: 'Export' }))
+    const dialog = await screen.findByRole('dialog')
+    const href = within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? ''
+    const row = within(dialog).queryByText(/as in this view|search setting/)?.textContent ?? null
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    return { href, row }
+  }
+
+  it('hidden by default; Show muted includes them dimmed and tagged (muted=include); Hide hides them again', async () => {
+    settingsBody = settingsWith(false)
+    const user = userEvent.setup()
+    const router = renderAt('/search?q=dealer&view=lines')
+    const note = await screen.findByTestId('muted-note')
+    expect(note).toHaveTextContent('1 muted · hidden')
+    expect(screen.queryByText('GET /health')).not.toBeInTheDocument()
+    // The export leaves them out too (per source, as search shows them).
+    let ex = await downloadHref(user)
+    expect(ex.href).toContain('muted=auto')
+
+    await user.click(within(note).getByRole('button', { name: 'Show muted' }))
+    await waitFor(() => expect(router.state.location.search.muted).toBe('include'))
+    expect(await screen.findByText('GET /health')).toBeInTheDocument()
+    const row = document.querySelector('[data-line-id="2"]') as HTMLElement
+    expect(row).toHaveAttribute('data-muted', 'true')
+    expect(row.className).toContain('opacity-50')
+    expect(within(row).getByText('muted')).toBeInTheDocument()
+    // Other rows are not dimmed.
+    expect(document.querySelector('[data-line-id="1"]')).not.toHaveAttribute('data-muted')
+    expect(screen.getByTestId('muted-note')).toHaveTextContent('1 muted line included')
+    ex = await downloadHref(user)
+    expect(ex.href).not.toContain('muted=')
+    expect(ex.row).toBe('included, as in this view')
+
+    await user.click(within(screen.getByTestId('muted-note')).getByRole('button', { name: 'Hide' }))
+    await waitFor(() => expect(router.state.location.search.muted).toBe('hide'))
+    await waitFor(() => expect(screen.queryByText('GET /health')).not.toBeInTheDocument())
+    ex = await downloadHref(user)
+    expect(ex.href).toContain('muted=hide')
+    expect(ex.row).toBe('left out, as in this view')
+  })
+
+  it('the setting includes them without a URL param; muted=hide overrides it for one search', async () => {
+    settingsBody = settingsWith(true)
+    renderAt('/search?q=dealer&view=lines')
+    const note = await screen.findByTestId('muted-note')
+    expect(note).toHaveTextContent('1 muted line included')
+    expect(await screen.findByText('GET /health')).toBeInTheDocument()
+    expect(within(note).getByRole('button', { name: 'Hide' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('a source can opt out of the instance default; a hand-edited muted= falls back to the setting', async () => {
+    settingsBody = settingsWith(true, false)
+    renderAt('/search?q=dealer&view=lines&muted=sometimes')
+    expect(await screen.findByTestId('muted-note')).toHaveTextContent('1 muted · hidden')
+    expect(screen.queryByText('GET /health')).not.toBeInTheDocument()
   })
 })
 

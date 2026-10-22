@@ -54,6 +54,7 @@ const settings: SettingsResponse = {
     max_line_bytes: 65536,
     keep_non_json: true,
     check_updates: false,
+    search_include_muted: null,
   },
   storage: {
     retention_ms: 24 * H,
