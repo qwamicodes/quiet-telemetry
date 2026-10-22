@@ -13,6 +13,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import type { CreatedIngestToken, IngestToken } from '@/gen'
+import { isOwner, useMe } from '@/lib/auth-api'
 import { fmtAgo, fmtDay } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { useCreateToken, useRevokeToken, useTokens } from '@/lib/tokens-api'
@@ -148,6 +149,7 @@ function RevokeDialog({ token, onOpenChange }: { token: IngestToken | null; onOp
 /** Settings → Ingest tokens: create (secret shown once), list, revoke. */
 export function IngestTokens() {
   const { data: tokens, isPending, error } = useTokens()
+  const owner = isOwner(useMe())
   const [creating, setCreating] = useState(false)
   const [created, setCreated] = useState<CreatedIngestToken | null>(null)
   const [revoking, setRevoking] = useState<IngestToken | null>(null)
@@ -160,9 +162,13 @@ export function IngestTokens() {
             Vector, Fluent Bit, OTLP over HTTP and NDJSON pushes authenticate with these. Docker needs none.
           </p>
         </div>
-        <Button onClick={() => setCreating(true)}>
-          <PlusIcon /> Create token
-        </Button>
+        {owner ? (
+          <Button onClick={() => setCreating(true)}>
+            <PlusIcon /> Create token
+          </Button>
+        ) : (
+          <span className="border px-2 py-1 font-mono text-[11px] text-muted-foreground">owners manage tokens</span>
+        )}
       </header>
 
       {created && (
@@ -209,11 +215,11 @@ export function IngestTokens() {
                   <span className="bg-destructive/15 px-1.5 py-0.5 font-mono text-[11px] text-destructive">
                     revoked
                   </span>
-                ) : (
+                ) : owner ? (
                   <Button size="sm" variant="ghost" onClick={() => setRevoking(t)} aria-label={`Revoke ${t.name}`}>
                     Revoke
                   </Button>
-                )}
+                ) : null}
               </td>
             </tr>
           ))}

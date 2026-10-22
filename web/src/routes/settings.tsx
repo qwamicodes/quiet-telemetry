@@ -1,6 +1,8 @@
 import { Link, Outlet } from '@tanstack/react-router'
-import { KeyRoundIcon, MoonIcon, SettingsIcon, SunIcon } from 'lucide-react'
+import { KeyRoundIcon, MoonIcon, SettingsIcon, SunIcon, UserIcon, UsersIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { Account } from '@/components/settings/account'
+import { Members } from '@/components/settings/members'
 import { IngestTokens } from '@/components/tokens/token-table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useHealth } from '@/lib/api'
@@ -23,7 +25,7 @@ function NavLink({
   icon,
   children,
 }: {
-  to: '/settings' | '/settings/ingest-tokens'
+  to: '/settings' | '/settings/account' | '/settings/members' | '/settings/ingest-tokens'
   icon: ReactNode
   children: ReactNode
 }) {
@@ -39,7 +41,7 @@ function NavLink({
   )
 }
 
-/** Settings: a nav on the left. Members, storage and per-source settings arrive with their slices. */
+/** Settings: a nav on the left. Storage and per-source settings arrive with their slices. */
 export function SettingsLayout() {
   return (
     <div className="flex min-h-0 flex-1 overflow-y-auto">
@@ -49,6 +51,12 @@ export function SettingsLayout() {
         </span>
         <NavLink to="/settings" icon={<SettingsIcon />}>
           General
+        </NavLink>
+        <NavLink to="/settings/account" icon={<UserIcon />}>
+          Account
+        </NavLink>
+        <NavLink to="/settings/members" icon={<UsersIcon />}>
+          Members
         </NavLink>
         <NavLink to="/settings/ingest-tokens" icon={<KeyRoundIcon />}>
           Ingest tokens
@@ -91,7 +99,7 @@ export function SettingsGeneral() {
         </span>
       </Row>
       <p className="pt-4 text-muted-foreground text-xs">
-        Storage, retention, members and per-source settings arrive with their slices.
+        Storage, retention and per-source settings arrive with their slices.
       </p>
     </div>
   )
@@ -99,4 +107,12 @@ export function SettingsGeneral() {
 
 export function SettingsTokens() {
   return <IngestTokens />
+}
+
+export function SettingsAccount() {
+  return <Account />
+}
+
+export function SettingsMembers() {
+  return <Members />
 }

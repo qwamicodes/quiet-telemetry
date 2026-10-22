@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { Health, SourceInfo } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
+import { isOwner, useMe } from '@/lib/auth-api'
 import {
   asksName,
   bindsSource,
@@ -235,6 +236,7 @@ function Panel({ kind }: { kind: ConnectKind }) {
   const health = healthQ.data
   const sources = useSources().data
   const create = useCreateToken()
+  const owner = isOwner(useMe())
   const info = KIND_INFO[kind]
   const origin = window.location.origin
   const [name, setName] = useState(kind === 'otlp' ? 'my-service' : 'my-app')
@@ -323,13 +325,17 @@ function Panel({ kind }: { kind: ConnectKind }) {
         {kind !== 'docker' && !token ? (
           <div className="flex flex-col gap-2">
             <p className="text-muted-foreground text-xs">
-              quiet makes a send-only ingest token for this shipper and fills it into the config below.
+              {owner
+                ? 'quiet makes a send-only ingest token for this shipper and fills it into the config below.'
+                : 'Shippers need an ingest token, and only an owner can create one. Ask an owner to connect this source, or to create a token in Settings → Ingest tokens.'}
             </p>
-            <div>
-              <Button onClick={generate} disabled={create.isPending || (asksName(kind) && !name.trim())}>
-                <KeyRoundIcon /> {create.isPending ? 'Creating…' : 'Generate token'}
-              </Button>
-            </div>
+            {owner && (
+              <div>
+                <Button onClick={generate} disabled={create.isPending || (asksName(kind) && !name.trim())}>
+                  <KeyRoundIcon /> {create.isPending ? 'Creating…' : 'Generate token'}
+                </Button>
+              </div>
+            )}
           </div>
         ) : (
           <>

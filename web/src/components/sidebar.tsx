@@ -5,6 +5,7 @@ import { Logo } from '@/components/logo'
 import { ReceiverBadge } from '@/components/receiver-badge'
 import { SourceItem } from '@/components/source-item'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
+import { UserMenu } from '@/components/user-menu'
 import { useHealth, useSources } from '@/lib/api'
 import { fmtWindow } from '@/lib/format'
 import { useRates } from '@/lib/use-rates'
@@ -114,6 +115,7 @@ export function Sidebar({ activeSource, onOpenPalette }: { activeSource: string 
         <ReceiverBadge health={health} />
         <span>{health ? `${health.store} store` : ''}</span>
       </div>
+      <UserMenu />
     </aside>
   )
 }
