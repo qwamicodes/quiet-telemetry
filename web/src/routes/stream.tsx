@@ -276,8 +276,7 @@ export function StreamPage() {
   const offline = live === 'offline' || sourceLost
   // Healthy but nothing for 5 minutes (08.5).
   const newest = lines.length ? lines[lines.length - 1].ts : (info?.last_ts ?? null)
-  const quiet =
-    live === 'live' && settled && !filtered && !showOld && newest != null && Date.now() - newest > FIVE_MIN
+  const quiet = live === 'live' && settled && !filtered && !showOld && newest != null && Date.now() - newest > FIVE_MIN
   const spike = !filtered && live !== 'offline' ? errorSpike(lines, tally, total) : null
   const shown = quiet ? [] : lines
 
@@ -323,7 +322,8 @@ export function StreamPage() {
     if (offline) return `offline · showing the last ${lines.length.toLocaleString()} lines`
     if (live === 'paused')
       return `paused · ${scrolledUp ? `scrolled ${scrolledUp.toLocaleString()} ${scrolledUp === 1 ? 'line' : 'lines'} up · ` : ''}${unseen.toLocaleString()} new lines buffered`
-    if (filtered && countsFresh && matched === 0) return `filtered · 0 of ${total.toLocaleString()} lines · still listening`
+    if (filtered && countsFresh && matched === 0)
+      return `filtered · 0 of ${total.toLocaleString()} lines · still listening`
     if (filtered) return `filtered · ${filterWords.join(' · ')}`
     if (quiet) return `listening · 0 lines in 5 min`
     if (spike) {

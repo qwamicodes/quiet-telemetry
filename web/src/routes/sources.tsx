@@ -1,3 +1,4 @@
+import { useQueries } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
   BoxIcon,
@@ -11,7 +12,6 @@ import {
   TriangleAlertIcon,
   XIcon,
 } from 'lucide-react'
-import { useQueries } from '@tanstack/react-query'
 import { Fragment, useRef, useState } from 'react'
 import { SourceGroupHeader } from '@/components/source-group-header'
 import { Sparkline } from '@/components/sparkline'
@@ -496,13 +496,7 @@ export function SourcesPage() {
                   )}
                   {/* Collapsed rows stay mounted (hidden) so their error / stopped flags still count. */}
                   {g.rows.map((s) => (
-                    <SourceRow
-                      key={s.name}
-                      s={s}
-                      rate={rates[s.name]}
-                      nested={Boolean(g.stack)}
-                      hidden={collapsed}
-                    />
+                    <SourceRow key={s.name} s={s} rate={rates[s.name]} nested={Boolean(g.stack)} hidden={collapsed} />
                   ))}
                   {g.stack && !collapsed && g.stack.sending === 0 && g.stack.kind !== 'ingest' && (
                     <tr className="border-b">
