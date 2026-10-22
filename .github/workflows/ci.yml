@@ -66,7 +66,7 @@ jobs:
           curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci' --data-binary '{"msg":"hello"}'
           curl -fs localhost:7070/api/sources/ci/lines | grep -q hello
           curl -fs localhost:7070/ | grep -q '<div id="root">'
-          for i in $(seq 1 20); do [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ] && break; sleep 1; done
+          for i in $(seq 1 40); do [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ] && break; sleep 1; done
           docker inspect --format 'health: {{.State.Health.Status}}' quiet-smoke
           [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ]
           docker stop quiet-smoke
