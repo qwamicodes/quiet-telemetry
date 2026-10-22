@@ -76,6 +76,10 @@ jobs:
           sleep 1
           curl -fs 'localhost:7070/api/search?q=hello' | grep -q hello
           curl -fs 'localhost:7070/api/export?format=csv&columns=msg' | grep -q hello
+          # Flows: a request and its job stitch by request_id.
+          curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci-api' --data-binary '{"msg":"POST /orders","request_id":"req_ci"}'
+          curl -fs -X POST localhost:7070/ingest/ndjson -H 'X-Quiet-Source: ci-worker' --data-binary '{"msg":"job done","job_id":"job_ci","data":{"request_id":"req_ci"}}'
+          curl -fs 'localhost:7070/api/flow?id=job_ci' | grep -q '"line_count":2'
           curl -fs localhost:7070/ | grep -q '<div id="root">'
           for i in $(seq 1 40); do [ "$(docker inspect --format '{{.State.Health.Status}}' quiet-smoke)" = healthy ] && break; sleep 1; done
           docker inspect --format 'health: {{.State.Health.Status}}' quiet-smoke
