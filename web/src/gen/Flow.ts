@@ -21,8 +21,8 @@ lines: Array<LogLine>,
  */
 missing_parent: CorrId | null, 
 /**
- * The flow starts within a minute of the oldest stored line, so earlier
- * lines may have expired.
+ * Retention has been dropping hours and the flow starts within a minute
+ * of the oldest line still stored, so earlier lines may have expired.
  */
 partial: boolean, 
 /**

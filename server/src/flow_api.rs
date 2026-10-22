@@ -9,7 +9,7 @@
 //! Everything is bounded by the retention window and [`Limits`].
 
 use crate::api::AppState;
-use crate::flow::{build, stitch, Flow, FlowSummary, Limits, Seed};
+use crate::flow::{build, expiry_edge, stitch, Flow, FlowSummary, Limits, Seed};
 use crate::normalize::{CorrId, IdKey};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -126,7 +126,7 @@ async fn flow(State(s): State<AppState>, Query(p): Query<FlowParams>) -> Respons
     if let Err(e) = store.flush().await {
         return unavailable(e);
     }
-    let oldest = store.usage().await.ok().and_then(|u| u.oldest);
+    let edge = expiry_edge(store.usage().await.ok().and_then(|u| u.oldest), since);
 
     let (seed, opened) = match (&p.id, p.line) {
         (Some(id), None) => match valid_id(id) {
@@ -173,7 +173,7 @@ async fn flow(State(s): State<AppState>, Query(p): Query<FlowParams>) -> Respons
             .into_response();
     }
     Json(FlowResponse {
-        flow: build(st, opened.as_deref(), oldest),
+        flow: build(st, opened.as_deref(), edge),
         since,
         until,
         took_ms: started.elapsed().as_millis() as u64,

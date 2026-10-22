@@ -151,6 +151,13 @@ pub async fn stitch(
     Ok(out)
 }
 
+/// The oldest stored line counts as an expiry edge only when it sits at the
+/// start of the window (retention drops whole hours, so within an hour of
+/// it). A young database's oldest line is just its first line.
+pub fn expiry_edge(oldest_stored: Option<i64>, window_since: i64) -> Option<i64> {
+    oldest_stored.filter(|o| *o <= window_since + 3_600_000)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum FlowStatus {
@@ -261,8 +268,8 @@ pub struct Flow {
     /// A request id the flow's jobs carry but no line of its own in the window
     /// (expired, sampled out, or not logged).
     pub missing_parent: Option<CorrId>,
-    /// The flow starts within a minute of the oldest stored line, so earlier
-    /// lines may have expired.
+    /// Retention has been dropping hours and the flow starts within a minute
+    /// of the oldest line still stored, so earlier lines may have expired.
     pub partial: bool,
 }
 
@@ -362,11 +369,14 @@ fn summary_of(l: &LogLine, attempt: Option<u32>) -> String {
     if let Some(c) = error_code(l) {
         parts.push(c);
     }
-    if let Some(q) = text(f, &["queue"]) {
-        parts.push(q);
-    }
     if let Some(a) = attempt {
         parts.push(format!("attempt {a}"));
+    }
+    // The queue says little on every node of a job; only when nothing else does.
+    if parts.is_empty() {
+        if let Some(q) = text(f, &["queue"]) {
+            parts.push(q);
+        }
     }
     if parts.is_empty() && l.msg != step_name(l) {
         parts.push(l.msg.clone());
@@ -441,8 +451,9 @@ fn shared_id(a: &LogLine, b: &LogLine) -> Option<CorrId> {
     })
 }
 
-/// Shape stitched lines into a flow.
-pub fn build(st: Stitched, opened: Option<&str>, oldest_stored: Option<i64>) -> Flow {
+/// Shape stitched lines into a flow. `expiry_edge` is the oldest stored line
+/// when retention has been dropping data (see [`expiry_edge`]), else `None`.
+pub fn build(st: Stitched, opened: Option<&str>, expiry_edge: Option<i64>) -> Flow {
     let mut lines = st.lines;
     let mut nodes: Vec<FlowNode> = lines
         .iter()
@@ -626,7 +637,7 @@ pub fn build(st: Stitched, opened: Option<&str>, oldest_stored: Option<i64>) -> 
         edges,
         lines,
         missing_parent,
-        partial: oldest_stored.is_some_and(|o| started - o < 60_000),
+        partial: expiry_edge.is_some_and(|o| started - o < 60_000),
     }
 }
 
@@ -876,6 +887,10 @@ mod tests {
         assert!(f.nodes[2].warn && !f.nodes[2].error);
         assert!(f.nodes[3].error);
         assert_eq!(f.nodes[3].summary, "failed · TIMEOUT · attempt 1");
+        assert_eq!(
+            f.nodes[1].summary, "payouts",
+            "queue only when nothing else"
+        );
         assert_eq!(f.summary.status, FlowStatus::Error);
         assert_eq!(f.summary.retries, 1);
         assert_eq!((f.summary.errors, f.summary.warnings), (1, 1));

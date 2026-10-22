@@ -162,7 +162,7 @@ export function FlowGraph({
           </Button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-auto p-6 pt-14">
+      <div className={cn('min-h-0 flex-1 overflow-auto p-6', foldable && 'pt-14')}>
         <div
           className="grid origin-top-left gap-x-10 gap-y-2"
           style={{

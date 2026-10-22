@@ -119,6 +119,8 @@ function FlowView({
   const navigate = useNavigate()
   const first = flow.lines[0]
   const opened = flow.opened ?? first.display_id
+  // The breadcrumb's source: where the opened id was logged first.
+  const home = flow.lines.find((l) => opened && l.ids.some((i) => i.value === opened.value)) ?? first
   const fallback = flow.nodes.find((n) => n.error) ?? flow.nodes[0]
   const index = Math.max(
     0,
@@ -149,7 +151,7 @@ function FlowView({
   return (
     <div className="flex min-h-0 flex-1 flex-col px-6 pb-4">
       <Crumbs
-        source={first.source}
+        source={home.source}
         label={opened?.key}
         value={opened?.value ?? `line ${first.id}`}
         actions={
@@ -175,7 +177,7 @@ function FlowView({
               variant="outline"
               size="sm"
               nativeButton={false}
-              render={<Link to="/" search={{ source: first.source, q: opened?.value }} />}
+              render={<Link to="/" search={{ source: home.source, q: opened?.value }} />}
             >
               <ListIcon />
               Open in stream
@@ -233,6 +235,7 @@ function FlowView({
             onPrev={() => move(-1)}
             onNext={() => move(1)}
             subtitle={node.attempt != null ? `attempt ${node.attempt}` : undefined}
+            title={node.name}
           />
         </div>
       )}

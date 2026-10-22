@@ -114,8 +114,11 @@ export function FieldCard({
   onNext,
   onOpenFlow,
   subtitle,
+  title,
   className,
 }: {
+  /** Replaces the line's message as the heading (a flow shows the step name). */
+  title?: string
   line: LogLine
   position?: { index: number; total: number }
   onClose?: () => void
@@ -155,7 +158,7 @@ export function FieldCard({
       <header className="flex flex-col gap-2 border-b p-4">
         <div className="flex items-start gap-2">
           <StatusDot status={bad ? 'err' : line.level === 'warn' ? 'warn' : 'ok'} className="mt-1.5" />
-          <h2 className="line-clamp-2 flex-1 break-all font-medium font-mono text-[13px]">{line.msg}</h2>
+          <h2 className="line-clamp-2 flex-1 break-all font-medium font-mono text-[13px]">{title ?? line.msg}</h2>
           {onOpenFlow && (
             <IconButton label="Open flow (enter)" onClick={onOpenFlow}>
               <GitForkIcon />
