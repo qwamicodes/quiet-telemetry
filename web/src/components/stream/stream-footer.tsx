@@ -13,8 +13,8 @@ export function StreamFooter({ state, count }: { state: LiveState; count: number
       <span className="flex-1" />
       <span className="hidden items-center gap-1.5 md:flex">
         <Kbd>j</Kbd>
-        <Kbd>k</Kbd> move <Kbd className="ml-2">esc</Kbd> close <Kbd className="ml-2">space</Kbd> pause{' '}
-        <Kbd className="ml-2">/</Kbd> filter <Kbd className="ml-2">⌘K</Kbd> jump
+        <Kbd>k</Kbd> move <Kbd className="ml-2">↵</Kbd> open flow <Kbd className="ml-2">esc</Kbd> close{' '}
+        <Kbd className="ml-2">space</Kbd> pause <Kbd className="ml-2">/</Kbd> filter <Kbd className="ml-2">⌘K</Kbd> jump
       </span>
     </footer>
   )

@@ -12,8 +12,9 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import type { SearchParams } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
+import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, fmtCount, fmtWindow } from '@/lib/format'
-import { groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
+import { displayIds, groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
 import { useSearchLines } from '@/lib/search-api'
 import { searchBounds } from '@/lib/search-params'
 import { useHotkeys } from '@/lib/use-hotkeys'
@@ -62,7 +63,10 @@ export function SearchPage() {
   const pages = res.data?.pages ?? []
   const first = pages[0]
   const lines = useMemo(() => pages.flatMap((p) => p.lines), [pages])
-  const flows = useMemo(() => groupByFlow(lines).length, [lines])
+  // Group by flow: one summary per display id stitches groups across ids.
+  const ids = useMemo(() => (search.view === 'flows' ? displayIds(lines) : []), [lines, search.view])
+  const summaries = useFlowSummaries(ids)
+  const flows = useMemo(() => groupByFlow(lines, summaries).length, [lines, summaries])
   const words = useMemo(() => terms(q), [q])
   const total = first?.total ?? lines.length
 
@@ -212,6 +216,7 @@ export function SearchPage() {
           loadingMore={res.isFetchingNextPage}
           onMore={() => res.fetchNextPage()}
           onPick={addChip}
+          summaries={summaries}
         />
       )}
 

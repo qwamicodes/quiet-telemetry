@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { LogLine } from '@/gen'
-import { groupByFlow, highlight, joinQuery, notableFields, splitQuery, terms } from '@/lib/query'
+import type { FlowSummary, LogLine } from '@/gen'
+import { displayIds, groupByFlow, highlight, joinQuery, notableFields, splitQuery, terms } from '@/lib/query'
 
 const line = (
   id: number,
@@ -49,5 +49,29 @@ describe('query helpers', () => {
       { s: 'dealer', hit: true },
       { s: 's/88', hit: false },
     ])
+  })
+})
+
+describe('groupByFlow with flow summaries', () => {
+  it('merges groups whose ids stitch into one flow, in order of first match', () => {
+    const job: LogLine = {
+      ...line(9, null, 'error'),
+      display_id: { key: 'job_id', value: 'payout:1' },
+      ids: [{ key: 'job_id', value: 'payout:1' }],
+    }
+    const lines = [job, line(2, 'req_2', 'info'), line(1, 'req_1', 'warn')]
+    const flow = { key: '1', line_count: 5 } as FlowSummary
+    const summaries = new Map<string, FlowSummary | null>([
+      ['req_1', flow],
+      ['payout:1', flow],
+      ['req_2', null],
+    ])
+    const groups = groupByFlow(lines, summaries)
+    expect(groups.map((g) => g.lines.map((l) => l.id))).toEqual([[9, 1], [2]])
+    expect(groups[0].summary).toBe(flow)
+    expect(groups[0].worst).toBe('error')
+    // Without summaries: one group per display id.
+    expect(groupByFlow(lines)).toHaveLength(3)
+    expect(displayIds(lines)).toEqual(['payout:1', 'req_2', 'req_1'])
   })
 })

@@ -1,4 +1,4 @@
-import { getRouteApi } from '@tanstack/react-router'
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ExportDialog } from '@/components/export-dialog'
 import { FieldCard } from '@/components/field-card'
@@ -7,6 +7,7 @@ import { FilterBar } from '@/components/stream/filter-bar'
 import { LogTable } from '@/components/stream/log-table'
 import { StreamFooter } from '@/components/stream/stream-footer'
 import { liveState, TopBar } from '@/components/stream/top-bar'
+import type { LogLine } from '@/gen'
 import { useSources } from '@/lib/api'
 import type { LevelFilter } from '@/lib/format'
 import { toast } from '@/lib/toast'
@@ -20,6 +21,7 @@ const route = getRouteApi('/')
 export function StreamPage() {
   const search = route.useSearch()
   const navigate = route.useNavigate()
+  const go = useNavigate()
   const { data: sources } = useSources()
   const rates = useRates(sources)
   const source = search.source ?? null
@@ -81,6 +83,12 @@ export function StreamPage() {
     return c
   }, [lines])
 
+  // Any line opens as a flow: by its id when it has one, else by itself (one node).
+  const openFlow = (l: LogLine) =>
+    l.display_id
+      ? go({ to: '/flow/$id', params: { id: l.display_id.value }, search: { line: l.id } })
+      : go({ to: '/line/$lineId', params: { lineId: l.id } })
+
   const live = liveState(state, !follow)
   useHotkeys({
     '/': () => filterRef.current?.focus(),
@@ -89,6 +97,7 @@ export function StreamPage() {
     space: () => state === 'live' && setFollow((f) => !f),
     g: (e) => e.shiftKey && setFollow(true),
     escape: () => setSelectedId(null),
+    enter: () => selected && openFlow(selected),
   })
 
   const info = sources?.find((s) => s.name === source)
@@ -135,6 +144,7 @@ export function StreamPage() {
             onClose={() => setSelectedId(null)}
             onPrev={() => move(-1)}
             onNext={() => move(1)}
+            onOpenFlow={() => openFlow(selected)}
           />
         )}
       </div>

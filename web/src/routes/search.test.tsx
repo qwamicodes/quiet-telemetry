@@ -78,6 +78,28 @@ beforeEach(() => {
           path: `/api/export?${query}`,
         })
       }
+      if (url.startsWith('/api/flow-summaries')) {
+        // req_1's flow has 5 lines (its worker retries didn't match the search).
+        const { ids } = JSON.parse(String(init?.body)) as { ids: string[] }
+        const flow = {
+          key: '1',
+          title: 'settle_dealer_payout',
+          status: 'error',
+          line_count: 5,
+          steps: 6,
+          sources: ['api', 'worker'],
+          started: T,
+          ended: T + 9_600,
+          duration_ms: 9_600,
+          retries: 2,
+          errors: 1,
+          warnings: 1,
+          ids: [{ key: 'request_id', value: 'req_1' }],
+          stitched_by: ['request_id', 'job_id'],
+          truncated: false,
+        }
+        return json({ flows: ids.map((id) => ({ id, flow: id === 'req_1' ? flow : null })) })
+      }
       if (url.startsWith('/api/search')) {
         const q = new URL(url, 'http://x').searchParams.get('q') ?? ''
         return json(page(q.includes('nothing') ? [] : lines))
@@ -109,7 +131,9 @@ const searches = () => calls.filter((c) => c.startsWith('/api/search?') && c.inc
 describe('search route', () => {
   it('bad URL params fall back to defaults; results group by flow', async () => {
     const router = renderAt('/search?q=dealer&range=bogus&view=nope&order=sideways')
-    expect(await screen.findByText('GET /dealers/88/payouts slow', { exact: false })).toBeInTheDocument()
+    expect(
+      await screen.findByText('GET /dealers/88/payouts slow', { exact: false }, { timeout: 5000 }),
+    ).toBeInTheDocument()
     expect(router.state.location.search).toMatchObject({ q: 'dealer', range: '6h', view: 'flows', order: 'newest' })
     const url = new URL(searches()[0], 'http://x')
     expect(url.searchParams.get('q')).toBe('dealer')
@@ -119,7 +143,12 @@ describe('search route', () => {
 
     // Two flows: req_1 (worker + api) and req_2.
     expect(screen.getByText(/3 lines in 2 flows/)).toBeInTheDocument()
-    expect(screen.getByText('worker → api')).toBeInTheDocument()
+    // Group by flow is the stitched flow: its title, how many of its lines matched, its steps.
+    expect(await screen.findByText(/failed · 2 of 5 lines match · 6 steps · 9.6s/)).toBeInTheDocument()
+    expect(screen.getByText('settle_dealer_payout')).toBeInTheDocument()
+    expect(screen.getByText('api → worker')).toBeInTheDocument()
+    expect(screen.getByText(/1 line match/)).toBeInTheDocument() // req_2 has no flow summary
+    expect(calls.filter((c) => c === '/api/flow-summaries')).toHaveLength(1)
     expect(screen.getAllByRole('link', { name: /Open flow/ })[0]).toHaveAttribute('href', '/flow/req_1')
     expect(screen.getByRole('figure', { name: 'Matches over time' })).toBeInTheDocument()
   })
