@@ -519,7 +519,7 @@ describe('source settings', () => {
     const user = userEvent.setup()
     renderAt('/sources/legivent-api?edit=muted')
     const group = await screen.findByRole('radiogroup', { name: 'Include muted lines in search' })
-    expect(within(group).getByRole('radio', { name: 'Inherit (on)' })).toHaveAttribute('aria-checked', 'true')
+    expect(await within(group).findByRole('radio', { name: 'Inherit (on)' })).toHaveAttribute('aria-checked', 'true')
     await user.click(within(group).getByRole('radio', { name: 'Off' }))
     await waitFor(() => expect(calls).toHaveLength(1))
     expect(calls[0]).toMatchObject({
@@ -869,8 +869,8 @@ describe('Sources → edit → Muted lines (06.13–06.25)', () => {
     }
     const user = userEvent.setup()
     renderAt('/sources/legivent-api?edit=muted')
-    const sheet = await screen.findByRole('dialog', { name: 'Edit source legivent-api' })
-    expect(within(sheet).getByRole('tab', { name: 'Muted lines · 2' })).toHaveAttribute('aria-selected', 'true')
+    const sheet = await screen.findByRole('dialog', { name: /Edit source/ })
+    expect(await within(sheet).findByRole('tab', { name: 'Muted lines · 2' })).toHaveAttribute('aria-selected', 'true')
     const mine = within(sheet).getByRole('region', { name: 'This source' })
     expect(await within(mine).findByText('312 hidden')).toBeInTheDocument()
     expect(within(mine).getByText('would hide 41')).toBeInTheDocument()
@@ -929,9 +929,11 @@ describe('Sources → edit → Muted lines (06.13–06.25)', () => {
     settings.sources['legivent-api'] = { ...blankSource(), muted: [rule({})] }
     renderAt('/sources/legivent-api?edit=muted', member)
     expect(await screen.findByText('read-only')).toBeInTheDocument()
+    const sw = await screen.findByRole('switch', { name: 'Pause path:/api/v1/health' })
     expect(screen.queryByRole('button', { name: /Add rule/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete path:/api/v1/health' })).not.toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: 'Pause path:/api/v1/health' })).toHaveAttribute('data-disabled')
+    expect(sw).toHaveAttribute('data-disabled')
+    expect(await screen.findByRole('switch', { name: 'Pause path:/api/v1/health' })).toHaveAttribute('data-disabled')
   })
 })
 

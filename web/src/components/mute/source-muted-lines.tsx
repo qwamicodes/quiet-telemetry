@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { CheckIcon, ExternalLinkIcon, GlobeIcon, LockIcon, PlusIcon, Trash2Icon, XIcon } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -11,7 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Popover, PopoverContent } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { MuteRule, SourceSettings } from '@/gen'
@@ -347,6 +347,7 @@ function GlobalRuleRow({
 }) {
   const off = globalOff(settings, rule.id)
   const apply = useSetGlobalApply()
+  const anchor = useRef<HTMLSpanElement>(null)
   const [ask, setAsk] = useState(false)
   const set = (on: boolean) =>
     apply.mutate(
@@ -400,36 +401,35 @@ function GlobalRuleRow({
         {off ? 'off here' : 'apply here'}
       </span>
       {owner ? (
-        <Popover open={ask} onOpenChange={setAsk}>
-          <PopoverTrigger
-            render={
-              <Switch
-                aria-label={`Apply ${ruleText(rule)} on ${source}`}
-                checked={!off}
-                disabled={apply.isPending}
-                onCheckedChange={(v) => (v ? set(true) : setAsk(true))}
-              />
-            }
-            nativeButton={false}
-          />
-          <PopoverContent align="end" className="w-80">
-            <span className="font-medium text-sm">Don't apply here?</span>
-            <span className="text-muted-foreground text-xs">
-              <span className="font-mono">{ruleText(rule)}</span> stops hiding lines on {source} ({fmtN(hitsHere)} in
-              24h). It stays on{' '}
-              {others > 0 ? `${others} other ${others === 1 ? 'source' : 'sources'}` : 'every other source'} and on new
-              sources.
-            </span>
-            <div className="flex justify-end gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setAsk(false)}>
-                Cancel
-              </Button>
-              <Button size="sm" onClick={() => set(false)} disabled={apply.isPending}>
-                Don't apply here
-              </Button>
-            </div>
-          </PopoverContent>
-        </Popover>
+        <>
+          <span ref={anchor} className="inline-flex">
+            <Switch
+              aria-label={`Apply ${ruleText(rule)} on ${source}`}
+              checked={!off}
+              disabled={apply.isPending}
+              onCheckedChange={(v) => (v ? set(true) : setAsk(true))}
+            />
+          </span>
+          <Popover open={ask} onOpenChange={setAsk}>
+            <PopoverContent anchor={anchor} align="end" className="w-80">
+              <span className="font-medium text-sm">Don't apply here?</span>
+              <span className="text-muted-foreground text-xs">
+                <span className="font-mono">{ruleText(rule)}</span> stops hiding lines on {source} ({fmtN(hitsHere)} in
+                24h). It stays on{' '}
+                {others > 0 ? `${others} other ${others === 1 ? 'source' : 'sources'}` : 'every other source'} and on
+                new sources.
+              </span>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setAsk(false)}>
+                  Cancel
+                </Button>
+                <Button size="sm" onClick={() => set(false)} disabled={apply.isPending}>
+                  Don't apply here
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
+        </>
       ) : (
         <Tooltip>
           <TooltipTrigger render={<span className="inline-flex" />}>
