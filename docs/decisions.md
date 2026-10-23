@@ -4,6 +4,16 @@ Technical choices made while building quiet, newest slice first. Each one
 stands unless Kwaame pushes back. The product-level log lives with the
 project notes; this file records what the code does and why.
 
+## Docker source identity, d-docker-identity (2026-10-23)
+
+Replaces d-sources (swarm service → compose service → container name). On Parnion that key merged 46 running containers into 23 sources: every `postgres` (5 projects), `redis` (4), `web` (4), `backend`/`frontend` (4 each), and RCH prod + staging `api`, `auth`, `dashboard`, `payment-worker`, `minio`, `garage`. A merged source took its group from the first container, so the rest looked missing. Legivent's staging/prod Postgres and Redis merged the same way.
+
+- **Key = what survives a redeploy and is unique on one daemon.** `quiet.source` (merging on purpose stays possible) → Swarm service name, which already carries the stack (`.<slot>` after slot 1; task ids change every deploy, slots don't; global services have no slot and quiet sees one node) → `<compose project>.<service>` (`.<n>` after container 1) → container name. `.` as the separator: Compose project names can't contain it, it needs no URL escaping, and `source:<key>` parses.
+- **Replicas are separate sources** now (the old design merged them); each has its own label (`worker #2`).
+- **Friendly label, server-side.** `Hub::list` labels each docker source with its service name, adding ` · <project or stack>` only when another source shows the same name (including an unlabelled stored source of that name). `/api/sources` sends it as `display_name` when the owner set none, so every screen picks it up without a web change; the real key is still `name` (tooltip, breadcrumb, search).
+- **Migration by alias, not by rewriting lines.** Runs once (settings key `docker_identity.migrated`) on the first Docker connect: an old source whose running containers are exactly one, with a new key, gets an alias (key → old name) so it keeps its lines, settings, custom group, mutes and `source:` searches. An old source that merged several keeps its lines and settings (shown "merged, before the split" until restart) and ages out with retention; each new source inherits its settings minus the display name, plus its custom group. Stored lines are never renamed (no FTS / partition rewrite, nothing to lose). A later container whose key equals an alias target gets `.container`.
+- Not done: removing the emptied merged source automatically (Sources → remove still works); renaming its stored lines into one of the new sources (they can't be told apart: lines don't record their container).
+
 ## Field card Diagram tab (2026-10-23)
 
 Approved by Kwaame 2026-10-23 (boards v0.1-04.8 … 04.14, 09.4), PNG export in the first cut.

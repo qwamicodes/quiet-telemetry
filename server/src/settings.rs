@@ -334,6 +334,17 @@ struct StorageOverride {
     max_disk: Option<u64>,
 }
 
+/// How Docker containers map to source names, kept across restarts
+/// (`settings` key `docker_identity`). See `receiver/docker.rs`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DockerIdentity {
+    /// The one-time move from service-name sources has run.
+    pub migrated: bool,
+    /// Identity key → the older source name it keeps writing to.
+    pub aliases: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct State {
     general: GeneralSettings,
@@ -342,6 +353,7 @@ struct State {
     custom_groups: CustomGroups,
     flow_ids: FlowIdSettings,
     sources: BTreeMap<String, SourceSettings>,
+    docker_identity: DockerIdentity,
 }
 
 /// A settings write failed: bad input (400) or storage (503).
@@ -421,6 +433,9 @@ impl Settings {
                         state.custom_groups = x;
                     }),
                     "flow_ids" => serde_json::from_str(&v).map(|x| state.flow_ids = x),
+                    "docker_identity" => {
+                        serde_json::from_str(&v).map(|x| state.docker_identity = x)
+                    }
                     k => match k.strip_prefix("source:") {
                         Some(name) => serde_json::from_str(&v).map(|x| {
                             state.sources.insert(name.to_string(), x);
@@ -612,6 +627,67 @@ impl Settings {
             flow_ids: self.flow_ids(),
             sources: self.sources(),
         }
+    }
+
+    /// Which source each Docker container writes to (aliases from the migration).
+    pub fn docker_identity(&self) -> DockerIdentity {
+        self.state.read().unwrap().docker_identity.clone()
+    }
+
+    /// Record the one-time Docker identity migration: `aliases` (identity key
+    /// → old source it keeps), and for each old merged source in `split`, the
+    /// keys that inherit its settings (all but the display name, which would
+    /// show the merged name again) and its custom group. A new source that
+    /// already has settings or a group of its own keeps them. The old source
+    /// keeps its own settings and lines.
+    pub fn finish_docker_migration(
+        &self,
+        aliases: BTreeMap<String, String>,
+        split: &BTreeMap<String, Vec<String>>,
+    ) -> Result<DockerIdentity, SettingsError> {
+        let current = self.sources();
+        for (old, keys) in split {
+            let Some(inherited) = current.get(old).cloned() else {
+                continue;
+            };
+            let inherited = SourceSettings {
+                display_name: None,
+                ..inherited
+            };
+            if inherited == SourceSettings::default() {
+                continue;
+            }
+            for k in keys.iter().filter(|k| !current.contains_key(*k)) {
+                self.put_source(k, inherited.clone(), None)?;
+            }
+        }
+        let groups = self.custom_groups();
+        if split.keys().any(|old| groups.assigned.contains_key(old)) {
+            self.edit_custom_groups(None, |c| {
+                for (old, keys) in split {
+                    let Some(g) = c.assigned.get(old).cloned() else {
+                        continue;
+                    };
+                    for k in keys {
+                        if c.assigned.len() >= MAX_ASSIGNMENTS {
+                            break;
+                        }
+                        c.assigned.entry(k.clone()).or_insert_with(|| g.clone());
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        let mut ident = self.docker_identity();
+        ident.migrated = true;
+        ident.aliases.extend(aliases);
+        self.save(
+            "docker_identity",
+            Some(serde_json::to_string(&ident)?),
+            None,
+        )?;
+        self.state.write().unwrap().docker_identity = ident.clone();
+        Ok(ident)
     }
 
     /// Custom groups and manual assignments (any signed-in user reads them).
@@ -1169,6 +1245,67 @@ mod tests {
             (GroupMode::Label, "team", Origin::Flag, true)
         );
         assert!(s.put_grouping(None, None).is_err());
+    }
+
+    #[test]
+    fn docker_migration_splits_settings_and_groups_and_survives_restart() {
+        let path = tmp();
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        assert_eq!(s.docker_identity(), DockerIdentity::default());
+        // The old merged `postgres`: renamed, muted, in a custom group.
+        s.put_source(
+            "postgres",
+            SourceSettings {
+                display_name: Some("Postgres".into()),
+                muted: vec![MuteRule {
+                    field: None,
+                    value: "checkpoint".into(),
+                }],
+                ..Default::default()
+            },
+            Some(1),
+        )
+        .unwrap();
+        let g = s
+            .create_group("Data", &["postgres".into()], Some(1))
+            .unwrap();
+        // One of the new sources already has its own settings: kept.
+        let own = SourceSettings {
+            hidden: true,
+            ..Default::default()
+        };
+        s.put_source("staging.postgres", own.clone(), Some(1))
+            .unwrap();
+        let split: BTreeMap<String, Vec<String>> = [(
+            "postgres".to_string(),
+            vec!["prod.postgres".to_string(), "staging.postgres".to_string()],
+        )]
+        .into();
+        let aliases: BTreeMap<String, String> =
+            [("affine.db".to_string(), "db".to_string())].into();
+        let ident = s.finish_docker_migration(aliases, &split).unwrap();
+        assert!(ident.migrated);
+        let prod = s.source("prod.postgres");
+        assert_eq!(prod.display_name, None, "the merged name isn't copied");
+        assert_eq!(prod.muted.len(), 1);
+        assert_eq!(s.source("staging.postgres"), own);
+        assert_eq!(
+            s.source("postgres").display_name.as_deref(),
+            Some("Postgres"),
+            "the old source keeps its own"
+        );
+        let c = s.custom_groups();
+        for k in ["postgres", "prod.postgres", "staging.postgres"] {
+            assert_eq!(c.assigned.get(k), Some(&g.id), "{k}");
+        }
+        drop(s);
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        let ident = s.docker_identity();
+        assert!(ident.migrated);
+        assert_eq!(
+            ident.aliases.get("affine.db").map(String::as_str),
+            Some("db")
+        );
     }
 
     #[test]

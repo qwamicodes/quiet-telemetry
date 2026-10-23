@@ -164,7 +164,9 @@ Every flag also reads its env var (`quiet --help`). `quiet` with no subcommand i
 
 ### Docker labels
 
-Sources are named by `com.docker.swarm.service.name` → `com.docker.compose.service` → container name, so replicas merge into one source. Override with `quiet.source=<name>`, skip a container with `quiet.ignore=true`.
+Every container is its own source, keyed by what survives a redeploy: the Swarm service name (`<stack>_<svc>`, plus `.<slot>` for replicas after the first), else `<compose project>.<service>` (plus `.<n>` after container 1), else the container name. Two `postgres` services in different projects or environments are two sources. The UI shows the service name, and adds the project or stack (`api · shop-prod`) only when another source would show the same name. Set `quiet.source=<name>` to choose the name (give several containers the same one to merge them on purpose), and `quiet.ignore=true` to skip a container.
+
+Upgrading from a version that named sources by the bare service: on the first start, an old source with one running container keeps its name, lines and settings; an old source that had merged several containers keeps its lines (labelled “merged, before the split”) until they age out, and each container gets its own source that inherits the old one's settings (not its display name) and custom group.
 
 ## Architecture
 
