@@ -5,6 +5,7 @@ import type {
   DiskStatus,
   FlowIdSettings,
   GeneralSettings,
+  GlobalOff,
   GroupingPreview,
   GroupingSettings,
   HourUsage,
@@ -13,6 +14,8 @@ import type {
   Issue,
   KeyCoverage,
   MutedSearch,
+  MuteRule,
+  MuteShape,
   PausedSource,
   PiiKind,
   Purged,
@@ -94,6 +97,26 @@ export const flowIdSettings = z.object({
   match_by: z.enum(['value', 'key']),
 }) satisfies z.ZodType<FlowIdSettings>
 
+export const muteShape = z.enum(['route', 'method_route', 'message', 'field', 'text']) satisfies z.ZodType<MuteShape>
+/** A muted-lines rule; rules saved before shapes read as field / text rules. */
+export const muteRule = z.object({
+  id: z.string().catch(''),
+  scope: z.enum(['source', 'global']).catch('source'),
+  enabled: z.boolean().catch(true),
+  shape: muteShape.catch('field'),
+  field: z.string().nullable().catch(null),
+  value: z.string(),
+  method: z.string().nullable().catch(null),
+  created_by: z.string().nullable().catch(null),
+  created_at: z.number().nullable().catch(null),
+  origin: z.enum(['manual', 'hover']).catch('manual'),
+}) satisfies z.ZodType<MuteRule>
+export const globalOffSchema = z.object({
+  id: z.string(),
+  by: z.string().nullable().catch(null),
+  at: z.number().nullable().catch(null),
+}) satisfies z.ZodType<GlobalOff>
+
 export const sourceSettings = z.object({
   display_name: z.string().nullable(),
   hidden: z.boolean(),
@@ -103,8 +126,9 @@ export const sourceSettings = z.object({
   default_level: level.nullable(),
   mask_fields: z.array(z.string()),
   unmasked: z.array(piiKind),
-  muted: z.array(z.object({ field: z.string().nullable(), value: z.string() })).catch([]),
+  muted: z.array(muteRule).catch([]),
   search_include_muted: z.boolean().nullable().catch(null),
+  muted_global_off: z.array(globalOffSchema).catch([]),
 }) satisfies z.ZodType<SourceSettings>
 
 export const groupMode = z.enum(['auto', 'label', 'off'])
@@ -129,6 +153,7 @@ export const settingsResponse = z.object({
   grouping: groupingSettings.catch({ mode: 'auto', label: 'quiet.group', origin: 'default', locked: false }),
   flow_ids: flowIdSettings,
   sources: z.record(z.string(), sourceSettings),
+  muted_global: z.array(muteRule).catch([]),
 }) satisfies z.ZodType<SettingsResponse>
 
 const hourUsage = z.object({ start: z.number(), lines: z.number(), bytes: z.number() }) satisfies z.ZodType<HourUsage>
@@ -271,6 +296,7 @@ export const DEFAULT_SOURCE_SETTINGS: SourceSettings = {
   unmasked: [],
   muted: [],
   search_include_muted: null,
+  muted_global_off: [],
 }
 
 export function useSourceSettings(name: string | null): SourceSettings {
@@ -280,7 +306,7 @@ export function useSourceSettings(name: string | null): SourceSettings {
 
 // ---- mutations ------------------------------------------------------------------
 
-const put = (body: unknown, method = 'PUT'): RequestInit => ({
+export const put = (body: unknown, method = 'PUT'): RequestInit => ({
   method,
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify(body),

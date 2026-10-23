@@ -645,10 +645,7 @@ mod tests {
                 .put_source(
                     src,
                     SourceSettings {
-                        muted: vec![MuteRule {
-                            field: Some(field.into()),
-                            value: value.into(),
-                        }],
+                        muted: vec![MuteRule::legacy(Some(field), value)],
                         search_include_muted: include,
                         ..Default::default()
                     },

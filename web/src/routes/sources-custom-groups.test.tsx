@@ -80,6 +80,7 @@ const settings = (mode: GroupMode): SettingsResponse => ({
   grouping: { mode, label: 'quiet.group', origin: 'default', locked: false },
   flow_ids: { order: ['request_id', 'job_id', 'trace_id', 'correlation_id'], match_by: 'value' },
   sources: {},
+  muted_global: [],
 })
 
 let calls: { url: string; method: string; body: unknown }[] = []

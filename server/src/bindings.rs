@@ -43,6 +43,15 @@ fn export_into(dir: &Path) {
     IdCoverageReport::export_all(&cfg).unwrap();
     crate::lint::LintReport::export_all(&cfg).unwrap();
     Health::export_all(&cfg).unwrap();
+    crate::settings::AddMuteRule::export_all(&cfg).unwrap();
+    crate::settings::AddedMuteRule::export_all(&cfg).unwrap();
+    crate::settings::UpdateMuteRule::export_all(&cfg).unwrap();
+    crate::settings::DeletedMuteRule::export_all(&cfg).unwrap();
+    crate::mute_api::MuteStats::export_all(&cfg).unwrap();
+    crate::mute_api::MutePreviewRequest::export_all(&cfg).unwrap();
+    crate::mute_api::MutePreview::export_all(&cfg).unwrap();
+    crate::mute_api::SetGlobalApply::export_all(&cfg).unwrap();
+    crate::mute_api::PutMutedSearch::export_all(&cfg).unwrap();
     About::export_all(&cfg).unwrap();
     GroupingPreview::export_all(&cfg).unwrap();
     crate::settings::UpdateGrouping::export_all(&cfg).unwrap();

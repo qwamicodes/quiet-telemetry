@@ -1,6 +1,7 @@
+import type { ReactNode } from 'react'
 import { sileo } from 'sileo'
 
-type Opts = { description?: string; duration?: number | null; button?: { title: string; onClick: () => void } }
+type Opts = { description?: ReactNode; duration?: number | null; button?: { title: string; onClick: () => void } }
 
 /**
  * The one place the app raises toasts, so the library stays swappable and the

@@ -6,9 +6,12 @@ import type {
   About,
   Health,
   LogLine,
+  MuteRule,
+  MuteStats,
   SettingsResponse,
   SourceActivity,
   SourceInfo,
+  SourceSettings,
   StorageReport,
   SystemStatus,
   User,
@@ -52,7 +55,37 @@ let settings: SettingsResponse
 let storage: StorageReport
 let system: SystemStatus
 let activity: SourceActivity
-let calls: { url: string; method: string; body: unknown }[]
+// biome-ignore lint/suspicious/noExplicitAny: a test double for the request bodies
+let calls: { url: string; method: string; body: any }[]
+let muteStats: MuteStats
+
+const blankSource = (): SourceSettings => ({
+  display_name: null,
+  hidden: false,
+  paused: false,
+  retention_ms: null,
+  id_keys: null,
+  default_level: null,
+  mask_fields: [],
+  unmasked: [],
+  muted: [],
+  search_include_muted: null,
+  muted_global_off: [],
+})
+
+const rule = (over: Partial<MuteRule>): MuteRule => ({
+  id: 'mr_1',
+  scope: 'source',
+  enabled: true,
+  shape: 'route',
+  field: 'path',
+  value: '/api/v1/health',
+  method: null,
+  created_by: 'Kwaame',
+  created_at: NOW - 2 * H,
+  origin: 'hover',
+  ...over,
+})
 
 function fresh() {
   sources = [source('legivent-api'), source('traefik', { kind: 'vector' }), source('noisy', { hidden: true })]
@@ -81,6 +114,7 @@ function fresh() {
     grouping: { mode: 'auto', label: 'quiet.group', origin: 'default', locked: false },
     flow_ids: { order: ['request_id', 'job_id', 'trace_id', 'correlation_id'], match_by: 'value' },
     sources: {},
+    muted_global: [],
   }
   const hour = Math.floor(NOW / H) * H
   storage = {
@@ -125,6 +159,7 @@ function fresh() {
   }
   activity = { source: 'legivent-api', rejections: [], rejected_15m: 0, paused_dropped: 0 }
   calls = []
+  muteStats = { since: NOW - 24 * H, until: NOW, sources: {}, rules: {} }
 }
 
 const line = (id: number): LogLine => ({
@@ -139,6 +174,8 @@ const line = (id: number): LogLine => ({
   raw: `line ${id}`,
 })
 
+let backlog: LogLine[] = []
+
 class FakeSocket {
   static all: FakeSocket[] = []
   onopen: (() => void) | null = null
@@ -148,7 +185,9 @@ class FakeSocket {
     FakeSocket.all.push(this)
     queueMicrotask(() => {
       this.onopen?.()
-      this.onmessage?.({ data: JSON.stringify({ type: 'backlog', lines: [line(1), line(2), line(3)] }) })
+      this.onmessage?.({
+        data: JSON.stringify({ type: 'backlog', lines: backlog.length ? backlog : [line(1), line(2), line(3)] }),
+      })
     })
   }
   close() {}
@@ -156,6 +195,7 @@ class FakeSocket {
 
 beforeEach(() => {
   fresh()
+  backlog = []
   FakeSocket.all = []
   localStorage.clear()
   sessionStorage.clear()
@@ -199,6 +239,74 @@ beforeEach(() => {
           sampled: 2000,
           keys: keys.map((key) => ({ key, ...(known[key] ?? { coverage: 0, sources: [] }) })),
         })
+      }
+      if (url === '/api/mute/stats') return json(muteStats)
+      if (url === '/api/mute/preview')
+        return json(
+          (body.rules as unknown[]).map(() => ({
+            total: 312,
+            per_source: { 'legivent-api': 312 },
+            lines: 1000,
+            by_method: [{ method: 'GET', count: 309 }],
+            query_ignored: 4,
+            already_hidden: 0,
+            samples: [],
+            estimated: false,
+          })),
+        )
+      if (url === '/api/mute/rules' && method === 'POST') {
+        const rule = {
+          ...body.rule,
+          id: body.rule.id || `mr_new${calls.length}`,
+          created_by: 'Kwaame',
+          created_at: NOW,
+        }
+        if (rule.scope === 'global') settings.muted_global.push(rule)
+        else {
+          const name = body.source as string
+          settings.sources[name] = {
+            ...(settings.sources[name] ?? blankSource()),
+            muted: [...(settings.sources[name]?.muted ?? []), rule],
+          }
+        }
+        return json({ rule, removed: [] }, 201)
+      }
+      if (url.startsWith('/api/mute/rules/')) {
+        const id = decodeURIComponent(url.split('/').pop() ?? '')
+        const all = [...settings.muted_global, ...Object.values(settings.sources).flatMap((x) => x.muted)]
+        const r = all.find((x) => x.id === id)
+        if (!r) return json({ error: 'not found' }, 404)
+        if (method === 'PATCH') {
+          Object.assign(r, body)
+          return json(r)
+        }
+        settings.muted_global = settings.muted_global.filter((x) => x.id !== id)
+        let src: string | null = null
+        for (const [k, v] of Object.entries(settings.sources))
+          if (v.muted.some((x) => x.id === id)) {
+            src = k
+            v.muted = v.muted.filter((x) => x.id !== id)
+          }
+        return json({ rule: r, source: src, off_on: [] })
+      }
+      if (url.startsWith('/api/mute/sources/')) {
+        const parts = url.split('/')
+        const name = decodeURIComponent(parts[4])
+        const id = decodeURIComponent(parts[6])
+        const cur = settings.sources[name] ?? blankSource()
+        const off = cur.muted_global_off.filter((o) => o.id !== id)
+        if (!body.apply) off.push({ id, by: 'Kwaame', at: NOW })
+        settings.sources[name] = { ...cur, muted_global_off: off }
+        return json(settings.sources[name])
+      }
+      if (url === '/api/mute/search') {
+        settings.muted_search = {
+          include: body.include ?? false,
+          origin: body.include == null ? 'default' : 'setting',
+          flag: false,
+        }
+        settings.general.search_include_muted = body.include
+        return json(settings.muted_search)
       }
       if (url === '/api/settings/flow-ids') {
         settings.flow_ids = body
@@ -359,27 +467,11 @@ describe('Settings → General', () => {
     )
   })
 
-  it('includes muted lines in search instance-wide; "use server default" goes back to the flag', async () => {
-    settings.muted_search = { include: true, origin: 'flag', flag: true }
+  it('Include muted lines in search moved to Settings → Muted lines (General keeps a link)', async () => {
     const user = userEvent.setup()
-    renderAt('/settings')
-    const toggle = await screen.findByRole('switch', { name: 'Include muted lines in search' })
-    expect(toggle).toBeChecked()
-    expect(screen.getByText('server QUIET_SEARCH_INCLUDE_MUTED · on')).toBeInTheDocument()
-    await user.click(toggle)
-    expect(toggle).not.toBeChecked()
-    await user.click(screen.getByRole('button', { name: 'use server default (on)' }))
-    expect(toggle).toBeChecked()
-    await user.click(toggle)
-    await user.click(screen.getByRole('button', { name: 'Save changes' }))
-    await waitFor(() =>
-      expect(calls).toContainEqual(
-        expect.objectContaining({
-          url: '/api/settings/general',
-          body: expect.objectContaining({ search_include_muted: false }),
-        }),
-      ),
-    )
+    const { router } = renderAt('/settings')
+    await user.click(await screen.findByRole('link', { name: /Muted lines/, description: undefined }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings/muted-lines'))
   })
 
   it('is read-only for members', async () => {
@@ -400,14 +492,6 @@ describe('source settings', () => {
     await user.type(within(form).getByRole('textbox', { name: 'Mask another field' }), 'customer.address')
     await user.click(within(form).getByRole('button', { name: 'Add' }))
     await user.click(within(form).getByRole('switch', { name: 'Mask user_agent' }))
-    // Muted lines (06.3): a field rule and a text rule; one removed again.
-    const mute = within(form).getByRole('textbox', { name: 'Mute lines matching' })
-    await user.type(mute, 'path:/api/v1/health{Enter}')
-    await user.type(mute, 'kube-probe{Enter}')
-    await user.type(mute, 'path:/metrics{Enter}')
-    const chips = within(form).getByRole('list', { name: 'Muted lines' })
-    expect(chips).toHaveTextContent('path:/api/v1/health')
-    await user.click(within(form).getByRole('button', { name: 'Unmute path:/metrics' }))
     await user.click(within(form).getByRole('switch', { name: 'Pause ingest' }))
     await user.click(within(form).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(calls).toHaveLength(1))
@@ -423,25 +507,20 @@ describe('source settings', () => {
         default_level: null,
         mask_fields: ['customer.address'],
         unmasked: ['user_agent'],
-        muted: [
-          { field: 'path', value: '/api/v1/health' },
-          { field: null, value: 'kube-probe' },
-        ],
+        muted: [],
         search_include_muted: null,
+        muted_global_off: [],
       },
     })
   })
 
-  it('a source can include its muted lines in search, or inherit the instance choice', async () => {
+  it('a source can include its muted lines in search, or inherit the instance choice (edit sheet)', async () => {
     settings.muted_search = { include: true, origin: 'setting', flag: false }
     const user = userEvent.setup()
-    renderAt('/sources/legivent-api?tab=settings')
-    const form = await screen.findByRole('form', { name: 'Settings for legivent-api' })
-    const select = within(form).getByRole('combobox', { name: 'Include muted lines in search' })
-    expect(select).toHaveTextContent('Inherit · on')
-    await user.click(select)
-    await user.click(await screen.findByRole('option', { name: 'Off' }))
-    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
+    renderAt('/sources/legivent-api?edit=muted')
+    const group = await screen.findByRole('radiogroup', { name: 'Include muted lines in search' })
+    expect(await within(group).findByRole('radio', { name: 'Inherit (on)' })).toHaveAttribute('aria-checked', 'true')
+    await user.click(within(group).getByRole('radio', { name: 'Off' }))
     await waitFor(() => expect(calls).toHaveLength(1))
     expect(calls[0]).toMatchObject({
       url: '/api/settings/sources/legivent-api',
@@ -495,6 +574,7 @@ describe('stream defaults from settings', () => {
       unmasked: [],
       muted: [],
       search_include_muted: null,
+      muted_global_off: [],
     }
     settings.general.stream_direction = 'top'
     const user = userEvent.setup()
@@ -683,5 +763,282 @@ describe('Settings → Flow id order (07.8)', () => {
     await user.clear(field)
     await user.type(field, 'job_id{Enter}')
     expect(within(form).getByText('job_id', { selector: 'span' })).toBeInTheDocument()
+  })
+})
+
+const httpLine = (id: number, path: string, method = 'GET', source = 'legivent-api'): LogLine => ({
+  id,
+  ts: NOW - 1000 * (10 - id),
+  received: NOW,
+  source,
+  level: 'info',
+  display_id: null,
+  ids: [],
+  msg: 'request completed',
+  fields: { msg: 'request completed', method, path, status: 200 },
+  raw: JSON.stringify({ msg: 'request completed', method, path, status: 200 }),
+})
+
+describe('Settings → Muted lines (07.12–07.20)', () => {
+  it('lists global rules with hits, where they are off, and pauses one with Undo', async () => {
+    settings.muted_global = [rule({ id: 'mr_g', scope: 'global', value: '/metrics', origin: 'manual' })]
+    settings.sources.traefik = { ...blankSource(), muted_global_off: [{ id: 'mr_g', by: 'esi', at: NOW }] }
+    muteStats.rules.mr_g = { per_source: { 'legivent-api': 1020, traefik: 310, dokploy: 960 } }
+    const user = userEvent.setup()
+    renderAt('/settings/muted-lines')
+    const table = await screen.findByRole('table', { name: 'Global rules' })
+    expect(within(table).getByText('/metrics')).toBeInTheDocument()
+    expect(within(table).getByText('off on traefik')).toBeInTheDocument()
+    // Hidden counts leave out sources that switched the rule off.
+    expect(await within(table).findByText('1,980')).toBeInTheDocument()
+    expect(within(table).getByText('on 2 sources')).toBeInTheDocument()
+    await user.click(within(table).getByRole('switch', { name: 'Pause path:/metrics' }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({ url: '/api/mute/rules/mr_g', method: 'PATCH', body: { enabled: false } }),
+    )
+  })
+
+  it('empty state, then Add global rule with a live preview', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings/muted-lines')
+    expect(await screen.findByTestId('muted-empty')).toHaveTextContent('No global rules yet')
+    await user.click(screen.getAllByRole('button', { name: /Add global rule/ })[0])
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByLabelText('Route'), '/api/v1/health?probe=1')
+    expect(await within(dialog).findByText('312 lines')).toBeInTheDocument()
+    expect(within(dialog).getByText('stored as path:/api/v1/health')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: /Add global rule/ }))
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/mute/rules')).toBe(true))
+    const post = calls.find((c) => c.url === '/api/mute/rules')
+    expect(post?.body).toMatchObject({ rule: { scope: 'global', shape: 'route', value: '/api/v1/health' } })
+    expect(post?.body.source).toBeUndefined()
+  })
+
+  it("rule detail shows hits by source and Don't apply here; delete always confirms", async () => {
+    settings.muted_global = [
+      rule({ id: 'mr_g', scope: 'global', shape: 'field', field: 'user_agent', value: 'kube-probe/*' }),
+    ]
+    settings.sources.traefik = { ...blankSource(), muted_global_off: [{ id: 'mr_g', by: 'esi', at: NOW }] }
+    muteStats.rules.mr_g = { per_source: { 'legivent-api': 640, traefik: 310 } }
+    const user = userEvent.setup()
+    renderAt('/settings/muted-lines')
+    await user.click(await screen.findByText('kube-probe/*'))
+    const sheet = await screen.findByRole('dialog')
+    expect(within(sheet).getByText('Global rule')).toBeInTheDocument()
+    const hits = within(sheet).getByRole('list', { name: 'Hits by source' })
+    expect(within(hits).getByText('would hide 310')).toBeInTheDocument()
+    expect(within(hits).getByText('off here')).toBeInTheDocument()
+    await user.click(within(sheet).getByRole('button', { name: /Delete rule/ }))
+    const confirm = await screen.findByRole('dialog', { name: 'Delete for all sources?' })
+    await user.click(within(confirm).getByRole('button', { name: /Delete for all sources/ }))
+    await waitFor(() => expect(calls).toContainEqual({ url: '/api/mute/rules/mr_g', method: 'DELETE', body: null }))
+  })
+
+  it('the include-in-search default lives here; members see it all read-only', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings/muted-lines')
+    await user.click(await screen.findByRole('switch', { name: 'Include muted lines in search' }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({ url: '/api/mute/search', method: 'PUT', body: { include: true } }),
+    )
+  })
+
+  it('members: no Add, switches locked', async () => {
+    settings.muted_global = [rule({ id: 'mr_g', scope: 'global', value: '/metrics' })]
+    renderAt('/settings/muted-lines', member)
+    expect(await screen.findByRole('switch', { name: 'Pause path:/metrics' })).toHaveAttribute('data-disabled')
+    expect(screen.queryByRole('button', { name: /Add global rule/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Include muted lines in search' })).toHaveAttribute('data-disabled')
+  })
+})
+
+describe('Sources → edit → Muted lines (06.13–06.25)', () => {
+  it("shows this source and the global rules; Don't apply here asks first; a small rule deletes with Undo", async () => {
+    settings.muted_global = [rule({ id: 'mr_g', scope: 'global', value: '/metrics' })]
+    settings.sources['legivent-api'] = {
+      ...blankSource(),
+      muted: [
+        rule({ id: 'mr_a', value: '/api/v1/health' }),
+        rule({ id: 'mr_b', shape: 'message', field: null, value: 'cache warm', enabled: false, origin: 'manual' }),
+      ],
+    }
+    muteStats.rules = {
+      mr_a: { per_source: { 'legivent-api': 312 } },
+      mr_b: { per_source: { 'legivent-api': 41 } },
+      mr_g: { per_source: { 'legivent-api': 1020, dokploy: 900 } },
+    }
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?edit=muted')
+    const sheet = await screen.findByRole('dialog', { name: /Edit source/ })
+    expect(await within(sheet).findByRole('tab', { name: 'Muted lines · 2' })).toHaveAttribute('aria-selected', 'true')
+    const mine = within(sheet).getByRole('region', { name: 'This source' })
+    expect(await within(mine).findByText('312 hidden')).toBeInTheDocument()
+    expect(within(mine).getByText('would hide 41')).toBeInTheDocument()
+    const global = within(sheet).getByRole('region', { name: 'Global from Settings' })
+    expect(within(global).getByText('1,020 hidden here')).toBeInTheDocument()
+    // Don't apply here: a popover first.
+    await user.click(within(global).getByRole('switch', { name: 'Apply path:/metrics on legivent-api' }))
+    await user.click(await screen.findByRole('button', { name: "Don't apply here" }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        url: '/api/mute/sources/legivent-api/global/mr_g',
+        method: 'PUT',
+        body: { apply: false },
+      }),
+    )
+    // Under 1,000 lines a day: deleted straight away.
+    await user.click(within(mine).getByRole('button', { name: 'Delete path:/api/v1/health' }))
+    await waitFor(() => expect(calls).toContainEqual({ url: '/api/mute/rules/mr_a', method: 'DELETE', body: null }))
+  })
+
+  it('a rule hiding 1,000+ lines a day asks before it goes', async () => {
+    settings.sources['legivent-api'] = {
+      ...blankSource(),
+      muted: [rule({ id: 'mr_big', shape: 'field', field: 'user_agent', value: 'ELB-HealthChecker/*' })],
+    }
+    muteStats.rules = { mr_big: { per_source: { 'legivent-api': 1052 } } }
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?edit=muted')
+    const del = await screen.findByRole('button', { name: 'Delete user_agent=ELB-HealthChecker/*' })
+    await screen.findByText('1,052 hidden')
+    await user.click(del)
+    const confirm = await screen.findByRole('dialog', { name: 'Delete this rule?' })
+    expect(calls).toHaveLength(0)
+    await user.click(within(confirm).getByRole('button', { name: /Delete rule/ }))
+    await waitFor(() => expect(calls).toContainEqual({ url: '/api/mute/rules/mr_big', method: 'DELETE', body: null }))
+  })
+
+  it('adds a method + route rule on this source', async () => {
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?edit=muted')
+    expect(await screen.findByText('No rules for legivent-api yet')).toBeInTheDocument()
+    await user.click(screen.getAllByRole('button', { name: /Add rule/ })[0])
+    const dialog = await screen.findByRole('form', { name: 'Add rule' })
+    await user.click(within(dialog).getByRole('radio', { name: 'Method + route' }))
+    await user.type(within(dialog).getByLabelText('Route'), '/api/v1/ping')
+    expect(await within(dialog).findByText('312 lines')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: /^Add rule/ }))
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/mute/rules')).toBe(true))
+    expect(calls.find((c) => c.url === '/api/mute/rules')?.body).toMatchObject({
+      source: 'legivent-api',
+      rule: { scope: 'source', shape: 'method_route', value: '/api/v1/ping', method: 'GET' },
+    })
+  })
+
+  it('is read-only for members', async () => {
+    settings.sources['legivent-api'] = { ...blankSource(), muted: [rule({})] }
+    renderAt('/sources/legivent-api?edit=muted', member)
+    expect(await screen.findByText('read-only')).toBeInTheDocument()
+    const sw = await screen.findByRole('switch', { name: 'Pause path:/api/v1/health' })
+    expect(screen.queryByRole('button', { name: /Add rule/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete path:/api/v1/health' })).not.toBeInTheDocument()
+    expect(sw).toHaveAttribute('data-disabled')
+    expect(await screen.findByRole('switch', { name: 'Pause path:/api/v1/health' })).toHaveAttribute('data-disabled')
+  })
+})
+
+describe('stream row hover → Mute (03.15–03.23)', () => {
+  it('Mute mutes the route (query ignored) on this source, rows fade, toast with Undo', async () => {
+    backlog = [httpLine(1, '/api/v1/orders'), httpLine(2, '/api/v1/health?probe=1')]
+    const user = userEvent.setup()
+    renderAt('/?source=legivent-api')
+    const row = await waitFor(() => {
+      const r = document.querySelector('[data-line-id="2"]')
+      if (!r) throw new Error('no row')
+      return r as HTMLElement
+    })
+    const mute = within(row).getByRole('button', {
+      name: 'Mute /api/v1/health on legivent-api · any method · from path',
+    })
+    await user.click(mute)
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/mute/rules')).toBe(true), { timeout: 3000 })
+    expect(calls.find((c) => c.url === '/api/mute/rules')?.body).toMatchObject({
+      source: 'legivent-api',
+      rule: { scope: 'source', shape: 'route', value: '/api/v1/health', field: 'path', origin: 'hover' },
+    })
+    // Hidden from the stream now; the other row stays.
+    await waitFor(() => expect(document.querySelector('[data-line-id="2"]')).toBeNull())
+    expect(document.querySelector('[data-line-id="1"]')).not.toBeNull()
+    expect(await screen.findByText('Muted /api/v1/health on legivent-api')).toBeInTheDocument()
+  })
+
+  it('no route on the line: Mute message mutes the exact message', async () => {
+    backlog = [{ ...line(1), msg: 'heartbeat ok', raw: 'heartbeat ok', level: 'info' }]
+    const user = userEvent.setup()
+    renderAt('/?source=legivent-api')
+    const btn = await screen.findByRole('button', { name: /^Mute this message on legivent-api/ })
+    expect(btn).toHaveTextContent('Mute message')
+    await user.click(btn)
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/mute/rules')).toBe(true), { timeout: 3000 })
+    expect(calls.find((c) => c.url === '/api/mute/rules')?.body.rule).toMatchObject({
+      shape: 'message',
+      value: 'heartbeat ok',
+    })
+  })
+
+  it('⇧M opens the menu: pick 2 (method + route), Tab to All sources, ↵ mutes everywhere', async () => {
+    backlog = [httpLine(1, '/api/v1/health')]
+    const user = userEvent.setup()
+    renderAt('/?source=legivent-api')
+    await screen.findByText('/api/v1/health')
+    await user.keyboard('j')
+    await user.keyboard('{Shift>}M{/Shift}')
+    const menu = await screen.findByTestId('mute-menu')
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(3)
+    expect(within(menu).getByRole('menuitemradio', { name: /Mute route · any method/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    await user.keyboard('2')
+    expect(within(menu).getByRole('menuitemradio', { name: /Mute GET \/api\/v1\/health only/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    await user.keyboard('{Tab}')
+    expect(within(menu).getByRole('radio', { name: /All sources/ })).toHaveAttribute('aria-checked', 'true')
+    expect(within(menu).getByRole('button', { name: /Mute everywhere/ })).toBeInTheDocument()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/mute/rules')).toBe(true), { timeout: 3000 })
+    const body = calls.find((c) => c.url === '/api/mute/rules')?.body
+    expect(body.rule).toMatchObject({ scope: 'global', shape: 'method_route', method: 'GET', value: '/api/v1/health' })
+    expect(body.source).toBeUndefined()
+  })
+
+  it('members: Mute is locked and M explains why', async () => {
+    backlog = [httpLine(1, '/api/v1/health')]
+    const user = userEvent.setup()
+    renderAt('/?source=legivent-api', member)
+    const btn = await screen.findByRole('button', { name: /Only owners can edit muted lines/ })
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    await user.click(btn)
+    await user.keyboard('j')
+    await user.keyboard('m')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('a row muted by a global rule (Show muted) offers Show on this source only', async () => {
+    settings.muted_global = [rule({ id: 'mr_g', scope: 'global', value: '/api/v1/health' })]
+    backlog = [httpLine(1, '/api/v1/orders'), httpLine(2, '/api/v1/health')]
+    const user = userEvent.setup()
+    renderAt('/?source=legivent-api')
+    const note = await screen.findByTestId('muted-note')
+    expect(note).toHaveTextContent('0 source rules + 1 global · 1 hidden')
+    await user.click(within(note).getByRole('button', { name: 'Show muted' }))
+    const row = await waitFor(() => {
+      const r = document.querySelector('[data-line-id="2"]')
+      if (!r) throw new Error('no row')
+      return r as HTMLElement
+    })
+    expect(row).toHaveAttribute('data-muted', 'true')
+    expect(within(row).getByTestId('muted-tag')).toHaveTextContent('global · path:/api/v1/health')
+    await user.click(within(row).getByRole('button', { name: 'Mute options' }))
+    await user.click(await screen.findByRole('menuitem', { name: /Show on legivent-api only/ }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        url: '/api/mute/sources/legivent-api/global/mr_g',
+        method: 'PUT',
+        body: { apply: false },
+      }),
+    )
   })
 })

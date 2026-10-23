@@ -4,6 +4,7 @@ import {
   ArrowLeftIcon,
   CheckIcon,
   ChevronRightIcon,
+  EyeOffIcon,
   GaugeIcon,
   PauseIcon,
   PencilIcon,
@@ -14,6 +15,7 @@ import {
   XIcon,
 } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
+import { SourceEditSheet } from '@/components/mute/source-edit-sheet'
 import { IdOrderEditor } from '@/components/settings/id-order'
 import { Caps, Panel } from '@/components/settings/kit'
 import { fmtSpan, PurgeDialog } from '@/components/settings/storage'
@@ -35,7 +37,6 @@ import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { kindLabel } from '@/lib/connect'
 import { fmtAgo, fmtBytes, fmtClock, fmtCount, fmtTime, fmtWindow, isRecent } from '@/lib/format'
-import { parseMute } from '@/lib/mute'
 import { searchResponse } from '@/lib/schemas'
 import { toQuery } from '@/lib/search-api'
 import {
@@ -63,7 +64,7 @@ export type SourceTab = 'overview' | 'rejected' | 'malformed' | 'settings'
 /** `/sources/$name` (boards v0.1-06.2 / 06.5 / 06.6): overview, rejected requests, per-source settings. */
 export function SourceDetailPage() {
   const { name } = route.useParams()
-  const { tab = 'overview' } = route.useSearch()
+  const { tab = 'overview', edit } = route.useSearch()
   const navigate = route.useNavigate()
   const sources = useSources().data
   const settings = useSettings().data
@@ -124,7 +125,10 @@ export function SourceDetailPage() {
             <GaugeIcon /> Check logs
           </Button>
         </Link>
-        <Button variant="outline" onClick={() => navigate({ search: { tab: 'settings' }, replace: true })}>
+        <Button
+          variant="outline"
+          onClick={() => navigate({ search: (x) => ({ ...x, edit: 'general' }), replace: true })}
+        >
           <PencilIcon /> Edit
         </Button>
         {owner && (
@@ -143,7 +147,9 @@ export function SourceDetailPage() {
             type="button"
             role="tab"
             aria-selected={tab === t}
-            onClick={() => navigate({ search: { tab: t === 'overview' ? undefined : t }, replace: true })}
+            onClick={() =>
+              navigate({ search: (x) => ({ ...x, tab: t === 'overview' ? undefined : t }), replace: true })
+            }
             className={cn(
               '-mb-px border-transparent border-b-2 px-3 py-2 text-muted-foreground text-sm hover:text-foreground',
               tab === t && 'border-foreground text-foreground',
@@ -160,6 +166,13 @@ export function SourceDetailPage() {
           they expire.
         </div>
       )}
+      <SourceEditSheet
+        name={name}
+        owner={owner}
+        tab={edit}
+        onTab={(t) => navigate({ search: (x) => ({ ...x, edit: t }), replace: true })}
+        onClose={() => navigate({ search: (x) => ({ ...x, edit: undefined }), replace: true })}
+      />
       {tab === 'overview' && <Overview info={info} name={name} saved={saved} owner={owner} />}
       {tab === 'rejected' && <Rejected name={name} info={info} />}
       {tab === 'malformed' && <MalformedPanel name={name} />}
@@ -687,10 +700,10 @@ export function SourceSettingsForm({
   const reset = useResetSource(name)
   const [draft, setDraft] = useState<SourceSettings>(saved)
   const [field, setField] = useState('')
-  const [mute, setMute] = useState('')
   const [purging, setPurging] = useState(false)
-  // Settings → General's choice, what "Inherit" means here.
-  const instanceIncludesMuted = useSettings().data?.muted_search.include ?? false
+  const navigate = route.useNavigate()
+  const all = useSettings().data
+  const globalCount = all?.muted_global.length ?? 0
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
   const set = (p: Partial<SourceSettings>) => setDraft({ ...draft, ...p })
   const windows = WINDOWS.filter((w) => w.ms <= globalRetention)
@@ -698,7 +711,15 @@ export function SourceSettingsForm({
   const submit = async (e?: FormEvent) => {
     e?.preventDefault()
     try {
-      await save.mutateAsync({ ...draft, display_name: draft.display_name?.trim() || null })
+      // Muted lines change on their own (the edit sheet, the stream): keep the newest.
+      const latest = all?.sources[name]
+      await save.mutateAsync({
+        ...draft,
+        display_name: draft.display_name?.trim() || null,
+        muted: latest?.muted ?? draft.muted,
+        muted_global_off: latest?.muted_global_off ?? draft.muted_global_off,
+        search_include_muted: latest ? latest.search_include_muted : draft.search_include_muted,
+      })
       toast.success(`Settings saved for ${name}`)
     } catch (err) {
       toast.error('Could not save', { description: (err as Error).message })
@@ -709,12 +730,6 @@ export function SourceSettingsForm({
     if (!f || draft.mask_fields.includes(f)) return
     set({ mask_fields: [...draft.mask_fields, f] })
     setField('')
-  }
-  const addMute = () => {
-    const r = parseMute(mute)
-    if (!r) return
-    if (!draft.muted.some((x) => x.field === r.field && x.value === r.value)) set({ muted: [...draft.muted, r] })
-    setMute('')
   }
   const toggleMask = (k: PiiKind, on: boolean) =>
     set({ unmasked: on ? draft.unmasked.filter((x) => x !== k) : [...draft.unmasked, k] })
@@ -777,95 +792,23 @@ export function SourceSettingsForm({
               </span>
             </div>
           </Panel>
-          <Panel title="Muted lines" aside={draft.muted.length ? `${draft.muted.length} rules` : undefined}>
-            <div className="flex flex-col gap-2 p-4">
-              <ul aria-label="Muted lines" className="flex flex-wrap items-center gap-1.5">
-                {draft.muted.map((r) => (
-                  <li
-                    key={`${r.field ?? ''}\u0000${r.value}`}
-                    className="flex items-center gap-1 border bg-brand/10 px-1.5 py-0.5 font-mono text-xs"
-                  >
-                    {r.field ? (
-                      <>
-                        <span className="text-brand">{r.field}</span>
-                        <span className="text-muted-foreground">:</span>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">text</span>
-                    )}
-                    <span>{r.value}</span>
-                    <button
-                      type="button"
-                      aria-label={`Unmute ${r.field ? `${r.field}:` : ''}${r.value}`}
-                      className="text-muted-foreground hover:text-foreground"
-                      onClick={() => set({ muted: draft.muted.filter((x) => x !== r) })}
-                    >
-                      <XIcon className="size-3" />
-                    </button>
-                  </li>
-                ))}
-                <li className="flex items-center gap-1.5">
-                  <Input
-                    aria-label="Mute lines matching"
-                    placeholder="path:/api/v1/health or text"
-                    className="h-7 w-56 font-mono text-xs"
-                    value={mute}
-                    onChange={(e) => setMute(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        addMute()
-                      }
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label="Add muted rule"
-                    onClick={addMute}
-                    disabled={!mute.trim()}
-                  >
-                    <PlusIcon /> Add
-                  </Button>
-                </li>
-              </ul>
+          <Panel
+            title="Muted lines"
+            aside={`${saved.muted.length} ${saved.muted.length === 1 ? 'rule' : 'rules'} here · ${globalCount} global`}
+          >
+            <div className="flex items-center justify-between gap-4 p-4 text-sm">
               <span className="text-muted-foreground text-xs">
-                Muted lines are still stored and searchable, just hidden from the stream (and from search unless
-                included below) until you click Show muted. <code className="font-mono">field:value</code> matches a
-                field (<code>*</code> for any run of characters); anything else matches text in the line.
+                Hidden from the stream and search, still stored. Rules for this source, global rules from Settings →
+                Muted lines (each can be switched off here), and Include muted lines in search live in the edit sheet.
               </span>
-              <div className="flex items-center justify-between gap-4 border-t pt-3 text-sm">
-                <span className="flex flex-col">
-                  <span>Include muted lines in search</span>
-                  <span className="text-muted-foreground text-xs">
-                    Shown dimmed and tagged <span className="border px-1 font-mono text-[10px]">muted</span>. The stream
-                    still hides them.
-                  </span>
-                </span>
-                <Select
-                  value={draft.search_include_muted == null ? 'inherit' : draft.search_include_muted ? 'on' : 'off'}
-                  onValueChange={(v) => set({ search_include_muted: v === 'on' ? true : v === 'off' ? false : null })}
-                  disabled={!owner}
-                >
-                  <SelectTrigger aria-label="Include muted lines in search" size="sm" className="w-44">
-                    <SelectValue>
-                      {(v: string) =>
-                        v === 'inherit'
-                          ? `Inherit · ${instanceIncludesMuted ? 'on' : 'off'}`
-                          : v === 'on'
-                            ? 'On'
-                            : 'Off'
-                      }
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="inherit">Inherit · {instanceIncludesMuted ? 'on' : 'off'}</SelectItem>
-                    <SelectItem value="on">On</SelectItem>
-                    <SelectItem value="off">Off</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => navigate({ search: (x) => ({ ...x, edit: 'muted' }), replace: true })}
+              >
+                <EyeOffIcon /> Muted lines
+              </Button>
             </div>
           </Panel>
           <Panel title="Stream & retention">
