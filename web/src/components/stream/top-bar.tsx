@@ -1,4 +1,5 @@
 import { FileDownIcon, PauseIcon, PlayIcon } from 'lucide-react'
+import { SidebarToggle } from '@/components/sidebar-resize'
 import { StatusDot } from '@/components/status-dot'
 import { SourcePicker } from '@/components/stream/source-picker'
 import { Button } from '@/components/ui/button'
@@ -96,6 +97,7 @@ export function TopBar({
 }) {
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b px-6">
+      <SidebarToggle />
       <StatusDot status={state === 'live' ? 'ok' : state === 'offline' ? 'idle' : 'warn'} />
       <SourcePicker source={source} name={name} />
       {source && (

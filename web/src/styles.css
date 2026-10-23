@@ -223,3 +223,31 @@
 [data-sileo-viewport] [data-sileo-svg] {
   filter: drop-shadow(0 0 0.5px var(--border)) drop-shadow(0 8px 24px rgb(0 0 0 / 35%));
 }
+
+/* Sidebar resize (boards 03.10–03.14). The shell sets --sidebar-w (200–420);
+   the main column keeps ≥ 720px, so on a narrow window the sidebar shrinks
+   first, never below 200. Below 768px it stays 248 with no handle. */
+@media (min-width: 48rem) {
+  [data-slot="app-sidebar"] {
+    width: max(200px, min(var(--sidebar-w, 248px), calc(100vw - 720px)));
+  }
+  [data-slot="app-sidebar"][data-hidden] {
+    display: none;
+  }
+}
+/* While dragging: one cursor, no text selection, rows don't hover. */
+html[data-sidebar-resizing],
+html[data-sidebar-resizing] * {
+  cursor: col-resize;
+  user-select: none;
+}
+html[data-sidebar-resizing] main {
+  pointer-events: none;
+}
+/* Released here it hides: the sidebar dims under the hatched ghost (03.13). */
+[data-slot="app-sidebar"][data-snap] > :not([role="separator"]) {
+  opacity: 0.35;
+}
+[data-slot="app-sidebar"][data-snap] > [role="separator"] > * {
+  opacity: 0;
+}

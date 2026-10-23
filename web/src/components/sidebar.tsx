@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Logo } from '@/components/logo'
+import { SIDEBAR_ID, SidebarResizeHandle } from '@/components/sidebar-resize'
 import { SourceGroupHeader } from '@/components/source-group-header'
 import { SourceItem } from '@/components/source-item'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
@@ -18,6 +19,7 @@ import { UserMenu } from '@/components/user-menu'
 import { useHealth, useSources } from '@/lib/api'
 import { useConnection } from '@/lib/connection'
 import { fmtWindow } from '@/lib/format'
+import { useSidebar } from '@/lib/sidebar'
 import { groupSources, useCollapsedGroups } from '@/lib/source-groups'
 import { useCustomGroups } from '@/lib/source-groups-api'
 import { useRates } from '@/lib/use-rates'
@@ -70,9 +72,16 @@ export function Sidebar({
   const { isCollapsed, toggle, toggleAll, allCollapsed } = useCollapsedGroups()
   const keys = groups.map((g) => g.key)
   const onStream = useRouterState({ select: (s) => s.location.pathname === '/' })
+  const { hidden } = useSidebar()
 
   return (
-    <aside className="flex min-h-0 w-62 shrink-0 flex-col border-sidebar-border border-r bg-sidebar text-sidebar-foreground">
+    <aside
+      id={SIDEBAR_ID}
+      data-slot="app-sidebar"
+      data-hidden={hidden ? '' : undefined}
+      aria-label="Sidebar"
+      className="relative flex min-h-0 w-62 shrink-0 flex-col border-sidebar-border border-r bg-sidebar text-sidebar-foreground"
+    >
       <div className="flex h-14 items-center justify-between px-4">
         <Logo />
         <span className="border border-sidebar-border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
@@ -153,6 +162,7 @@ export function Sidebar({
                   active={onStream && s.name === activeSource}
                   rate={down ? null : (rates[s.name] ?? null)}
                   nested={!flat}
+                  group={flat ? undefined : g.name}
                 />
               ))}
             </section>
@@ -180,6 +190,7 @@ export function Sidebar({
           </button>
         )}
       </div>
+      <SidebarResizeHandle />
     </aside>
   )
 }
