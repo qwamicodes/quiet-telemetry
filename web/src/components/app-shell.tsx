@@ -15,6 +15,7 @@ import { SidebarProvider, useSidebarPrefs } from '@/lib/sidebar'
 import { SIDEBAR_DESKTOP } from '@/lib/sidebar-width'
 import { useTheme } from '@/lib/theme'
 import { useHotkeys, useKeySequences } from '@/lib/use-hotkeys'
+import { cn } from '@/lib/utils'
 
 /** Instance-wide display settings: tab title and timezone. */
 function useInstanceDisplay() {
@@ -36,6 +37,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const { toggle } = useTheme()
   const sidebar = useSidebarPrefs()
+  const floatToggle = sidebar.hidden && sidebar.inlineToggles === 0
   const source = useRouterState({
     select: (s) => (s.location.search as { source?: string }).source ?? null,
   })
@@ -68,8 +70,14 @@ export function AppShell() {
           style={{ '--sidebar-w': `${sidebar.width}px` } as CSSProperties}
         >
           <Sidebar activeSource={source} onOpenPalette={() => setPalette(true)} onOpenShortcuts={() => setKeys(true)} />
-          <main className="relative flex min-w-0 flex-1 flex-col">
-            {sidebar.inlineToggles === 0 && <SidebarToggle floating className="absolute top-3.5 left-3 z-30" />}
+          <main
+            className={cn(
+              'relative flex min-w-0 flex-1 flex-col',
+              // Screens without a top bar: the toggle floats top-left and the page moves over for it.
+              floatToggle && 'md:pl-10',
+            )}
+          >
+            {floatToggle && <SidebarToggle floating className="absolute top-3.5 left-3 z-30" />}
             <SystemBanners />
             <Outlet />
           </main>
