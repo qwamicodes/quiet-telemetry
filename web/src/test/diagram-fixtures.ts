@@ -1,0 +1,28 @@
+/** The 04.8 board's line: a pino 404 with wideEvents and an error. */
+export const checkout = {
+  level: 50,
+  timestamp: '2026-10-22T00:53:14.226Z',
+  pid: 1,
+  hostname: '1a3a848cdd6d',
+  request_id: '6ef22470-a1a3-45c9-aa18-2c6ec47d2608',
+  user_id: 'anonymous',
+  device_id: '',
+  user_agent: 'curl/8.14.1',
+  ip_address: '52.26.208.45',
+  should_sample: false,
+  method: 'GET',
+  path: '/api/v1/checkout/sessions/chk_vH3zF9QmR8kL2pT7xN4cW1aB',
+  sample_reason: 'error',
+  wideEvents: {
+    service: 'checkout',
+    operation: 'get_checkout_session',
+    session: { found: false, reason: 'missing_cookie' },
+    flow: 'checkout_session_read',
+    checkout_session_id: 'chk_vH3zF9QmR8kL2pT7xN4cW1aB',
+    phase: 'persistence',
+    outcome: 'checkout_session_not_found',
+  },
+  error: { name: 'DomainError', message: 'CHECKOUT_SESSION_NOT_FOUND' },
+  status: 404,
+  duration_ms: 264,
+}
