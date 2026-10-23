@@ -33,7 +33,15 @@ function SheetContent({
   )
 }
 
-function SheetHeader({ title, aside, children }: { title: React.ReactNode; aside?: React.ReactNode; children?: React.ReactNode }) {
+function SheetHeader({
+  title,
+  aside,
+  children,
+}: {
+  title: React.ReactNode
+  aside?: React.ReactNode
+  children?: React.ReactNode
+}) {
   return (
     <div className="shrink-0 border-b px-5 pt-4">
       <div className="flex items-center gap-3 pb-3">

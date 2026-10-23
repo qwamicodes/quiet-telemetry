@@ -14,12 +14,18 @@ export function MutedNote({
   source,
   className,
   included = false,
+  rules,
+  undo = false,
 }: {
   count: number
   shown: boolean
   onToggle: () => void
   /** Search: the muted lines are included in the results, dimmed and tagged. */
   included?: boolean
+  /** The stream: rules hiding lines here (`5 source rules + 3 global`). */
+  rules?: { source: number; global: number }
+  /** A mute was just made: `⌘Z undo mute`. */
+  undo?: boolean
   /** Links to the rules when one source is in view. */
   source?: string
   className?: string
@@ -35,10 +41,15 @@ export function MutedNote({
           <span className="text-foreground">{count.toLocaleString()}</span> muted {count === 1 ? 'line' : 'lines'}{' '}
           included
         </span>
+      ) : rules ? (
+        <span>
+          {rules.source} source {rules.source === 1 ? 'rule' : 'rules'} + {rules.global} global ·{' '}
+          <span className="text-foreground">{count.toLocaleString()}</span> {shown ? 'muted · shown' : 'hidden'}
+        </span>
       ) : (
         <span>
           <span className="text-foreground">{count.toLocaleString()}</span> muted
-          {shown ? ' · shown' : ' · hidden by this source’s muted-lines rules'}
+          {shown ? ' · shown' : ' · hidden by muted-lines rules'}
         </span>
       )}
       <Button variant="ghost" size="xs" onClick={onToggle} aria-pressed={shown || included}>
@@ -48,11 +59,17 @@ export function MutedNote({
         <Link
           to="/sources/$name"
           params={{ name: source }}
-          search={{ tab: 'settings' }}
+          search={{ edit: 'muted' }}
           className="text-brand hover:underline"
         >
           Edit rules
         </Link>
+      )}
+      {undo && (
+        <span className="ml-auto flex items-center gap-1">
+          <kbd className="border px-1 text-[10px]">⌘</kbd>
+          <kbd className="border px-1 text-[10px]">Z</kbd> undo mute
+        </span>
       )}
     </div>
   )

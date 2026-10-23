@@ -1,5 +1,14 @@
 import { useMemo } from 'react'
-import type { GlobalOff, LogLine, MuteOrigin, MuteRule, MuteScope, MuteShape, SettingsResponse, SourceSettings } from '@/gen'
+import type {
+  GlobalOff,
+  LogLine,
+  MuteOrigin,
+  MuteRule,
+  MuteScope,
+  MuteShape,
+  SettingsResponse,
+  SourceSettings,
+} from '@/gen'
 import { useSettings } from '@/lib/settings-api'
 
 /**

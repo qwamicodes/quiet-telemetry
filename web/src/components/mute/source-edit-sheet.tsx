@@ -151,7 +151,9 @@ function DraftTab({
               <div className="flex items-center justify-between gap-4 text-sm">
                 <span className="flex flex-col">
                   <span>Hide from the sidebar</span>
-                  <span className="text-muted-foreground text-xs">Still stored, searchable and listed under Sources.</span>
+                  <span className="text-muted-foreground text-xs">
+                    Still stored, searchable and listed under Sources.
+                  </span>
                 </span>
                 <Switch
                   aria-label="Hide from the sidebar"

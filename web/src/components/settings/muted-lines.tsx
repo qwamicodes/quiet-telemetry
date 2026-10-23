@@ -1,17 +1,16 @@
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowRightIcon, ExternalLinkIcon, InfoIcon, MoreHorizontalIcon, PencilIcon, PlusIcon, Trash2Icon } from 'lucide-react'
+import {
+  ArrowRightIcon,
+  ExternalLinkIcon,
+  InfoIcon,
+  MoreHorizontalIcon,
+  PencilIcon,
+  PlusIcon,
+  Trash2Icon,
+} from 'lucide-react'
 import { useState } from 'react'
 import { AddRuleDialog } from '@/components/mute/add-rule-dialog'
-import {
-  fmtDay,
-  fmtN,
-  GlobalTag,
-  Meta,
-  OWNERS_ONLY,
-  Pattern,
-  ShapeChip,
-  OriginNote,
-} from '@/components/mute/rule-bits'
+import { fmtDay, fmtN, GlobalTag, Meta, OriginNote, OWNERS_ONLY, Pattern, ShapeChip } from '@/components/mute/rule-bits'
 import { PageHeader, ReadOnlyNote, SettingRow } from '@/components/settings/kit'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -31,6 +30,7 @@ import { useSources } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { kindLabel } from '@/lib/connect'
 import { isRecent } from '@/lib/format'
+import { globalOff, ruleText } from '@/lib/mute'
 import {
   restoreOf,
   ruleHits,
@@ -41,7 +41,6 @@ import {
   useSaveMutedSearch,
   useUpdateMuteRule,
 } from '@/lib/mute-api'
-import { globalOff, ruleText } from '@/lib/mute'
 import { useSettings } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
 
@@ -86,7 +85,10 @@ export function MutedLinesSettings() {
   const hiddenBy = (r: MuteRule) => {
     const off = new Set(offOn(data, r.id).map(([n]) => n))
     const h = ruleHits(stats, r.id)
-    return { n: r.enabled ? sumHits(h, (s) => !off.has(s)) : 0, sources: Object.keys(h).filter((s) => !off.has(s)).length }
+    return {
+      n: r.enabled ? sumHits(h, (s) => !off.has(s)) : 0,
+      sources: Object.keys(h).filter((s) => !off.has(s)).length,
+    }
   }
   const total = global.reduce((n, r) => n + hiddenBy(r).n, 0)
   const perSource = Object.values(data?.sources ?? {}).filter((s) => s.muted.length > 0)
@@ -138,7 +140,8 @@ export function MutedLinesSettings() {
           <span className="font-medium">No global rules yet</span>
           <span className="text-muted-foreground text-xs">
             Mute a health check or a probe once for every source: add a rule here, or pick All sources in a stream row's
-            Mute menu. {perSourceRules > 0 && `${perSourceRules} per-source rules hide lines on ${perSource.length} sources.`}
+            Mute menu.{' '}
+            {perSourceRules > 0 && `${perSourceRules} per-source rules hide lines on ${perSource.length} sources.`}
           </span>
           {owner && (
             <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
@@ -164,7 +167,11 @@ export function MutedLinesSettings() {
               return (
                 <tr key={r.id} className="border-b hover:bg-muted/30" data-rule={r.id}>
                   <td className="px-3 py-2.5">
-                    <button type="button" className="flex min-w-0 flex-col gap-1 text-left" onClick={() => setDetail(r.id)}>
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-col gap-1 text-left"
+                      onClick={() => setDetail(r.id)}
+                    >
                       <span className="flex min-w-0 items-center gap-2">
                         <ShapeChip shape={r.shape} />
                         <Pattern rule={r} />
@@ -198,7 +205,9 @@ export function MutedLinesSettings() {
                   </td>
                   <td className="pr-2">
                     <DropdownMenu>
-                      <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`More for ${ruleText(r)}`} />}>
+                      <DropdownMenuTrigger
+                        render={<Button variant="ghost" size="icon-sm" aria-label={`More for ${ruleText(r)}`} />}
+                      >
                         <MoreHorizontalIcon />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
@@ -225,7 +234,10 @@ export function MutedLinesSettings() {
                   </span>
                   <span className="flex items-center gap-3">
                     Per-source rules: {perSourceRules} on {perSource.length} sources
-                    <Link to="/sources" className="inline-flex items-center gap-1 text-foreground text-xs hover:underline">
+                    <Link
+                      to="/sources"
+                      className="inline-flex items-center gap-1 text-foreground text-xs hover:underline"
+                    >
                       Sources <ArrowRightIcon className="size-3" />
                     </Link>
                   </span>
@@ -261,7 +273,11 @@ export function MutedLinesSettings() {
           setDeleting(r)
         }}
       />
-      <DeleteGlobal rule={deleting} onClose={() => setDeleting(null)} hidden={deleting ? hiddenBy(deleting) : undefined} />
+      <DeleteGlobal
+        rule={deleting}
+        onClose={() => setDeleting(null)}
+        hidden={deleting ? hiddenBy(deleting) : undefined}
+      />
     </div>
   )
 }
@@ -412,7 +428,13 @@ function RuleDetail({
                         <span className="text-right font-mono tabular-nums">
                           {o ? `would hide ${fmtN(c)}` : fmtN(c)}
                         </span>
-                        <span className={o ? 'text-right font-mono text-[11px] text-status-warn' : 'text-right font-mono text-[11px] text-muted-foreground'}>
+                        <span
+                          className={
+                            o
+                              ? 'text-right font-mono text-[11px] text-status-warn'
+                              : 'text-right font-mono text-[11px] text-muted-foreground'
+                          }
+                        >
                           {o ? 'off here' : 'applies'}
                         </span>
                       </div>
@@ -485,7 +507,9 @@ function IncludeDefault({ owner }: { owner: boolean }) {
             Instance default. Sources inherit it and can override (Inherit / On / Off). Show muted in Search includes
             them for one query. Moved here from General.
             <br />
-            <span className="font-mono text-[11px]">Precedence: Show muted (one search) → source setting → this default</span>
+            <span className="font-mono text-[11px]">
+              Precedence: Show muted (one search) → source setting → this default
+            </span>
           </>
         }
         under={

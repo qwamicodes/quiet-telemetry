@@ -125,7 +125,10 @@ export function SourceDetailPage() {
             <GaugeIcon /> Check logs
           </Button>
         </Link>
-        <Button variant="outline" onClick={() => navigate({ search: (x) => ({ ...x, edit: 'general' }), replace: true })}>
+        <Button
+          variant="outline"
+          onClick={() => navigate({ search: (x) => ({ ...x, edit: 'general' }), replace: true })}
+        >
           <PencilIcon /> Edit
         </Button>
         {owner && (
@@ -144,7 +147,9 @@ export function SourceDetailPage() {
             type="button"
             role="tab"
             aria-selected={tab === t}
-            onClick={() => navigate({ search: (x) => ({ ...x, tab: t === 'overview' ? undefined : t }), replace: true })}
+            onClick={() =>
+              navigate({ search: (x) => ({ ...x, tab: t === 'overview' ? undefined : t }), replace: true })
+            }
             className={cn(
               '-mb-px border-transparent border-b-2 px-3 py-2 text-muted-foreground text-sm hover:text-foreground',
               tab === t && 'border-foreground text-foreground',

@@ -12,7 +12,16 @@ import {
   LockIcon,
   TriangleAlertIcon,
 } from 'lucide-react'
-import { createContext, type KeyboardEvent, type ReactNode, useCallback, useContext, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   fmtN,
   fmtShare,
@@ -34,8 +43,8 @@ import {
   defaultOption,
   effectiveRules,
   globalOff,
-  matchesMute,
   type MuteOption,
+  matchesMute,
   muteOptions,
   mutingRule,
   pickRoute,

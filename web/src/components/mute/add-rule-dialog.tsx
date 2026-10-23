@@ -1,12 +1,12 @@
-import { GlobeIcon, BoxIcon, CornerDownLeftIcon, InfoIcon } from 'lucide-react'
+import { BoxIcon, CornerDownLeftIcon, GlobeIcon, InfoIcon } from 'lucide-react'
 import { type FormEvent, useId, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import type { MuteRule, MuteScope, MuteShape } from '@/gen'
+import { draftRule, globalOff, matchesMute, routePath, ruleTarget, ruleText, sameRule, storedAs } from '@/lib/mute'
 import { useAddMuteRule, useDeleteMuteRule, useMutePreview, useUpdateMuteRule } from '@/lib/mute-api'
-import { draftRule, globalOff, matchesMute, routePath, ruleText, ruleTarget, sameRule, storedAs } from '@/lib/mute'
 import { useSettings } from '@/lib/settings-api'
 import { useSourceFields } from '@/lib/stream-api'
 import { toast } from '@/lib/toast'
@@ -61,7 +61,14 @@ function toRule(d: Draft, scope: MuteScope, keepField: string | null): MuteRule 
     case 'method_route':
       return draftRule('method_route', routePath(d.route), { scope, field: keepField, method: d.method })
     case 'message':
-      return draftRule('message', d.message.trim().replace(/^msg:/, '').replace(/^"(.*)"$/, '$1'), { scope })
+      return draftRule(
+        'message',
+        d.message
+          .trim()
+          .replace(/^msg:/, '')
+          .replace(/^"(.*)"$/, '$1'),
+        { scope },
+      )
     default:
       return draftRule('field', d.value.trim(), { scope, field: d.field.trim() || null })
   }
@@ -217,7 +224,13 @@ function Form({
     <form onSubmit={submit} className="flex flex-col gap-4 p-5" aria-label={edit ? 'Edit rule' : 'Add rule'}>
       <div className="flex items-center gap-2 pr-8">
         <DialogTitle className="font-semibold text-lg">
-          {edit ? (scope === 'global' ? 'Edit global rule' : 'Edit rule') : scope === 'global' && lockScope ? 'Add global rule' : 'Add rule'}
+          {edit
+            ? scope === 'global'
+              ? 'Edit global rule'
+              : 'Edit rule'
+            : scope === 'global' && lockScope
+              ? 'Add global rule'
+              : 'Add rule'}
         </DialogTitle>
         <span className="border px-1.5 py-px font-mono text-[11px] text-muted-foreground">
           {scope === 'global' ? 'global' : source}
@@ -292,8 +305,8 @@ function Form({
             </div>
           </div>
           <span className="text-muted-foreground text-xs">
-            {d.shape === 'route' ? 'Matches every method. ' : `Only ${d.method} requests. `}?query and #hash are ignored. *
-            matches the rest of one segment (/api/v1/orders/*).
+            {d.shape === 'route' ? 'Matches every method. ' : `Only ${d.method} requests. `}?query and #hash are
+            ignored. * matches the rest of one segment (/api/v1/orders/*).
           </span>
         </div>
       )}
@@ -356,14 +369,14 @@ function Form({
 
       {p && share > WARN_SHARE && (
         <Warn title={`Hides ${fmtShare(share)} of ${scope === 'global' ? 'all lines' : source}`}>
-          That is a big share of {scope === 'global' ? 'what quiet receives' : 'this source'}. Consider a level filter in
-          the stream instead, or narrow the rule.
+          That is a big share of {scope === 'global' ? 'what quiet receives' : 'this source'}. Consider a level filter
+          in the stream instead, or narrow the rule.
         </Warn>
       )}
       {covering && (
         <Warn title="Already hidden by a global rule · 0 more lines">
-          Global rule <span className="font-mono">{ruleText(covering)}</span> hides every line this would. Add anyway: it
-          takes over if the global rule is switched off here.
+          Global rule <span className="font-mono">{ruleText(covering)}</span> hides every line this would. Add anyway:
+          it takes over if the global rule is switched off here.
         </Warn>
       )}
       {duplicate && (
@@ -452,7 +465,12 @@ export function WillHide({
           </div>
           {scope === 'global' ? (
             Object.keys(p.per_source).length > 0 && (
-              <SourceBars per={p.per_source} names={Object.keys(p.per_source).sort((a, b) => p.per_source[b] - p.per_source[a]).slice(0, 6)} />
+              <SourceBars
+                per={p.per_source}
+                names={Object.keys(p.per_source)
+                  .sort((a, b) => p.per_source[b] - p.per_source[a])
+                  .slice(0, 6)}
+              />
             )
           ) : (
             <MethodSplit p={p} />
@@ -461,7 +479,9 @@ export function WillHide({
             <SampleLine key={l.id} line={l} />
           ))}
           {scope === 'global' && (
-            <span className="text-muted-foreground text-xs">New sources get this rule too. Each source can switch it off.</span>
+            <span className="text-muted-foreground text-xs">
+              New sources get this rule too. Each source can switch it off.
+            </span>
           )}
         </>
       )}

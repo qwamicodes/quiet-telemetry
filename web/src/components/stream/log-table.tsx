@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { LevelBadge } from '@/components/level-badge'
+import { MutedTag, RowToolbar, useMuteCtx } from '@/components/stream/row-mute'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -22,6 +23,7 @@ import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtRowTime } from '@/lib/format'
 import { inSpan, jumpIndex, nearestIndex, type Span } from '@/lib/histogram-jump'
 import { parseJsonString } from '@/lib/json-string'
+import { matchesMute } from '@/lib/mute'
 import { chip, lineDuration, previewFields, type RowParts, rowParts } from '@/lib/row'
 import { useDebounced } from '@/lib/use-debounced'
 import { cn } from '@/lib/utils'
@@ -109,24 +111,6 @@ function Pick({
   )
 }
 
-function HoverAction({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      tabIndex={-1}
-      aria-label={label}
-      title={label}
-      onClick={(e) => {
-        e.stopPropagation()
-        onClick()
-      }}
-      className="flex h-6 items-center gap-1 border bg-popover px-1.5 text-muted-foreground text-xs hover:text-foreground [&_svg]:size-3.5"
-    >
-      {children}
-    </button>
-  )
-}
-
 const LogRow = memo(function LogRow({
   line,
   selected,
@@ -150,12 +134,19 @@ const LogRow = memo(function LogRow({
   const p = useMemo(() => rowParts(line), [line])
   const f = line.fields ?? {}
   const slow = dur != null && dur >= 1000
+  // Muted lines show only with Show muted: dimmed and tagged (03.18); rows a
+  // new rule matches fade while it is saved (03.17).
+  const mute = useMuteCtx()
+  const mutedBy = mute?.stateOf(line).mutedBy
+  const hiding = mute?.hiding != null && !mutedBy && matchesMute(line, mute.hiding)
   return (
     // biome-ignore lint/a11y/useSemanticElements: virtualised div grid; a <tr> cannot be absolutely positioned
     <div
       data-line-id={line.id}
       aria-selected={selected}
       data-flash={flash || undefined}
+      data-muted={mutedBy ? true : undefined}
+      data-hiding={hiding || undefined}
       role="row"
       tabIndex={-1}
       onClick={() => actions.onSelect(line)}
@@ -168,6 +159,8 @@ const LogRow = memo(function LogRow({
         selected && 'bg-row-selected shadow-[inset_2px_0_0_var(--brand)]',
         flash && !selected && 'bg-brand/10 shadow-[inset_2px_0_0_var(--brand)]',
         expanded && 'border-b-0',
+        mutedBy && 'text-muted-foreground [&>*:not(:last-child)]:opacity-55',
+        hiding && 'opacity-35 transition-opacity duration-150',
       )}
     >
       <span className="text-muted-foreground tabular-nums">{fmtRowTime(line.ts)}</span>
@@ -210,6 +203,8 @@ const LogRow = memo(function LogRow({
             · {x}
           </span>
         ))}
+        {mutedBy && <MutedTag rule={mutedBy} />}
+        {hiding && <span className="shrink-0 font-mono text-[10px] text-muted-foreground">hiding</span>}
       </span>
       <Pick
         k={line.display_id?.key}
@@ -228,26 +223,13 @@ const LogRow = memo(function LogRow({
       >
         {dur == null ? '' : fmtDuration(dur)}
       </span>
-      {/* Hover: copy, filter by its id, open its flow (design 03.2 / 03.5). */}
-      <span className="pointer-events-none absolute inset-y-0 right-2 hidden items-center gap-1 group-hover/row:flex">
-        <span className="pointer-events-auto flex gap-1">
-          <HoverAction label="Copy line as JSON" onClick={() => actions.onCopy(line)}>
-            <CopyIcon />
-          </HoverAction>
-          {line.display_id && (
-            <HoverAction
-              label={`Filter ${line.display_id.key}`}
-              onClick={() => line.display_id && actions.onFilter(chip(line.display_id.key, line.display_id.value))}
-            >
-              <FilterIcon />
-            </HoverAction>
-          )}
-          <HoverAction label="Open flow" onClick={() => actions.onOpenFlow(line)}>
-            <GitForkIcon />
-            Open flow
-          </HoverAction>
-        </span>
-      </span>
+      {/* Hover / focus: Mute · Copy line · Open flow (03.15; replaces 03.5's cluster). */}
+      <RowToolbar
+        line={line}
+        selected={selected}
+        onCopy={() => actions.onCopy(line)}
+        onOpenFlow={() => actions.onOpenFlow(line)}
+      />
     </div>
   )
 })

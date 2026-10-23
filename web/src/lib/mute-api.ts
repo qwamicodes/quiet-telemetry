@@ -14,7 +14,7 @@ import type {
 } from '@/gen'
 import { fetchJson } from '@/lib/api'
 import { logLine } from '@/lib/schemas'
-import { DEFAULT_SOURCE_SETTINGS, muteRule, mutedSearch, put, SETTINGS_KEY, sourceSettings } from '@/lib/settings-api'
+import { DEFAULT_SOURCE_SETTINGS, mutedSearch, muteRule, put, SETTINGS_KEY, sourceSettings } from '@/lib/settings-api'
 
 /**
  * Muted-lines rules and their counts (`/api/mute/*`). Writes are owner-only;

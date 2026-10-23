@@ -180,7 +180,8 @@ export function Warn({ title, children }: { title: ReactNode; children?: ReactNo
 
 /** Share of the lines in scope a preview hides (0 when nothing is known). */
 export const shareOf = (p: MutePreview | undefined) => (p && p.lines > 0 ? p.total / p.lines : 0)
-export const fmtShare = (x: number) => (x > 0 && x < 0.001 ? '<0.1%' : `${x < 0.1 ? (x * 100).toFixed(1) : Math.round(x * 100)}%`)
+export const fmtShare = (x: number) =>
+  x > 0 && x < 0.001 ? '<0.1%' : `${x < 0.1 ? (x * 100).toFixed(1) : Math.round(x * 100)}%`
 
 /** `about 13 a minute` over the 24h window. */
 export function perMinute(n: number): string {

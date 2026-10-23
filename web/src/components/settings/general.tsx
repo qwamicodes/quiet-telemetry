@@ -199,7 +199,10 @@ function GeneralForm({
           label="Include muted lines in search"
           hint="Moved to Settings → Muted lines, with the global rules. Sources still override it."
         >
-          <Link to="/settings/muted-lines" className="inline-flex items-center gap-1 text-brand text-sm hover:underline">
+          <Link
+            to="/settings/muted-lines"
+            className="inline-flex items-center gap-1 text-brand text-sm hover:underline"
+          >
             Muted lines <ArrowRightIcon className="size-3.5" />
           </Link>
         </SettingRow>

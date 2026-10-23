@@ -15,6 +15,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { MuteRule, SourceSettings } from '@/gen'
+import { globalOff, routePath, ruleText } from '@/lib/mute'
 import {
   restoreOf,
   ruleHits,
@@ -25,7 +26,6 @@ import {
   useSetGlobalApply,
   useUpdateMuteRule,
 } from '@/lib/mute-api'
-import { globalOff, routePath, ruleText } from '@/lib/mute'
 import { DEFAULT_SOURCE_SETTINGS, useSaveSource, useSettings } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
@@ -154,23 +154,27 @@ export function SourceMutedLines({ name, owner }: { name: string; owner: boolean
       </section>
 
       <p className="text-muted-foreground text-xs">
-        A line is hidden when any rule matches: this source's rules plus the global rules switched on here. Turn a global
-        rule off to keep its lines on {name} only.
+        A line is hidden when any rule matches: this source's rules plus the global rules switched on here. Turn a
+        global rule off to keep its lines on {name} only.
       </p>
       <IncludeInSearch name={name} owner={owner} />
 
-      <AddRuleDialog
-        open={adding}
-        onOpenChange={setAdding}
-        source={name}
-        scope="source"
-        canGlobal={owner}
-      />
+      <AddRuleDialog open={adding} onOpenChange={setAdding} source={name} scope="source" canGlobal={owner} />
     </div>
   )
 }
 
-function SourceRuleRow({ rule, source, owner, hits }: { rule: MuteRule; source: string; owner: boolean; hits: number }) {
+function SourceRuleRow({
+  rule,
+  source,
+  owner,
+  hits,
+}: {
+  rule: MuteRule
+  source: string
+  owner: boolean
+  hits: number
+}) {
   const update = useUpdateMuteRule()
   const del = useDeleteMuteRule()
   const add = useAddMuteRule()
@@ -239,7 +243,13 @@ function SourceRuleRow({ rule, source, owner, hits }: { rule: MuteRule; source: 
               <Button type="submit" size="icon-sm" variant="outline" aria-label="Save rule">
                 <CheckIcon />
               </Button>
-              <Button type="button" size="icon-sm" variant="ghost" aria-label="Cancel edit" onClick={() => setEditing(false)}>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Cancel edit"
+                onClick={() => setEditing(false)}
+              >
                 <XIcon />
               </Button>
             </form>
@@ -402,8 +412,9 @@ function GlobalRuleRow({
             <span className="font-medium text-sm">Don't apply here?</span>
             <span className="text-muted-foreground text-xs">
               <span className="font-mono">{ruleText(rule)}</span> stops hiding lines on {source} ({fmtN(hitsHere)} in
-              24h). It stays on {others > 0 ? `${others} other ${others === 1 ? 'source' : 'sources'}` : 'every other source'} and
-              on new sources.
+              24h). It stays on{' '}
+              {others > 0 ? `${others} other ${others === 1 ? 'source' : 'sources'}` : 'every other source'} and on new
+              sources.
             </span>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setAsk(false)}>
@@ -454,7 +465,11 @@ function IncludeInSearch({ name, owner }: { name: string; owner: boolean }) {
           value={value}
           onChange={(v) => owner && change(v)}
           options={[
-            { value: 'inherit', label: `Inherit (${instance ? 'on' : 'off'})`, disabled: !owner && value !== 'inherit' },
+            {
+              value: 'inherit',
+              label: `Inherit (${instance ? 'on' : 'off'})`,
+              disabled: !owner && value !== 'inherit',
+            },
             { value: 'on', label: 'On', disabled: !owner && value !== 'on' },
             { value: 'off', label: 'Off', disabled: !owner && value !== 'off' },
           ]}

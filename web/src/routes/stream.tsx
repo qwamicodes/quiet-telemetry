@@ -7,6 +7,7 @@ import { MutedNote } from '@/components/muted-note'
 import { ErrorRateBanner, GapBanner, SourceLostBanner } from '@/components/stream/connection-banner'
 import { FilterBar, FilterChip } from '@/components/stream/filter-bar'
 import { LogTable, type RowActions } from '@/components/stream/log-table'
+import { MuteContext, type MuteCtx, MuteMenu, useRowMute } from '@/components/stream/row-mute'
 import { StreamFooter } from '@/components/stream/stream-footer'
 import { StreamHistogram, withLive } from '@/components/stream/stream-histogram'
 import { liveState, TopBar } from '@/components/stream/top-bar'
@@ -150,6 +151,28 @@ export function StreamPage() {
   // Muted lines (06.3): hidden unless "show"; the count stays visible.
   const [showMuted, setShowMuted] = useState(false)
   const { visible: lines, muted } = useMuted(all, showMuted)
+  // Row hover → Mute (03.15–03.23).
+  const rowMute = useRowMute()
+  const muteCtx = useMemo<MuteCtx>(
+    () => ({
+      owner: rowMute.owner,
+      canGlobal: rowMute.canGlobal,
+      stateOf: rowMute.stateOf,
+      hiding: rowMute.hiding,
+      onMute: rowMute.onMute,
+      onMenu: rowMute.onMenu,
+    }),
+    [rowMute.owner, rowMute.canGlobal, rowMute.stateOf, rowMute.hiding, rowMute.onMute, rowMute.onMenu],
+  )
+  const settingsData = useSettings().data
+  const ruleCounts = useMemo(() => {
+    const own = source ? settingsData?.sources[source] : undefined
+    const off = new Set((own?.muted_global_off ?? []).map((o) => o.id))
+    return {
+      source: (own?.muted ?? []).filter((r) => r.enabled).length,
+      global: (settingsData?.muted_global ?? []).filter((r) => r.enabled && !off.has(r.id)).length,
+    }
+  }, [settingsData, source])
   const stats = useStreamStats(source, search.q)
   const [follow, setFollow] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -324,6 +347,17 @@ export function StreamPage() {
       setExpandedId(null)
     },
     enter: () => selected && openFlow(selected),
+    // M mute (default option, this source) · ⇧M the menu · C copy (03.19).
+    m: (e) => {
+      if (!selected) return
+      if (!e.shiftKey) return rowMute.onMute(selected)
+      const anchor =
+        document.querySelector(`[data-line-id="${selected.id}"] [data-mute-caret]`) ??
+        document.querySelector(`[data-line-id="${selected.id}"]`)
+      if (anchor) rowMute.onMenu(selected, anchor)
+    },
+    c: () => selected && actions.onCopy(selected),
+    ...(rowMute.canUndo ? { 'mod+z': () => rowMute.undo() } : {}),
     d: () => selected && openDiagram(selected),
     e: () => setLevels(['error']),
     x: clearFilters,
@@ -499,56 +533,66 @@ export function StreamPage() {
           </Button>
         </div>
       )}
-      {muted > 0 && source && (
-        <MutedNote count={muted} shown={showMuted} onToggle={() => setShowMuted((v) => !v)} source={source} />
-      )}
-      <div className="flex min-h-0 flex-1 gap-3 px-6 pb-3">
-        <LogTable
-          lines={shown}
-          selectedId={selectedId}
-          expandedId={expandedId}
-          follow={follow}
-          onFollow={setFollow}
-          direction={direction}
-          wrap={wrap}
-          loading={live === 'connecting' || pending}
-          refreshing={stale}
-          dim={offline || conn.down}
-          actions={actions}
-          onUnseen={onUnseen}
-          jump={readyJump}
-          flash={flash}
-          empty={
-            !source ? (
-              <span className="text-muted-foreground">Waiting for the first source…</span>
-            ) : quiet ? (
-              <QuietState
-                name={sourceName}
-                source={source ?? ''}
-                last={newest}
-                onShow={() => setShowOld(true)}
-                hasLines={lines.length > 0}
-              />
-            ) : filtered ? (
-              <NoMatches
-                source={sourceName}
-                chips={chips}
-                levels={levels}
-                text={splitQuery(search.q ?? '').text}
-                window={windowLabel}
-                onClear={clearFilters}
-                onRemove={removeChip}
-              />
-            ) : (
-              <span className="flex flex-col items-center gap-2 text-muted-foreground">
-                No lines yet. New lines appear here as they arrive.
-                <Link to="/guide" className="text-brand text-xs hover:underline">
-                  New here? How quiet works and the agent prompt →
-                </Link>
-              </span>
-            )
-          }
+      {(muted > 0 || rowMute.canUndo) && source && (
+        <MutedNote
+          count={muted}
+          shown={showMuted}
+          onToggle={() => setShowMuted((v) => !v)}
+          source={source}
+          rules={ruleCounts}
+          undo={rowMute.canUndo}
         />
+      )}
+      <MuteMenu api={rowMute} />
+      <div className="flex min-h-0 flex-1 gap-3 px-6 pb-3">
+        <MuteContext.Provider value={muteCtx}>
+          <LogTable
+            lines={shown}
+            selectedId={selectedId}
+            expandedId={expandedId}
+            follow={follow}
+            onFollow={setFollow}
+            direction={direction}
+            wrap={wrap}
+            loading={live === 'connecting' || pending}
+            refreshing={stale}
+            dim={offline || conn.down}
+            actions={actions}
+            onUnseen={onUnseen}
+            jump={readyJump}
+            flash={flash}
+            empty={
+              !source ? (
+                <span className="text-muted-foreground">Waiting for the first source…</span>
+              ) : quiet ? (
+                <QuietState
+                  name={sourceName}
+                  source={source ?? ''}
+                  last={newest}
+                  onShow={() => setShowOld(true)}
+                  hasLines={lines.length > 0}
+                />
+              ) : filtered ? (
+                <NoMatches
+                  source={sourceName}
+                  chips={chips}
+                  levels={levels}
+                  text={splitQuery(search.q ?? '').text}
+                  window={windowLabel}
+                  onClear={clearFilters}
+                  onRemove={removeChip}
+                />
+              ) : (
+                <span className="flex flex-col items-center gap-2 text-muted-foreground">
+                  No lines yet. New lines appear here as they arrive.
+                  <Link to="/guide" className="text-brand text-xs hover:underline">
+                    New here? How quiet works and the agent prompt →
+                  </Link>
+                </span>
+              )
+            }
+          />
+        </MuteContext.Provider>
       </div>
       <StreamFooter
         state={
