@@ -22,7 +22,18 @@ describe('parseJsonString', () => {
   })
 
   it('leaves plain text, invalid JSON and primitives alone', () => {
-    for (const s of ['hello', '{not json}', '[1,', '42', 'true', 'null', '"just a string"', '{', '', '{"a":1} trailing'])
+    for (const s of [
+      'hello',
+      '{not json}',
+      '[1,',
+      '42',
+      'true',
+      'null',
+      '"just a string"',
+      '{',
+      '',
+      '{"a":1} trailing',
+    ])
       expect(parseJsonString(s)).toBeUndefined()
   })
 
@@ -47,7 +58,12 @@ describe('expandJsonStrings', () => {
     const payload = JSON.stringify({ user: { id: 'u1' }, err: inner })
     const fields = { msg: 'done', payload, list: ['[1,2]', 'plain'], n: 3 }
     const { fields: out, parsed } = expandJsonStrings(fields)
-    expect(out).toEqual({ msg: 'done', payload: { user: { id: 'u1' }, err: { code: 'E1' } }, list: [[1, 2], 'plain'], n: 3 })
+    expect(out).toEqual({
+      msg: 'done',
+      payload: { user: { id: 'u1' }, err: { code: 'E1' } },
+      list: [[1, 2], 'plain'],
+      n: 3,
+    })
     expect([...parsed.keys()].sort()).toEqual(['.list[0]', '.payload', '.payload.err'])
     expect(parsed.get('.payload')).toBe(payload)
     // The input is never mutated.

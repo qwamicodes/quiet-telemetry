@@ -27,6 +27,11 @@ const line: LogLine = {
   fields,
 }
 
+function Harness() {
+  const [mode, setMode] = useState<DiagramMode>('off')
+  return <FieldCard line={line} diagram={mode} onDiagramChange={setMode} />
+}
+
 function row(key: string) {
   return screen.getByRole('button', { name: key, pressed: false }).parentElement as HTMLElement
 }
@@ -101,10 +106,6 @@ describe('FieldCard with JSON held in strings', () => {
 
   it('Diagram draws the parsed value as a card marked "from string"', async () => {
     const user = userEvent.setup()
-    function Harness() {
-      const [mode, setMode] = useState<DiagramMode>('off')
-      return <FieldCard line={line} diagram={mode} onDiagramChange={setMode} />
-    }
     render(<Harness />)
     await user.click(screen.getByRole('tab', { name: /Diagram/ }))
     await screen.findByTestId('diagram-canvas', undefined, { timeout: 5000 })
