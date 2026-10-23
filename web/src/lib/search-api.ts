@@ -1,4 +1,4 @@
-import { infiniteQueryOptions, useInfiniteQuery } from '@tanstack/react-query'
+import { infiniteQueryOptions, keepPreviousData, useInfiniteQuery } from '@tanstack/react-query'
 import type { ExportFormat, ExportParams, MutedMode, SearchParams } from '@/gen'
 import { fetchJson } from '@/lib/api'
 import { publicOrigin } from '@/lib/format'
@@ -36,7 +36,13 @@ export const searchQuery = (p: SearchParams) =>
     staleTime: 10_000,
   })
 
-export const useSearchLines = (p: SearchParams, enabled = true) => useInfiniteQuery({ ...searchQuery(p), enabled })
+/**
+ * A changed query keeps the previous results as placeholder data
+ * (`isPlaceholderData`) until the new first page lands: the page dims them
+ * instead of flashing "no lines match" or skeletons over a populated list.
+ */
+export const useSearchLines = (p: SearchParams, enabled = true) =>
+  useInfiniteQuery({ ...searchQuery(p), enabled, placeholderData: keepPreviousData })
 
 export type ExportOptions = {
   format: ExportFormat

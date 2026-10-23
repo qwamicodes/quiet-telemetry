@@ -1,3 +1,4 @@
+import { useQueries } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
   BoxIcon,
@@ -5,12 +6,13 @@ import {
   EllipsisIcon,
   FilterIcon,
   InfoIcon,
+  LoaderCircleIcon,
   PlusIcon,
   SearchIcon,
   TriangleAlertIcon,
   XIcon,
 } from 'lucide-react'
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import { SourceGroupHeader } from '@/components/source-group-header'
 import { Sparkline } from '@/components/sparkline'
 import { StatusDot } from '@/components/status-dot'
@@ -32,7 +34,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import type { SourceInfo } from '@/gen'
+import { Skeleton } from '@/components/ui/skeleton'
+import type { SourceInfo, StreamStats } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
 import { fmtAgo, fmtBytes, fmtCount, fmtWindow, isRecent } from '@/lib/format'
@@ -48,7 +51,7 @@ import {
   type SourceGroup,
   useCollapsedGroups,
 } from '@/lib/source-groups'
-import { useSourceFields, useStreamStats } from '@/lib/stream-api'
+import { streamStatsQuery, useSourceFields, useStreamStats } from '@/lib/stream-api'
 import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { useRates } from '@/lib/use-rates'
@@ -64,17 +67,22 @@ export function hostOf(s: SourceInfo): { key: string; title: string; via: string
   return { key: 'http', title: 'HTTP ingest', via: '/ingest' }
 }
 
+/** Error share (null until counted), erroring and "stopped" from one source's 24h stats. */
+export function statsFlags(stats: StreamStats | undefined) {
+  const errors = stats && stats.total > 0 ? stats.levels.error / stats.total : null
+  // "Stopped": it sent lines earlier in the hour but nothing in the last 2 minutes.
+  const h = stats?.histogram ?? []
+  const stopped = h.length > 5 && h.slice(0, -3).some((b) => b.count > 0) && h.slice(-3).every((b) => b.count === 0)
+  return { errors, erroring: errors != null && errors >= ERRORING, stopped }
+}
+
 /** The 24h error share and last-hour volume of one source, read once per row. */
 function useSourceStats(name: string) {
   const stats = useStreamStats(name, undefined).data
   const fields = useSourceFields(name).data
-  const errors = stats && stats.total > 0 ? stats.levels.error / stats.total : null
   const top = fields?.ids.slice().sort((a, b) => b.coverage - a.coverage)[0]
   const idKey = fields ? (top && top.coverage > 0 ? top.key : null) : undefined
-  // "Stopped": it sent lines earlier in the hour but nothing in the last 2 minutes.
-  const h = stats?.histogram ?? []
-  const stopped = h.length > 5 && h.slice(0, -3).some((b) => b.count > 0) && h.slice(-3).every((b) => b.count === 0)
-  return { stats, errors, idKey, stopped }
+  return { stats, idKey, ...statsFlags(stats) }
 }
 
 const fmtRate = (r: number | undefined) =>
@@ -95,22 +103,16 @@ type Filter = 'all' | 'live' | 'idle' | 'erroring'
 function SourceRow({
   s,
   rate,
-  onStats,
   nested = false,
   hidden = false,
 }: {
   s: SourceInfo
   rate: number | undefined
-  onStats: (name: string, v: { erroring: boolean; stopped: boolean }) => void
   /** Under a stack group header: indented. */
   nested?: boolean
   hidden?: boolean
 }) {
-  const { stats, errors, idKey, stopped } = useSourceStats(s.name)
-  const erroring = errors != null && errors >= ERRORING
-  // Tell the page (tabs, banner) only when a flag changes.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: onStats is a stable setter wrapper
-  useEffect(() => onStats(s.name, { erroring, stopped }), [s.name, erroring, stopped])
+  const { stats, errors, erroring, idKey, stopped } = useSourceStats(s.name)
   const live = isRecent(s.last_ts)
   return (
     <tr
@@ -180,7 +182,8 @@ const fmtPct = (v: number) => (v === 0 ? '0%' : v < 0.1 ? `${(v * 100).toFixed(1
 
 /** `/sources` — everything that sends lines: receiver kind, rate, last line. */
 export function SourcesPage() {
-  const sources = useSources().data
+  const sourcesQ = useSources()
+  const sources = sourcesQ.data
   const health = useHealth().data
   const rates = useRates(sources)
   const [filter, setFilter] = useState<Filter>('all')
@@ -194,13 +197,24 @@ export function SourcesPage() {
   const onlyGroup = search.group
   const { isCollapsed, toggle, set: setCollapsed, toggleAll, allCollapsed } = useCollapsedGroups()
   const [ignoring, setIgnoring] = useState<SourceGroup | null>(null)
-  const [flags, setFlags] = useState<Record<string, { erroring: boolean; stopped: boolean }>>({})
-  const onStats = (name: string, v: { erroring: boolean; stopped: boolean }) =>
-    setFlags((f) => (f[name]?.erroring === v.erroring && f[name]?.stopped === v.stopped ? f : { ...f, [name]: v }))
   const filterRef = useRef<HTMLInputElement>(null)
   useHotkeys({ '/': () => filterRef.current?.focus() })
   const all = (sources ?? []).filter((s) => s.lines > 0 || s.last_ts != null)
   const live = all.filter((s) => isRecent(s.last_ts))
+  // Erroring / stopped for every source, read here (same cache as the rows)
+  // rather than reported by mounted rows: a filtered-out or collapsed row
+  // cannot report, and an unreported source must not read as "not erroring".
+  const statsList = useQueries({
+    queries: all.map((s) => streamStatsQuery(s.name, undefined)),
+    combine: (rs) => rs.map((r) => r.data),
+  })
+  const flags: Record<string, ReturnType<typeof statsFlags>> = {}
+  all.forEach((s, i) => {
+    if (statsList[i]) flags[s.name] = statsFlags(statsList[i])
+  })
+  // The Erroring tab is a filter on counts still loading: until every source
+  // is counted, an empty result is "checking", not "no sources match".
+  const flagsSettled = all.every((s) => flags[s.name])
   const shown = all
     .filter((s) =>
       filter === 'live'
@@ -411,7 +425,13 @@ export function SourcesPage() {
         </div>
       )}
 
-      {all.length === 0 ? (
+      {sourcesQ.isPending ? (
+        <div className="flex flex-col gap-2" data-testid="sources-loading">
+          <Skeleton className="h-9" />
+          <Skeleton className="h-11" />
+          <Skeleton className="h-11" />
+        </div>
+      ) : all.length === 0 ? (
         <div className="flex flex-col items-start gap-3 border border-dashed p-6">
           <p className="font-medium">Nothing connected yet</p>
           <p className="text-muted-foreground text-xs">Sources appear here as soon as they send a line.</p>
@@ -476,14 +496,7 @@ export function SourcesPage() {
                   )}
                   {/* Collapsed rows stay mounted (hidden) so their error / stopped flags still count. */}
                   {g.rows.map((s) => (
-                    <SourceRow
-                      key={s.name}
-                      s={s}
-                      rate={rates[s.name]}
-                      onStats={onStats}
-                      nested={Boolean(g.stack)}
-                      hidden={collapsed}
-                    />
+                    <SourceRow key={s.name} s={s} rate={rates[s.name]} nested={Boolean(g.stack)} hidden={collapsed} />
                   ))}
                   {g.stack && !collapsed && g.stack.sending === 0 && g.stack.kind !== 'ingest' && (
                     <tr className="border-b">
@@ -510,7 +523,14 @@ export function SourcesPage() {
             {shown.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-4 py-6 text-muted-foreground text-xs">
-                  No sources match.
+                  {filter === 'erroring' && !flagsSettled ? (
+                    <span role="status" className="flex items-center gap-2">
+                      <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden />
+                      Checking error rates…
+                    </span>
+                  ) : (
+                    'No sources match.'
+                  )}
                 </td>
               </tr>
             )}

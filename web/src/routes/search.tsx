@@ -1,5 +1,5 @@
 import { getRouteApi } from '@tanstack/react-router'
-import { ClockIcon, CornerDownLeftIcon, FileDownIcon, SearchIcon, XIcon } from 'lucide-react'
+import { ClockIcon, CornerDownLeftIcon, FileDownIcon, LoaderCircleIcon, SearchIcon, XIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ExportDialog } from '@/components/export-dialog'
 import { MutedNote } from '@/components/muted-note'
@@ -21,6 +21,7 @@ import { useSearchLines } from '@/lib/search-api'
 import { searchBounds } from '@/lib/search-params'
 import { useSimilarValues } from '@/lib/similar'
 import { useHotkeys } from '@/lib/use-hotkeys'
+import { cn } from '@/lib/utils'
 
 const route = getRouteApi('/search')
 const ALL = '__all__'
@@ -63,6 +64,11 @@ export function SearchPage() {
     order: search.order,
   }
   const res = useSearchLines(params)
+  // Results of the previous query, shown dimmed while this one is in flight.
+  const refreshing = res.isPlaceholderData
+  // Nothing settled for this query yet: skeletons (also when the previous
+  // query had matched nothing: its empty state is not this query's answer).
+  const loading = res.isPending || (refreshing && (res.data?.pages[0]?.lines.length ?? 0) === 0)
   const pages = res.data?.pages ?? []
   const first = pages[0]
   const found = useMemo(() => pages.flatMap((p) => p.lines), [pages])
@@ -86,7 +92,7 @@ export function SearchPage() {
   }, [q])
 
   // Nothing matched: look for look-alike values over the whole window (05.3).
-  const empty = !res.isPending && !res.isError && found.length === 0
+  const empty = !loading && !refreshing && !res.isError && found.length === 0
   const similar = useSimilarValues(text || splitQuery(q).text, search.source, Date.now() - retentionMs, empty)
 
   const rangeLabel = search.from ? 'this range' : `the last ${search.range}`
@@ -143,13 +149,21 @@ export function SearchPage() {
       <div className="flex items-center gap-3">
         <p className="font-mono text-muted-foreground text-xs" aria-live="polite">
           <span className="font-medium font-sans text-foreground text-sm">
-            {res.isPending
+            {loading || refreshing
               ? 'Searching…'
               : search.view === 'flows'
                 ? `${fmtCount(total)} ${total === 1 ? 'line' : 'lines'}${lines.length ? ` in ${flows}${res.hasNextPage ? '+' : ''} ${flows === 1 ? 'flow' : 'flows'}` : ''}`
                 : `${fmtCount(total)} ${total === 1 ? 'line' : 'lines'}`}
           </span>
+          {refreshing && (
+            <LoaderCircleIcon
+              data-testid="search-refreshing"
+              className="ml-2 inline size-3 animate-spin align-[-1px]"
+              aria-label="Updating results"
+            />
+          )}
           {first &&
+            !refreshing &&
             ` · ${fmtClock(first.since)}–${fmtClock(first.until)} · searched ${fmtCount(first.searched)} lines in ${first.took_ms}ms`}
         </p>
         <span className="flex-1" />
@@ -177,16 +191,20 @@ export function SearchPage() {
             <SelectItem value="oldest">Oldest first</SelectItem>
           </SelectContent>
         </Select>
-        <Button variant="outline" size="sm" onClick={() => setExporting(true)} disabled={!total}>
+        <Button variant="outline" size="sm" onClick={() => setExporting(true)} disabled={!total || refreshing}>
           <FileDownIcon />
           Export
         </Button>
       </div>
 
-      {first?.histogram && total > 0 && <Histogram buckets={first.histogram} since={first.since} until={first.until} />}
+      {first?.histogram && total > 0 && (
+        <div className={cn('transition-opacity', refreshing && 'opacity-55')}>
+          <Histogram buckets={first.histogram} since={first.since} until={first.until} />
+        </div>
+      )}
 
-      {res.isPending ? (
-        <div className="flex flex-col gap-2">
+      {loading ? (
+        <div className="flex flex-col gap-2" data-testid="search-loading">
           <Skeleton className="h-10" />
           <Skeleton className="h-7" />
           <Skeleton className="h-7" />
@@ -195,7 +213,7 @@ export function SearchPage() {
         <p role="alert" className="border border-status-err/30 bg-status-err/10 p-3 text-status-err">
           {res.error.message}
         </p>
-      ) : found.length === 0 ? (
+      ) : empty ? (
         <div className="flex flex-1 items-start justify-center pt-24">
           <div className="flex max-w-md flex-col items-center gap-3 border border-dashed p-10 text-center">
             <span className="border p-1.5">
@@ -255,12 +273,13 @@ export function SearchPage() {
             lines={lines}
             view={search.view}
             words={words}
-            hasMore={Boolean(res.hasNextPage)}
+            hasMore={Boolean(res.hasNextPage) && !refreshing}
             loadingMore={res.isFetchingNextPage}
             onMore={() => res.fetchNextPage()}
             onPick={addChip}
             summaries={summaries}
             mutedIds={mutedIds}
+            refreshing={refreshing}
           />
         </>
       )}

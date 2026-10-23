@@ -245,6 +245,61 @@ describe('sources list (06.1)', () => {
     expect(within(table).getByText('order-worker')).toBeInTheDocument()
   })
 
+  it('while the sources load: skeletons, not "Nothing connected yet"', async () => {
+    let release = () => {}
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const inner = globalThis.fetch
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === '/api/sources') await gate
+        return inner(url, init)
+      }),
+    )
+    renderAt('/sources')
+    expect(await screen.findByTestId('sources-loading', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.queryByText('Nothing connected yet')).not.toBeInTheDocument()
+    release()
+    expect(await screen.findByRole('table')).toBeInTheDocument()
+    expect(screen.queryByTestId('sources-loading')).not.toBeInTheDocument()
+  })
+
+  it('the Erroring tab says "checking" while error rates load, not "No sources match"', async () => {
+    const user = userEvent.setup()
+    let release = () => {}
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const inner = globalThis.fetch
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.startsWith('/api/stream/stats')) await gate
+        return inner(url, init)
+      }),
+    )
+    renderAt('/sources')
+    const table = await screen.findByRole('table', {}, { timeout: 5000 })
+    await user.click(screen.getByRole('tab', { name: 'Erroring 0' }))
+    expect(within(table).queryByText('No sources match.')).not.toBeInTheDocument()
+    expect(within(table).getByRole('status')).toHaveTextContent('Checking error rates')
+    release()
+    expect(await within(table).findByText('order-worker')).toBeInTheDocument()
+    expect(within(table).queryByText('legivent-api')).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Erroring 1' })).toBeInTheDocument()
+  })
+
+  it('a collapsed group still counts toward the Erroring tab', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem('quiet.source-groups.collapsed', JSON.stringify(['compose:legivent-os-local-apps']))
+    renderAt('/sources')
+    expect(await screen.findByRole('tab', { name: 'Erroring 1' }, { timeout: 5000 })).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Erroring 1' }))
+    expect(screen.queryByText('No sources match.')).not.toBeInTheDocument()
+  })
+
   it('the sidebar nests sources under collapsible group headers', async () => {
     const user = userEvent.setup()
     renderAt('/sources')

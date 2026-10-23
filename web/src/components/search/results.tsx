@@ -195,7 +195,10 @@ export function SearchResults({
   onPick,
   summaries,
   mutedIds,
+  refreshing = false,
 }: {
+  /** These are the previous search's results; the new search is in flight. Dimmed. */
+  refreshing?: boolean
   summaries?: Map<string, FlowSummary | null>
   /** Muted lines being shown (included in search): dimmed and tagged. */
   mutedIds?: ReadonlySet<number>
@@ -245,7 +248,11 @@ export function SearchResults({
     })
 
   return (
-    <div ref={ref} className="relative min-h-0 flex-1 overflow-y-auto">
+    <div
+      ref={ref}
+      aria-busy={refreshing || undefined}
+      className={cn('relative min-h-0 flex-1 overflow-y-auto transition-opacity', refreshing && 'opacity-55')}
+    >
       <ul aria-label="Search results" style={{ height: v.getTotalSize(), position: 'relative' }}>
         {virtual.map((row) => {
           const it = items[row.index]

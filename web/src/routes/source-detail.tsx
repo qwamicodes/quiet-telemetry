@@ -272,7 +272,8 @@ function Overview({
   const stats = useStreamStats(name, undefined).data
   const fields = useSourceFields(name).data
   const [removing, setRemoving] = useState(false)
-  if (!info) return <p className="text-muted-foreground">No line from {name} yet.</p>
+  // The sources list still loading is not "no line yet".
+  if (!info) return <p className="text-muted-foreground">{sources ? `No line from ${name} yet.` : 'Loading…'}</p>
   const order = saved.id_keys ?? settings?.flow_ids.order ?? []
   const windowMs = saved.retention_ms ?? settings?.storage.retention_ms ?? health?.retention_ms ?? 24 * HOUR
   const total = stats?.total ?? info.lines

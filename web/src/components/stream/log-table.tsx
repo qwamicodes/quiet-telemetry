@@ -1,5 +1,13 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDownIcon, ArrowUpIcon, CopyIcon, CornerDownLeftIcon, FilterIcon, GitForkIcon } from 'lucide-react'
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  CopyIcon,
+  CornerDownLeftIcon,
+  FilterIcon,
+  GitForkIcon,
+  LoaderCircleIcon,
+} from 'lucide-react'
 import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { Button } from '@/components/ui/button'
@@ -308,6 +316,20 @@ export function RowPreview({
   )
 }
 
+/** Over the dimmed rows of the previous filters while the new ones load. */
+function Refreshing() {
+  return (
+    <span
+      role="status"
+      data-testid="table-refreshing"
+      className="absolute top-10 right-3 z-10 flex items-center gap-1.5 border bg-popover px-2 py-1 font-mono text-[11px] text-muted-foreground shadow-sm"
+    >
+      <LoaderCircleIcon className="size-3 animate-spin" aria-hidden />
+      Updating…
+    </span>
+  )
+}
+
 /** Skeleton rows while the first backlog loads (design 08.4). */
 function SkeletonRows() {
   return (
@@ -342,6 +364,7 @@ export function LogTable({
   onFollow,
   empty,
   loading,
+  refreshing = false,
   dim,
   wrap = false,
   direction = 'bottom',
@@ -356,7 +379,10 @@ export function LogTable({
   onFollow: (f: boolean) => void
   /** Shown instead of rows when there are none. */
   empty: ReactNode
+  /** No rows for the current filters yet: skeletons instead of `empty`. */
   loading?: boolean
+  /** The rows belong to the previous filters; the new ones are loading. Dimmed, with a spinner. */
+  refreshing?: boolean
   /** Rows faded (offline: what you see is not live). */
   dim?: boolean
   wrap?: boolean
@@ -414,7 +440,11 @@ export function LogTable({
   }
 
   return (
-    <section aria-label="Log lines" className="relative flex min-h-0 min-w-0 flex-1 flex-col border">
+    <section
+      aria-label="Log lines"
+      aria-busy={loading || refreshing || undefined}
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col border"
+    >
       <div
         aria-hidden
         className={cn(
@@ -430,8 +460,16 @@ export function LogTable({
         <span>Steps</span>
         <span className="text-right">Duration</span>
       </div>
-      <div ref={ref} onScroll={onScroll} className={cn('relative min-h-0 flex-1 overflow-y-auto', dim && 'opacity-55')}>
-        {loading && lines.length === 0 ? (
+      {refreshing && lines.length > 0 && <Refreshing />}
+      <div
+        ref={ref}
+        onScroll={onScroll}
+        className={cn(
+          'relative min-h-0 flex-1 overflow-y-auto transition-opacity',
+          (dim || refreshing) && 'opacity-55',
+        )}
+      >
+        {(loading || refreshing) && lines.length === 0 ? (
           <SkeletonRows />
         ) : lines.length === 0 ? (
           <div className="flex h-full items-center justify-center p-6">{empty}</div>

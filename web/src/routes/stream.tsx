@@ -128,11 +128,16 @@ export function StreamPage() {
 
   const {
     lines: received,
+    settled,
+    stale,
     state,
     dropped,
     retryNow,
     everConnected,
   } = useStream({ source, levels: levelsCsv, q: search.q })
+  // Until the backlog for the current source + filters is in, the table is
+  // loading: previous rows stay (dimmed) or skeletons show, never "no lines".
+  const pending = Boolean(source) && !settled
   // Muted lines (06.3): hidden unless "show"; the count stays visible.
   const [showMuted, setShowMuted] = useState(false)
   const { visible: lines, muted } = useMuted(received, showMuted)
@@ -230,6 +235,9 @@ export function StreamPage() {
 
   // Counts: the server's 24h window, plus what streamed in after that snapshot.
   const snap = stats.data
+  // Counts kept from the previous filters while the new ones load (placeholder
+  // data) must not read as "0 of N match" for the new filters.
+  const countsFresh = !stats.isPlaceholderData && !pending
   const liveAfter = useMemo(() => (snap ? lines.filter((l) => l.ts > snap.until) : []), [lines, snap])
   const tally: LevelTally | null = useMemo(() => {
     if (!snap) return null
@@ -268,7 +276,7 @@ export function StreamPage() {
   const offline = live === 'offline' || sourceLost
   // Healthy but nothing for 5 minutes (08.5).
   const newest = lines.length ? lines[lines.length - 1].ts : (info?.last_ts ?? null)
-  const quiet = live === 'live' && !filtered && !showOld && newest != null && Date.now() - newest > FIVE_MIN
+  const quiet = live === 'live' && settled && !filtered && !showOld && newest != null && Date.now() - newest > FIVE_MIN
   const spike = !filtered && live !== 'offline' ? errorSpike(lines, tally, total) : null
   const shown = quiet ? [] : lines
 
@@ -310,10 +318,12 @@ export function StreamPage() {
     if (conn.down)
       return `disconnected · showing ${lines.length.toLocaleString()} lines received before ${conn.since ? fmtTime(conn.since).slice(0, 8) : 'the drop'}`
     if (live === 'connecting') return 'loading recent lines · then streaming live'
+    if (pending) return filtered ? 'loading matching lines · then streaming live' : 'loading recent lines'
     if (offline) return `offline · showing the last ${lines.length.toLocaleString()} lines`
     if (live === 'paused')
       return `paused · ${scrolledUp ? `scrolled ${scrolledUp.toLocaleString()} ${scrolledUp === 1 ? 'line' : 'lines'} up · ` : ''}${unseen.toLocaleString()} new lines buffered`
-    if (filtered && matched === 0) return `filtered · 0 of ${total.toLocaleString()} lines · still listening`
+    if (filtered && countsFresh && matched === 0)
+      return `filtered · 0 of ${total.toLocaleString()} lines · still listening`
     if (filtered) return `filtered · ${filterWords.join(' · ')}`
     if (quiet) return `listening · 0 lines in 5 min`
     if (spike) {
@@ -384,7 +394,7 @@ export function StreamPage() {
         loading={!snap}
         dim={offline || conn.down}
       />
-      {filtered && matched != null && matched > 0 && (
+      {filtered && countsFresh && matched != null && matched > 0 && (
         <div className="mx-6 mb-2 flex items-center gap-2 font-mono text-muted-foreground text-xs">
           <span>
             <span className="text-foreground">{matched.toLocaleString()}</span> of {total.toLocaleString()} lines match
@@ -408,7 +418,8 @@ export function StreamPage() {
           onFollow={setFollow}
           direction={direction}
           wrap={wrap}
-          loading={live === 'connecting'}
+          loading={live === 'connecting' || pending}
+          refreshing={stale}
           dim={offline || conn.down}
           actions={actions}
           onUnseen={onUnseen}
@@ -445,7 +456,17 @@ export function StreamPage() {
         />
       </div>
       <StreamFooter
-        state={conn.down || offline ? 'offline' : live === 'live' && filtered ? 'filtered' : quiet ? 'quiet' : live}
+        state={
+          conn.down || offline
+            ? 'offline'
+            : pending && live === 'live'
+              ? 'connecting'
+              : live === 'live' && filtered
+                ? 'filtered'
+                : quiet
+                  ? 'quiet'
+                  : live
+        }
         text={footer}
       />
       {source && exporting && (
