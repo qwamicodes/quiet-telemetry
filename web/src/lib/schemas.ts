@@ -6,6 +6,7 @@ import type {
   CloseMatch,
   CorrId,
   CreatedIngestToken,
+  CustomGroup,
   DockerStatus,
   ExportJob,
   ExportTokenResponse,
@@ -96,12 +97,20 @@ export const health = z.object({
   ingest: ingestInfo,
 }) satisfies z.ZodType<Health>
 
+export const groupKind = z.enum(['manual', 'compose', 'stack', 'custom', 'standalone', 'ingest'])
+
+/** A custom group made on the Sources page (Sources → New group). */
+export const customGroup = z.object({ id: z.string(), name: z.string(), order: z.number() }) satisfies z.ZodType<CustomGroup>
+
 export const sourceInfo = z.object({
   name: z.string(),
   kind: z.enum(['docker', 'http', 'vector', 'fluentbit', 'otlp']),
   containers: z.array(z.string()),
   group: z.string().nullable(),
-  group_kind: z.enum(['compose', 'stack', 'custom', 'standalone', 'ingest']).nullable().catch(null),
+  group_kind: groupKind.nullable().catch(null),
+  group_id: z.string().optional(),
+  auto_group: z.string().optional(),
+  auto_group_kind: groupKind.optional().catch(undefined),
   lines: z.number(),
   last_ts: z.number().nullable(),
   display_name: z.string().nullable(),
@@ -109,7 +118,11 @@ export const sourceInfo = z.object({
   paused: z.boolean(),
 }) satisfies z.ZodType<SourceInfo>
 
-export const sourcesResponse = z.object({ sources: z.array(sourceInfo) }) satisfies z.ZodType<SourcesResponse>
+export const sourcesResponse = z.object({
+  sources: z.array(sourceInfo),
+  // Older servers (and most test fixtures) send no custom groups.
+  custom_groups: z.array(customGroup).catch([]).default([]),
+}) satisfies z.ZodType<SourcesResponse>
 
 export const bucket = z.object({
   start: z.number(),
