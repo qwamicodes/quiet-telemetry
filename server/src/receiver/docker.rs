@@ -380,7 +380,8 @@ impl DockerReceiver {
         self.migrate(&running);
         for (id, name, labels) in running {
             // Attach with a short tail so the stream has context.
-            self.follow(&docker, id, name, labels, ATTACH_TAIL, None, shutdown);
+            let opts = logs_options(ATTACH_TAIL, None);
+            self.follow(&docker, id, name, labels, opts, shutdown);
         }
         self.update_status();
 
@@ -397,7 +398,8 @@ impl DockerReceiver {
             // Only this run's lines. A restarted container (same id, json-file
             // log kept) would otherwise replay its whole history on every
             // restart; a fresh one still gets everything from its start.
-            self.follow(&docker, id, name, attrs, RESTART_TAIL_CAP, since, shutdown);
+            let opts = logs_options(RESTART_TAIL_CAP, since);
+            self.follow(&docker, id, name, attrs, opts, shutdown);
             self.update_status();
         }
         Ok(())
@@ -454,8 +456,7 @@ impl DockerReceiver {
         id: String,
         container_name: String,
         labels: HashMap<String, String>,
-        tail: u32,
-        since: Option<i64>,
+        opts: LogsOptions<String>,
         shutdown: &CancellationToken,
     ) {
         let Some(naming) = name_for(&container_name, &labels) else {
@@ -495,7 +496,7 @@ impl DockerReceiver {
         let status = self.status.clone();
         tokio::spawn(async move {
             tracing::info!(container = %short, source = %naming.source, "following");
-            let mut stream = docker.logs(&id, Some(logs_options(tail, since)));
+            let mut stream = docker.logs(&id, Some(opts));
             let mut splitter = LineSplitter::default();
             loop {
                 let frame = tokio::select! {
