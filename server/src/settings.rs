@@ -380,7 +380,10 @@ impl MuteRule {
 /// A new id for a muted-lines rule.
 pub fn new_rule_id() -> String {
     let b: [u8; 6] = rand::random();
-    format!("mr_{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+    format!(
+        "mr_{}",
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    )
 }
 
 /// A global rule one source switched off for itself ("Don't apply here").
@@ -409,10 +412,10 @@ pub struct AddMuteRule {
     #[ts(optional)]
     pub source: Option<String>,
     /// Scope global: delete the same rule from sources that have it (07.14).
-    #[ts(optional)]
+    #[ts(optional, as = "Option<bool>")]
     pub remove_source_rules: bool,
     /// Restoring a global rule: the sources that had it switched off.
-    #[ts(optional)]
+    #[ts(optional, as = "Option<Vec<SourceOff>>")]
     pub off_on: Vec<SourceOff>,
 }
 
@@ -474,7 +477,11 @@ pub struct DeletedMuteRule {
 pub fn route_path(v: &str) -> String {
     let v = v.trim();
     let v = match v.find("://") {
-        Some(i) if v[..i].chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '.' || c == '-') => {
+        Some(i)
+            if v[..i]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '.' || c == '-') =>
+        {
             let rest = &v[i + 3..];
             match rest.find('/') {
                 Some(j) => &rest[j..],
@@ -533,9 +540,14 @@ pub fn clean_rule(mut r: MuteRule) -> Result<MuteRule, SettingsError> {
             f.chars().count() > 128 || f.chars().any(|c| c.is_control() || c.is_whitespace())
         })
         || r.method.as_ref().is_some_and(|m| {
-            m.len() > 16 || !m.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            m.len() > 16
+                || !m
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         })
-        || r.created_by.as_ref().is_some_and(|b| b.chars().count() > 128)
+        || r.created_by
+            .as_ref()
+            .is_some_and(|b| b.chars().count() > 128)
     {
         return invalid(
             "muted: field up to 128 characters (no spaces), value up to 256, method up to 16",
@@ -880,7 +892,12 @@ impl Settings {
         st.muted_global
             .iter()
             .filter(|r| r.enabled && !off(&r.id))
-            .chain(own.map(|s| s.muted.as_slice()).unwrap_or_default().iter().filter(|r| r.enabled))
+            .chain(
+                own.map(|s| s.muted.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|r| r.enabled),
+            )
             .cloned()
             .collect()
     }
@@ -1469,7 +1486,10 @@ impl Settings {
         let mut rule = clean_rule(add.rule)?;
         let mut st = self.state.write().unwrap();
         let exists = st.muted_global.iter().any(|r| r.id == rule.id)
-            || st.sources.values().any(|s| s.muted.iter().any(|r| r.id == rule.id));
+            || st
+                .sources
+                .values()
+                .any(|s| s.muted.iter().any(|r| r.id == rule.id));
         if exists {
             return invalid("muted: a rule with this id already exists");
         }
@@ -1519,7 +1539,12 @@ impl Settings {
                         self.persist_source(&mut st, &name, s, by)?;
                     }
                 }
-                for o in add.off_on.iter().filter(|o| !st.sources.contains_key(&o.source)) {
+                let missing: Vec<&SourceOff> = add
+                    .off_on
+                    .iter()
+                    .filter(|o| !st.sources.contains_key(&o.source))
+                    .collect();
+                for o in missing {
                     let s = SourceSettings {
                         muted_global_off: vec![GlobalOff {
                             id: rule.id.clone(),
@@ -1532,7 +1557,11 @@ impl Settings {
                 }
             }
             MuteScope::Source => {
-                let Some(name) = add.source.as_deref().map(str::trim).filter(|n| !n.is_empty())
+                let Some(name) = add
+                    .source
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
                 else {
                     return invalid("muted: which source?");
                 };
@@ -1598,7 +1627,9 @@ impl Settings {
                 .map(|i| (name.clone(), i))
         });
         let Some((name, i)) = found else {
-            return Err(SettingsError::NotFound("no muted-lines rule with this id".into()));
+            return Err(SettingsError::NotFound(
+                "no muted-lines rule with this id".into(),
+            ));
         };
         let mut s = st.sources[&name].clone();
         let r = apply(&s.muted[i])?;
@@ -1653,7 +1684,9 @@ impl Settings {
                 .map(|i| (name.clone(), i))
         });
         let Some((name, i)) = found else {
-            return Err(SettingsError::NotFound("no muted-lines rule with this id".into()));
+            return Err(SettingsError::NotFound(
+                "no muted-lines rule with this id".into(),
+            ));
         };
         let mut s = st.sources[&name].clone();
         let rule = s.muted.remove(i);
@@ -1679,7 +1712,9 @@ impl Settings {
     ) -> Result<SourceSettings, SettingsError> {
         let mut st = self.state.write().unwrap();
         if !st.muted_global.iter().any(|r| r.id == id) {
-            return Err(SettingsError::NotFound("no global rule with this id".into()));
+            return Err(SettingsError::NotFound(
+                "no global rule with this id".into(),
+            ));
         }
         let mut s = st.sources.get(source).cloned().unwrap_or_default();
         s.muted_global_off.retain(|o| o.id != id);
@@ -2224,11 +2259,18 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                (MuteShape::Field, Some("path".into()), "/api/v1/health".into()),
+                (
+                    MuteShape::Field,
+                    Some("path".into()),
+                    "/api/v1/health".into()
+                ),
                 (MuteShape::Text, None, "kube-probe".into())
             ]
         );
-        assert!(saved.muted.iter().all(|r| r.id.starts_with("mr_") && r.enabled));
+        assert!(saved
+            .muted
+            .iter()
+            .all(|r| r.id.starts_with("mr_") && r.enabled));
         assert_eq!(s.source("api").muted.len(), 2);
         let bad = |r: MuteRule| {
             s.put_source(
@@ -2427,12 +2469,20 @@ mod tests {
             shapes,
             vec![MuteShape::Field, MuteShape::Text, MuteShape::Message]
         );
-        assert!(api.muted.iter().all(|r| r.id.starts_with("mr_") && r.enabled));
+        assert!(api
+            .muted
+            .iter()
+            .all(|r| r.id.starts_with("mr_") && r.enabled));
         assert_eq!(api.search_include_muted, Some(true));
         let ids: Vec<_> = api.muted.iter().map(|r| r.id.clone()).collect();
         // Saved: the same ids after another restart.
         let again = Settings::open(Some(&path), Defaults::default(), false).unwrap();
-        let ids2: Vec<_> = again.source("api").muted.iter().map(|r| r.id.clone()).collect();
+        let ids2: Vec<_> = again
+            .source("api")
+            .muted
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
         assert_eq!(ids, ids2);
         let _ = std::fs::remove_file(&path);
     }
@@ -2460,33 +2510,79 @@ mod tests {
                 None,
             )
         };
-        let own = add(draft(MuteShape::MethodRoute, "/api/v1/ping?x=1", MuteScope::Source), Some("api"))
-            .unwrap()
-            .rule;
+        let own = add(
+            draft(
+                MuteShape::MethodRoute,
+                "/api/v1/ping?x=1",
+                MuteScope::Source,
+            ),
+            Some("api"),
+        )
+        .unwrap()
+        .rule;
         assert_eq!(own.value, "/api/v1/ping", "query dropped");
         assert_eq!(own.method.as_deref(), Some("GET"));
-        assert!(add(draft(MuteShape::MethodRoute, "/api/v1/ping", MuteScope::Source), Some("api")).is_err(), "duplicate");
-        assert!(add(draft(MuteShape::Route, "/x", MuteScope::Source), None).is_err(), "no source");
-        let g = add(draft(MuteShape::Route, "/metrics", MuteScope::Global), None).unwrap().rule;
+        assert!(
+            add(
+                draft(MuteShape::MethodRoute, "/api/v1/ping", MuteScope::Source),
+                Some("api")
+            )
+            .is_err(),
+            "duplicate"
+        );
+        assert!(
+            add(draft(MuteShape::Route, "/x", MuteScope::Source), None).is_err(),
+            "no source"
+        );
+        let g = add(draft(MuteShape::Route, "/metrics", MuteScope::Global), None)
+            .unwrap()
+            .rule;
         assert_eq!(g.scope, MuteScope::Global);
         assert_eq!(s.muted_global().len(), 1);
         // api: its own rule + the global one; worker (no settings): global only.
-        let ids = |src: &str| s.mute_rules(src).into_iter().map(|r| r.id).collect::<Vec<_>>();
+        let ids = |src: &str| {
+            s.mute_rules(src)
+                .into_iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids("api"), vec![g.id.clone(), own.id.clone()]);
         assert_eq!(ids("worker"), vec![g.id.clone()]);
         // Don't apply here.
-        s.set_global_apply("worker", &g.id, false, Some("esi".into()), None).unwrap();
+        s.set_global_apply("worker", &g.id, false, Some("esi".into()), None)
+            .unwrap();
         assert!(ids("worker").is_empty());
         let off = &s.source("worker").muted_global_off[0];
-        assert_eq!((off.id.as_str(), off.by.as_deref()), (g.id.as_str(), Some("esi")));
+        assert_eq!(
+            (off.id.as_str(), off.by.as_deref()),
+            (g.id.as_str(), Some("esi"))
+        );
         // Paused rules hide nothing.
-        s.update_mute_rule(&own.id, UpdateMuteRule { enabled: Some(false), ..Default::default() }, None).unwrap();
+        s.update_mute_rule(
+            &own.id,
+            UpdateMuteRule {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
         assert_eq!(ids("api"), vec![g.id.clone()]);
         // Edit keeps the id.
         let edited = s
-            .update_mute_rule(&own.id, UpdateMuteRule { value: Some("/api/v1/pong".into()), ..Default::default() }, None)
+            .update_mute_rule(
+                &own.id,
+                UpdateMuteRule {
+                    value: Some("/api/v1/pong".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .unwrap();
-        assert_eq!((edited.id.as_str(), edited.value.as_str(), edited.enabled), (own.id.as_str(), "/api/v1/pong", false));
+        assert_eq!(
+            (edited.id.as_str(), edited.value.as_str(), edited.enabled),
+            (own.id.as_str(), "/api/v1/pong", false)
+        );
         assert!(matches!(
             s.update_mute_rule("mr_nope", UpdateMuteRule::default(), None),
             Err(SettingsError::NotFound(_))
@@ -2507,7 +2603,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(back.rule, gone.rule);
-        assert_eq!(s.source("worker").muted_global_off[0].by.as_deref(), Some("esi"));
+        assert_eq!(
+            s.source("worker").muted_global_off[0].by.as_deref(),
+            Some("esi")
+        );
         assert!(ids("worker").is_empty());
         // Source rule delete → restore.
         let d = s.delete_mute_rule(&own.id, None).unwrap();
@@ -2524,8 +2623,17 @@ mod tests {
         assert_eq!(s.source("api").muted[0], d.rule);
         // A switch for an unknown rule is dropped on save.
         let mut w = s.source("worker");
-        w.muted_global_off.push(GlobalOff { id: "mr_gone".into(), ..Default::default() });
-        assert_eq!(s.put_source("worker", w, None).unwrap().muted_global_off.len(), 1);
+        w.muted_global_off.push(GlobalOff {
+            id: "mr_gone".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            s.put_source("worker", w, None)
+                .unwrap()
+                .muted_global_off
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -2566,7 +2674,10 @@ mod tests {
         // The instance include-in-search default moved to Muted lines.
         assert!(s.put_muted_search(Some(true), None).unwrap().include);
         assert_eq!(s.general().search_include_muted, Some(true));
-        assert_eq!(s.put_muted_search(None, None).unwrap().origin, Origin::Default);
+        assert_eq!(
+            s.put_muted_search(None, None).unwrap().origin,
+            Origin::Default
+        );
         assert_eq!(route_path("https://x.io/a/b?c=1#d"), "/a/b");
         assert_eq!(route_path("/a?b"), "/a");
         assert_eq!(route_path("https://x.io"), "/");

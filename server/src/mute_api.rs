@@ -48,7 +48,10 @@ const SAMPLES: usize = 3;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/mute/rules", post(add_rule))
-        .route("/api/mute/rules/:id", patch(update_rule).delete(delete_rule))
+        .route(
+            "/api/mute/rules/:id",
+            patch(update_rule).delete(delete_rule),
+        )
         .route("/api/mute/sources/:name/global/:id", put(set_apply))
         .route("/api/mute/search", put(put_search))
         .route("/api/mute/stats", axum::routing::get(stats))
@@ -90,7 +93,7 @@ pub struct MutePreviewRequest {
     pub rules: Vec<MuteRule>,
     /// Sources in scope; empty = every source (a global rule).
     #[serde(default)]
-    #[ts(optional)]
+    #[ts(optional, as = "Option<Vec<String>>")]
     pub sources: Vec<String>,
 }
 
@@ -197,7 +200,13 @@ fn window(s: &AppState) -> (i64, i64) {
 }
 
 fn source_names(s: &AppState) -> Vec<String> {
-    let mut v: Vec<String> = s.pipeline.hub().list().into_iter().map(|x| x.name).collect();
+    let mut v: Vec<String> = s
+        .pipeline
+        .hub()
+        .list()
+        .into_iter()
+        .map(|x| x.name)
+        .collect();
     v.sort();
     v.dedup();
     v
@@ -217,7 +226,10 @@ async fn compute_stats(s: &AppState) -> anyhow::Result<MuteStats> {
         until,
         ..Default::default()
     };
-    for r in global.iter().chain(per_source.values().flat_map(|x| x.muted.iter())) {
+    for r in global
+        .iter()
+        .chain(per_source.values().flat_map(|x| x.muted.iter()))
+    {
         out.rules.entry(r.id.clone()).or_default();
     }
     for name in names {
@@ -274,7 +286,9 @@ fn rules_key(s: &AppState) -> u64 {
         .hash(&mut h);
     for (k, v) in st.sources() {
         k.hash(&mut h);
-        serde_json::to_string(&v.muted).unwrap_or_default().hash(&mut h);
+        serde_json::to_string(&v.muted)
+            .unwrap_or_default()
+            .hash(&mut h);
     }
     h.finish()
 }
@@ -294,7 +308,11 @@ async fn stats(State(s): State<AppState>) -> Response {
         }
         Err(e) => {
             tracing::error!(error = %e, "mute stats failed");
-            bad(StatusCode::SERVICE_UNAVAILABLE, "store", "store unavailable")
+            bad(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "store",
+                "store unavailable",
+            )
         }
     }
 }
@@ -423,7 +441,11 @@ async fn preview(State(s): State<AppState>, body: Option<Json<MutePreviewRequest
         Ok(v) => Json(v).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "mute preview failed");
-            bad(StatusCode::SERVICE_UNAVAILABLE, "store", "store unavailable")
+            bad(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "store",
+                "store unavailable",
+            )
         }
     }
 }
@@ -443,7 +465,11 @@ async fn add_rule(
         return r;
     }
     let Some(Json(mut add)) = body else {
-        return bad(StatusCode::BAD_REQUEST, "invalid", "expected AddMuteRule JSON");
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "expected AddMuteRule JSON",
+        );
     };
     if add.rule.id.is_empty() || add.rule.created_by.is_none() {
         add.rule.created_by = Some(v.user.name.clone());
@@ -472,7 +498,11 @@ async fn update_rule(
         return r;
     }
     let Some(Json(u)) = body else {
-        return bad(StatusCode::BAD_REQUEST, "invalid", "expected UpdateMuteRule JSON");
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "expected UpdateMuteRule JSON",
+        );
     };
     let by = Some(v.user.id);
     match write(&s, move |st| st.update_mute_rule(&id, u, by)).await {
@@ -513,11 +543,19 @@ async fn set_apply(
         return r;
     }
     let Some(Json(b)) = body else {
-        return bad(StatusCode::BAD_REQUEST, "invalid", "expected { apply: boolean }");
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "expected { apply: boolean }",
+        );
     };
     let by = Some(v.user.id);
     let who = Some(v.user.name.clone());
-    match write(&s, move |st| st.set_global_apply(&name, &id, b.apply, who, by)).await {
+    match write(&s, move |st| {
+        st.set_global_apply(&name, &id, b.apply, who, by)
+    })
+    .await
+    {
         Ok(src) => {
             invalidate().await;
             Json(src).into_response()
@@ -535,7 +573,11 @@ async fn put_search(
         return r;
     }
     let Some(Json(b)) = body else {
-        return bad(StatusCode::BAD_REQUEST, "invalid", "expected { include: boolean | null }");
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "expected { include: boolean | null }",
+        );
     };
     let by = Some(v.user.id);
     match write(&s, move |st| st.put_muted_search(b.include, by)).await {
@@ -566,10 +608,19 @@ mod tests {
         for i in 0..6 {
             raws.push((format!(r#"{{"msg":"request completed","method":"GET","path":"/api/v1/health?probe={i}"}}"#), "api"));
         }
-        raws.push((r#"{"msg":"request completed","method":"HEAD","path":"/api/v1/health"}"#.into(), "api"));
-        raws.push((r#"{"msg":"request completed","method":"POST","path":"/api/v1/orders"}"#.into(), "api"));
+        raws.push((
+            r#"{"msg":"request completed","method":"HEAD","path":"/api/v1/health"}"#.into(),
+            "api",
+        ));
+        raws.push((
+            r#"{"msg":"request completed","method":"POST","path":"/api/v1/orders"}"#.into(),
+            "api",
+        ));
         raws.push((r#"{"msg":"heartbeat ok"}"#.into(), "worker"));
-        raws.push((r#"{"msg":"probe","req":{"url":"http://w/api/v1/health","method":"GET"}}"#.into(), "worker"));
+        raws.push((
+            r#"{"msg":"probe","req":{"url":"http://w/api/v1/health","method":"GET"}}"#.into(),
+            "worker",
+        ));
         for (i, (raw, src)) in raws.iter().enumerate() {
             let mut r = RawLine::new(raw.as_str(), *src, now - 5000 + i as i64);
             r.collector_ts = None;
@@ -579,7 +630,12 @@ mod tests {
         (st, app)
     }
 
-    async fn call(app: &Router, method: &str, uri: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    async fn call(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
         let res = app
             .clone()
             .oneshot(
@@ -594,7 +650,10 @@ mod tests {
             .unwrap();
         let status = res.status();
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
     }
 
     fn rule(shape: MuteShape, value: &str, method: Option<&str>) -> MuteRule {
@@ -692,21 +751,64 @@ mod tests {
         assert_eq!(code, StatusCode::OK);
         assert_eq!(src["muted_global_off"][0]["id"], gid.as_str());
         assert!(st.pipeline.settings().mute_rules("worker").is_empty());
-        let (_, r) = call(&app, "PATCH", &format!("/api/mute/rules/{id}"), serde_json::json!({ "enabled": false })).await;
+        let (_, r) = call(
+            &app,
+            "PATCH",
+            &format!("/api/mute/rules/{id}"),
+            serde_json::json!({ "enabled": false }),
+        )
+        .await;
         assert_eq!(r["enabled"], false);
-        let (code, d) = call(&app, "DELETE", &format!("/api/mute/rules/{gid}"), serde_json::Value::Null).await;
+        let (code, d) = call(
+            &app,
+            "DELETE",
+            &format!("/api/mute/rules/{gid}"),
+            serde_json::Value::Null,
+        )
+        .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(d["off_on"][0]["source"], "worker");
-        let (code, _) = call(&app, "DELETE", &format!("/api/mute/rules/{gid}"), serde_json::Value::Null).await;
+        let (code, _) = call(
+            &app,
+            "DELETE",
+            &format!("/api/mute/rules/{gid}"),
+            serde_json::Value::Null,
+        )
+        .await;
         assert_eq!(code, StatusCode::NOT_FOUND);
-        let (code, back) = call(&app, "POST", "/api/mute/rules", serde_json::json!({ "rule": d["rule"], "off_on": d["off_on"] })).await;
+        let (code, back) = call(
+            &app,
+            "POST",
+            "/api/mute/rules",
+            serde_json::json!({ "rule": d["rule"], "off_on": d["off_on"] }),
+        )
+        .await;
         assert_eq!(code, StatusCode::CREATED);
         assert_eq!(back["rule"]["id"], gid.as_str());
-        assert_eq!(st.pipeline.settings().muted_global()[0].scope, MuteScope::Global);
-        let (code, m) = call(&app, "PUT", "/api/mute/search", serde_json::json!({ "include": true })).await;
+        assert_eq!(
+            st.pipeline.settings().muted_global()[0].scope,
+            MuteScope::Global
+        );
+        let (code, m) = call(
+            &app,
+            "PUT",
+            "/api/mute/search",
+            serde_json::json!({ "include": true }),
+        )
+        .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(m["include"], true);
-        let (code, _) = call(&app, "POST", "/api/mute/rules", serde_json::json!({ "rule": { "shape": "route", "value": "/x" } })).await;
-        assert_eq!(code, StatusCode::BAD_REQUEST, "a source rule needs its source");
+        let (code, _) = call(
+            &app,
+            "POST",
+            "/api/mute/rules",
+            serde_json::json!({ "rule": { "shape": "route", "value": "/x" } }),
+        )
+        .await;
+        assert_eq!(
+            code,
+            StatusCode::BAD_REQUEST,
+            "a source rule needs its source"
+        );
     }
 }
