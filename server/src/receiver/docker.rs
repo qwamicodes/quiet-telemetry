@@ -380,12 +380,13 @@ impl DockerReceiver {
         self.migrate(&running);
         for (id, name, labels) in running {
             // Attach with a short tail so the stream has context.
-            self.follow(&docker, id, name, labels, Some(200), shutdown);
+            self.follow(&docker, id, name, labels, ATTACH_TAIL, None, shutdown);
         }
         self.update_status();
 
         while let Some(ev) = events.next().await {
             let ev = ev?;
+            let since = event_since(ev.time, ev.time_nano);
             let Some(actor) = ev.actor else { continue };
             let Some(id) = actor.id else { continue };
             let attrs = actor.attributes.unwrap_or_default();
@@ -393,8 +394,10 @@ impl DockerReceiver {
                 .get("name")
                 .cloned()
                 .unwrap_or_else(|| id.chars().take(12).collect());
-            // `tail: None` = everything since it started, which is what we want for a fresh container.
-            self.follow(&docker, id, name, attrs, None, shutdown);
+            // Only this run's lines. A restarted container (same id, json-file
+            // log kept) would otherwise replay its whole history on every
+            // restart; a fresh one still gets everything from its start.
+            self.follow(&docker, id, name, attrs, RESTART_TAIL_CAP, since, shutdown);
             self.update_status();
         }
         Ok(())
@@ -451,7 +454,8 @@ impl DockerReceiver {
         id: String,
         container_name: String,
         labels: HashMap<String, String>,
-        tail: Option<u32>,
+        tail: u32,
+        since: Option<i64>,
         shutdown: &CancellationToken,
     ) {
         let Some(naming) = name_for(&container_name, &labels) else {
@@ -491,15 +495,7 @@ impl DockerReceiver {
         let status = self.status.clone();
         tokio::spawn(async move {
             tracing::info!(container = %short, source = %naming.source, "following");
-            let opts = LogsOptions::<String> {
-                follow: true,
-                stdout: true,
-                stderr: true,
-                timestamps: true,
-                tail: tail.map(|t| t.to_string()).unwrap_or_else(|| "all".into()),
-                ..Default::default()
-            };
-            let mut stream = docker.logs(&id, Some(opts));
+            let mut stream = docker.logs(&id, Some(logs_options(tail, since)));
             let mut splitter = LineSplitter::default();
             loop {
                 let frame = tokio::select! {
@@ -547,6 +543,43 @@ impl DockerReceiver {
             }
             tracing::info!(container = %short, "stopped following");
         });
+    }
+}
+
+/// Lines read when attaching to a container that was already running.
+pub const ATTACH_TAIL: u32 = 200;
+/// Safety cap on lines read when a container (re)starts. With `since` set to
+/// the start event this is only hit by a run that logs this much in its first
+/// moments; it keeps a bad `since` from ever replaying a whole log.
+pub const RESTART_TAIL_CAP: u32 = 1000;
+/// Read from a little before the start event, so the first lines of the run
+/// are not lost to the event being stamped after them.
+const SINCE_SLACK_SECS: i64 = 1;
+
+/// Unix seconds to read a started container's logs from: the start event's
+/// time (nanosecond stamp when present) minus a little slack. `None` when
+/// the event carries no time; the tail cap still bounds the read then.
+pub fn event_since(time: Option<i64>, time_nano: Option<i64>) -> Option<i64> {
+    let secs = match (time_nano, time) {
+        (Some(n), _) if n > 0 => n / 1_000_000_000,
+        (_, Some(t)) if t > 0 => t,
+        _ => return None,
+    };
+    Some((secs - SINCE_SLACK_SECS).max(1))
+}
+
+/// Follow options for one container. The tail is always a number: `"all"`
+/// replays a container's entire log, which on a restart loop re-ingested
+/// months of history on every restart.
+pub fn logs_options(tail: u32, since: Option<i64>) -> LogsOptions<String> {
+    LogsOptions::<String> {
+        follow: true,
+        stdout: true,
+        stderr: true,
+        timestamps: true,
+        since: since.unwrap_or(0),
+        tail: tail.to_string(),
+        ..Default::default()
     }
 }
 
@@ -814,6 +847,41 @@ mod tests {
         let late = n("/db", labels(&[]));
         assert_eq!(resolve(&late, &ident), "db.container");
         assert_eq!(resolve(&running[7], &ident), "api");
+    }
+
+    #[test]
+    fn attach_reads_a_short_tail() {
+        let o = logs_options(ATTACH_TAIL, None);
+        assert_eq!(o.tail, "200");
+        assert_eq!(o.since, 0);
+        assert!(o.follow && o.stdout && o.stderr && o.timestamps);
+    }
+
+    #[test]
+    fn restart_reads_only_this_run_capped() {
+        // A start event at 2026-10-23T09:00:00.5Z.
+        let nano = 1_792_746_000_500_000_000_i64;
+        let since = event_since(Some(1_792_746_000), Some(nano));
+        assert_eq!(since, Some(1_792_746_000 - 1));
+        let o = logs_options(RESTART_TAIL_CAP, since);
+        assert_eq!(o.since, 1_792_746_000 - 1);
+        assert_eq!(o.tail, "1000");
+        assert_ne!(o.tail, "all");
+        assert!(o.follow && o.timestamps);
+    }
+
+    #[test]
+    fn event_since_falls_back_and_never_reads_all() {
+        assert_eq!(event_since(Some(100), None), Some(99));
+        assert_eq!(event_since(None, Some(0)), None);
+        assert_eq!(event_since(None, None), None);
+        // No event time: no since filter, but the tail stays capped.
+        let o = logs_options(RESTART_TAIL_CAP, event_since(None, None));
+        assert_eq!(o.since, 0);
+        assert_eq!(o.tail, "1000");
+        for t in [0, ATTACH_TAIL, RESTART_TAIL_CAP, u32::MAX] {
+            assert_ne!(logs_options(t, None).tail, "all");
+        }
     }
 
     #[test]
