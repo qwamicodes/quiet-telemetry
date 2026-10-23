@@ -76,7 +76,7 @@ export function GroupRulesHint() {
       <FolderIcon className="size-3.5 shrink-0 text-brand" />
       <span>A group you make wins over Compose / Stack.</span>
       <span className="truncate font-mono text-[11px] text-muted-foreground">
-        · ⋯ on a source → Move to group · Automatic puts it back · owners and admins can edit groups
+        · ⋯ on a source → Move to group · Automatic puts it back · owners can edit groups
       </span>
     </p>
   )
@@ -94,11 +94,11 @@ function NameField({
   error: string | null
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex min-w-0 flex-col gap-1.5">
       <label htmlFor={id} className="font-medium text-xs">
         Name
       </label>
-      <div className="relative">
+      <div className="relative w-full min-w-0">
         <Input
           id={id}
           // biome-ignore lint/a11y/noAutofocus: the dialog opens to type a name
@@ -108,9 +108,9 @@ function NameField({
           aria-invalid={error != null}
           placeholder="Legivent staging"
           onChange={(e) => onChange(e.target.value)}
-          className="pr-16"
+          className="w-full min-w-0 pr-16"
         />
-        <span className="absolute top-1.5 right-2 font-mono text-[11px] text-muted-foreground tabular-nums">
+        <span className="pointer-events-none absolute top-1.5 right-2 font-mono text-[11px] text-muted-foreground tabular-nums">
           {value.length} / {MAX_GROUP_NAME}
         </span>
       </div>
@@ -215,8 +215,12 @@ function NewGroupForm({
   }
 
   return (
-    <DialogContent className="max-w-130 gap-4" aria-label="New group">
-      <form onSubmit={submit} className="flex flex-col gap-4">
+    <DialogContent
+      className="max-h-[calc(100dvh-2rem)] w-full gap-4 overflow-y-auto sm:max-w-130"
+      aria-label="New group"
+      data-testid="new-group-dialog"
+    >
+      <form onSubmit={submit} className="flex w-full min-w-0 flex-col gap-4">
         <DialogHeader>
           <DialogTitle>New group</DialogTitle>
           <DialogDescription>
@@ -224,39 +228,41 @@ function NewGroupForm({
           </DialogDescription>
         </DialogHeader>
         <NameField id="new-group-name" value={name} onChange={setName} error={error} />
-        <div className="flex flex-col gap-1.5">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <span className="font-medium text-xs">
             Pick sources <span className="font-normal font-mono text-[11px] text-muted-foreground">optional</span>
           </span>
-          <div className="border">
-            <div className="flex items-center gap-2 border-b px-2.5">
-              <SearchIcon className="size-3.5 text-muted-foreground" />
+          <div className="w-full min-w-0 border">
+            <div className="flex min-w-0 items-center gap-2 border-b px-2.5">
+              <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
               <input
                 aria-label="Filter sources to pick"
                 placeholder="Filter sources"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                className="h-8 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
+                className="h-8 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
               />
               {q && shown.length > 0 && (
                 <button
                   type="button"
-                  className="font-mono text-[11px] text-brand hover:underline"
+                  className="shrink-0 whitespace-nowrap font-mono text-[11px] text-brand hover:underline"
                   onClick={() => setPicked((p) => new Set([...p, ...shown.map((s) => s.name)]))}
                 >
                   Select all {shown.length} {shown.length === 1 ? 'match' : 'matches'}
                 </button>
               )}
             </div>
-            <fieldset className="m-0 max-h-72 min-w-0 overflow-y-auto border-0 p-0" aria-label="Sources to pick">
+            <fieldset className="m-0 max-h-72 w-full min-w-0 overflow-y-auto border-0 p-0" aria-label="Sources to pick">
               {sections.map((sec) =>
                 sec.rows.length === 0 ? null : (
                   <Fragment key={sec.key}>
                     {sec.title && sec.kind && (
-                      <div className="flex h-7 items-center gap-2 bg-muted/30 px-2.5 font-mono font-semibold text-[11px]">
-                        <GroupIcon kind={sec.kind} className="size-3" />
-                        <span className="flex-1 truncate">{sec.title}</span>
-                        <span className="font-normal text-muted-foreground">
+                      <div className="flex h-7 min-w-0 items-center gap-2 bg-muted/30 px-2.5 font-mono font-semibold text-[11px]">
+                        <GroupIcon kind={sec.kind} className="size-3 shrink-0" />
+                        <span className="min-w-0 flex-1 truncate" title={sec.title}>
+                          {sec.title}
+                        </span>
+                        <span className="shrink-0 whitespace-nowrap font-normal text-muted-foreground">
                           {sec.all.filter((s) => picked.has(s.name)).length} of {sec.all.length}
                         </span>
                       </div>
@@ -268,7 +274,7 @@ function NewGroupForm({
                         <label
                           key={s.name}
                           className={cn(
-                            'flex h-7.5 cursor-pointer items-center gap-2.5 pr-2.5 pl-6 text-[13px] hover:bg-row-hover',
+                            'flex h-7.5 min-w-0 cursor-pointer items-center gap-2.5 pr-2.5 pl-6 text-[13px] hover:bg-row-hover',
                             on && 'bg-brand/5',
                           )}
                         >
@@ -278,8 +284,10 @@ function NewGroupForm({
                             aria-label={label(s)}
                           />
                           <StatusDot status={sourceStatus(s)} />
-                          <span className="flex-1 truncate">{label(s)}</span>
-                          <span className="border px-1 font-mono text-[10px] text-muted-foreground">
+                          <span className="min-w-0 flex-1 truncate" title={label(s)}>
+                            {label(s)}
+                          </span>
+                          <span className="shrink-0 whitespace-nowrap border px-1 font-mono text-[10px] text-muted-foreground">
                             {kindLabel(s.kind)}
                           </span>
                         </label>
@@ -299,20 +307,24 @@ function NewGroupForm({
             You can add more later from any source’s ⋯ menu → Move to group.
           </span>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-            <UsersIcon className="size-3.5" /> owners and admins
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2" data-testid="new-group-footer">
+          <span className="flex items-center gap-1.5 whitespace-nowrap font-mono text-[11px] text-muted-foreground">
+            <UsersIcon className="size-3.5 shrink-0" /> Visible to everyone · owners can edit
           </span>
-          <span className="flex-1" />
-          <span className="font-mono text-[11px] text-muted-foreground" data-testid="picked-count">
+          <span
+            className="whitespace-nowrap font-mono text-[11px] text-muted-foreground sm:ml-auto"
+            data-testid="picked-count"
+          >
             {picked.size} selected
           </span>
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={!ok || create.isPending}>
-            Create group <Kbd className="ml-1 bg-background/20 text-current">↵</Kbd>
-          </Button>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" className="whitespace-nowrap" disabled={!ok || create.isPending}>
+              Create group <Kbd className="ml-1 bg-background/20 text-current">↵</Kbd>
+            </Button>
+          </div>
         </div>
       </form>
     </DialogContent>
@@ -354,10 +366,12 @@ function RenameForm({ group, custom, onClose }: { group: CustomGroup; custom: Cu
     }
   }
   return (
-    <DialogContent className="max-w-110" aria-label="Rename group">
-      <form onSubmit={submit} className="flex flex-col gap-4">
-        <DialogHeader>
-          <DialogTitle>Rename {group.name}</DialogTitle>
+    <DialogContent className="w-full sm:max-w-110" aria-label="Rename group" data-testid="rename-group-dialog">
+      <form onSubmit={submit} className="flex w-full min-w-0 flex-col gap-4">
+        <DialogHeader className="min-w-0 pr-6">
+          <DialogTitle className="truncate" title={`Rename ${group.name}`}>
+            Rename {group.name}
+          </DialogTitle>
           <DialogDescription>
             Its sources stay in it; collapsed state and filters follow the new name.
           </DialogDescription>
@@ -445,8 +459,11 @@ export function CustomGroupMenu({
           }
         }}
       >
-        <DropdownMenuHeader className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
-          {group.name}
+        <DropdownMenuHeader
+          className="min-w-0 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]"
+          title={group.name}
+        >
+          <span className="truncate">{group.name}</span>
         </DropdownMenuHeader>
         <DropdownMenuItem onClick={onRename}>
           <PencilIcon /> Rename
@@ -532,14 +549,19 @@ export function SourceMenu({
               <FolderIcon /> Move to group
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="w-75" aria-label={`Move ${s.name} to`}>
-              <DropdownMenuHeader className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
-                Move {s.name} to
+              <DropdownMenuHeader
+                className="min-w-0 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]"
+                title={`Move ${s.name} to`}
+              >
+                <span className="truncate">Move {s.name} to</span>
               </DropdownMenuHeader>
               {custom.map((c) => (
                 <DropdownMenuItem key={c.id} onClick={() => moveTo(c.id)} aria-checked={c.id === current}>
                   {c.id === current ? <CheckIcon className="text-foreground" /> : <span className="size-3.5" />}
-                  <span className="flex-1 truncate">{c.name}</span>
-                  <span className="bg-brand/15 px-1 font-mono text-[10px] text-brand">custom</span>
+                  <span className="min-w-0 flex-1 truncate" title={c.name}>
+                    {c.name}
+                  </span>
+                  <span className="shrink-0 bg-brand/15 px-1 font-mono text-[10px] text-brand">custom</span>
                 </DropdownMenuItem>
               ))}
               <DropdownMenuItem onClick={onNewGroup}>
@@ -556,10 +578,10 @@ export function SourceMenu({
                 ) : (
                   <RotateCcwIcon className="mt-0.5" />
                 )}
-                <span className="flex flex-col gap-0.5">
+                <span className="flex min-w-0 flex-col gap-0.5">
                   <span>Automatic (compose / stack)</span>
                   {auto && (
-                    <span className="text-[11px] text-muted-foreground leading-snug">
+                    <span className="break-words text-[11px] text-muted-foreground leading-snug">
                       {current ? 'Back to' : 'Now in'} {auto.name}: {autoReason(auto.kind)}
                     </span>
                   )}

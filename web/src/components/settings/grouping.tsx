@@ -85,15 +85,15 @@ export function SourceGrouping({
           How the Sources page, the sidebar and the source picker fold sources. HTTP, OTLP, Vector and Fluent Bit pushes
           always sit under Ingest. Streaming stays one source at a time.
         </p>
-        <div className="flex items-center gap-2 text-xs" data-testid="custom-groups-row">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="custom-groups-row">
           <FolderIcon className="size-3.5 shrink-0 text-brand" />
           <span>You can also make your own groups from Sources</span>
-          <span className="font-mono text-[11px] text-muted-foreground">
+          <span className="whitespace-nowrap font-mono text-[11px] text-muted-foreground">
             · {custom} custom {custom === 1 ? 'group' : 'groups'}
             {custom > 0 && draft.mode === 'off' ? ' · kept while grouping is off' : ''}
           </span>
           <span className="flex-1" />
-          <Link to="/sources" className="flex items-center gap-1 text-foreground hover:underline">
+          <Link to="/sources" className="flex shrink-0 items-center gap-1 text-foreground hover:underline">
             Sources <ArrowRightIcon className="size-3.5" />
           </Link>
         </div>
