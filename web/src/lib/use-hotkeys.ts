@@ -5,9 +5,17 @@ export type Hotkeys = Record<string, (e: KeyboardEvent) => void>
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
 
+const isRichText = (t: EventTarget | null) =>
+  t instanceof HTMLElement &&
+  (t.isContentEditable || t.closest('[contenteditable]:not([contenteditable="false"])') !== null)
+
+/** Bold / italic / underline in a rich-text field: never taken from it. */
+const TEXT_FORMAT = new Set(['mod+b', 'mod+i', 'mod+u'])
+
 /**
  * Single-key shortcuts (`/`, `j`, `space`, `mod+k`, `mod+shift+c`). Ignored while typing,
- * except `mod+…` combos and `escape`.
+ * except `mod+…` combos and `escape`
+ * (but ⌘B / ⌘I / ⌘U stay with a rich-text field).
  */
 export function useHotkeys(keys: Hotkeys) {
   const ref = useRef(keys)
@@ -18,6 +26,7 @@ export function useHotkeys(keys: Hotkeys) {
       const key = e.key === ' ' ? 'space' : e.key.toLowerCase()
       const combo = mod ? `mod+${key}` : key
       if (!mod && key !== 'escape' && isTyping(e.target)) return
+      if (TEXT_FORMAT.has(combo) && isRichText(e.target)) return
       if (e.altKey) return
       // `mod+shift+c` when one is registered; otherwise shift is ignored.
       const fn = (mod && e.shiftKey ? ref.current[`mod+shift+${key}`] : undefined) ?? ref.current[combo]

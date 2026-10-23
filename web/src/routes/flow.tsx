@@ -20,6 +20,7 @@ import { type DiagramMode, FieldCard } from '@/components/field-card'
 import { FlowGraph } from '@/components/flow/flow-graph'
 import { Timeline } from '@/components/flow/timeline'
 import { LevelBadge } from '@/components/level-badge'
+import { SidebarToggle } from '@/components/sidebar-resize'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { Flow, FlowNotFound, LogLine } from '@/gen'
@@ -72,6 +73,7 @@ function Crumbs({
 }) {
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 font-mono text-[13px]">
+      <SidebarToggle />
       <Button variant="ghost" size="sm" nativeButton={false} render={<Link to="/" search={{ source }} />}>
         <ArrowLeftIcon />
         Stream

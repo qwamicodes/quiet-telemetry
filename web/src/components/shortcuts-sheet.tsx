@@ -36,6 +36,7 @@ const GROUPS: { title: string; rows: [string, string[]][] }[] = [
       ['search 24h', ['⌘', '/']],
       ['sources', ['S']],
       ['toggle theme', ['T']],
+      ['hide / show the sidebar', ['⌘', 'B']],
       ['guide', ['G', 'H']],
       ['check my logs', ['G', 'L']],
       ['copy the agent prompt', ['⌘', '⇧', 'C']],

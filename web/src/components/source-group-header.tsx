@@ -88,7 +88,10 @@ export function SourceGroupHeader({
           className={cn('size-3 shrink-0 text-muted-foreground transition-transform', !collapsed && 'rotate-90')}
         />
         <GroupIcon kind={group.kind} />
-        <span className={cn('truncate text-foreground', compact ? '' : 'font-mono font-semibold text-[13px]')}>
+        <span
+          className={cn('truncate text-foreground', compact ? '' : 'font-mono font-semibold text-[13px]')}
+          title={compact ? group.name : undefined}
+        >
           {group.name}
         </span>
         {!compact && (
