@@ -398,4 +398,4 @@ quiet is licensed under the [Functional Source License, Version 1.1, MIT Future 
 - **Not allowed:** offering quiet, or a modified version of it, as a competing commercial product or service (for example, a hosted log viewer you sell).
 - **Becomes MIT:** each version turns into plain MIT two years after it is released.
 
-For commercial licensing, contact Kwaame Ofori-adjekum ([@qwamicodes](https://github.com/qwamicodes)).
+For commercial licensing, email Kwaame Ofori-adjekum at [hello@kwaame.build](mailto:hello@kwaame.build).
