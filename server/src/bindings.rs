@@ -47,6 +47,11 @@ fn export_into(dir: &Path) {
     GroupingPreview::export_all(&cfg).unwrap();
     crate::settings::UpdateGrouping::export_all(&cfg).unwrap();
     SourcesResponse::export_all(&cfg).unwrap();
+    crate::grouping::CustomGroups::export_all(&cfg).unwrap();
+    crate::source_groups_api::CreateSourceGroup::export_all(&cfg).unwrap();
+    crate::source_groups_api::CreatedSourceGroup::export_all(&cfg).unwrap();
+    crate::source_groups_api::UpdateSourceGroup::export_all(&cfg).unwrap();
+    crate::source_groups_api::AssignSources::export_all(&cfg).unwrap();
     LinesResponse::export_all(&cfg).unwrap();
     SearchParams::export_all(&cfg).unwrap();
     SearchResponse::export_all(&cfg).unwrap();

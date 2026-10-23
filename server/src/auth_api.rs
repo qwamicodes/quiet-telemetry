@@ -1953,6 +1953,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn custom_groups_everyone_reads_only_the_owner_edits() {
+        let t = T::new().await;
+        let owner = t.setup_owner().await;
+        let (member, _) = t.add_member(&owner, "ama@x.co").await;
+        let anon = Who::default();
+        assert_eq!(
+            t.get("/api/source-groups", &anon).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        // The owner (quiet's admin) creates one; members see it.
+        let r = t
+            .post(
+                "/api/source-groups",
+                json!({"name":"Legivent staging","sources":["staging-api"]}),
+                &owner,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::CREATED, "{}", r.text);
+        let id = r.body["group"]["id"].as_str().unwrap().to_string();
+        let r = t.get("/api/source-groups", &member).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.body["groups"][0]["name"], "Legivent staging");
+        let r = t.get("/api/sources", &member).await;
+        assert_eq!(r.body["custom_groups"][0]["id"], id.as_str());
+        // Members can't create, rename, reorder, move into or delete.
+        for (m, path, body) in [
+            (
+                Method::POST,
+                "/api/source-groups".to_string(),
+                json!({"name":"Mine"}),
+            ),
+            (
+                Method::PATCH,
+                format!("/api/source-groups/{id}"),
+                json!({"name":"Renamed"}),
+            ),
+            (
+                Method::PATCH,
+                format!("/api/source-groups/{id}"),
+                json!({"order": 1}),
+            ),
+            (
+                Method::PUT,
+                "/api/source-groups/assign".to_string(),
+                json!({"sources":["api"],"group": id}),
+            ),
+            (
+                Method::PUT,
+                "/api/source-groups/assign".to_string(),
+                json!({"sources":["staging-api"],"group": null}),
+            ),
+            (
+                Method::DELETE,
+                format!("/api/source-groups/{id}"),
+                json!({}),
+            ),
+        ] {
+            let r = t.call(m.clone(), &path, Some(body), &member).await;
+            assert_eq!(r.status, StatusCode::FORBIDDEN, "{m} {path}: {}", r.text);
+            assert_eq!(r.body["code"], "owner_only");
+        }
+        // Nothing changed.
+        let g = t.st.pipeline.settings().custom_groups();
+        assert_eq!(g.groups.len(), 1);
+        assert_eq!(g.groups[0].name, "Legivent staging");
+        assert_eq!(g.group_for("staging-api").unwrap().id, id);
+        // Writes need the CSRF header like every settings write.
+        let no_csrf = Who {
+            csrf: None,
+            ..owner.clone()
+        };
+        let r = t
+            .call(
+                Method::DELETE,
+                &format!("/api/source-groups/{id}"),
+                None,
+                &no_csrf,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN);
+        let r = t
+            .call(
+                Method::DELETE,
+                &format!("/api/source-groups/{id}"),
+                None,
+                &owner,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    }
+
+    #[tokio::test]
     async fn auth_off_is_a_local_owner() {
         let st = AppState::new(
             Pipeline::new(Arc::new(MemoryStore::new(100)), Hub::new()),

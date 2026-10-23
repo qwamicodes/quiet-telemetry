@@ -1,7 +1,8 @@
 //! Instance settings changed from the UI, persisted in `quiet.db`.
 //!
 //! One table, `settings (k, v, updated, by)`, with a JSON value per key:
-//! `general`, `storage`, `flow_ids` and `source:<name>` (one per source with
+//! `general`, `storage`, `flow_ids`, `grouping`, `source_groups` (custom
+//! groups and manual assignments) and `source:<name>` (one per source with
 //! settings). Everything is read into memory at startup; writes go to SQLite
 //! first, then to memory, so a failed write changes nothing.
 //!
@@ -15,7 +16,10 @@
 //! the pipeline reads `paused` per batch, and the correlation-id policy is
 //! re-installed for `normalize` (see `idpolicy.rs`).
 
-use crate::grouping::{self, GroupMode, Grouping, DEFAULT_GROUP_LABEL};
+use crate::grouping::{
+    self, clean_group_name, CustomGroup, CustomGroups, GroupMode, Grouping, DEFAULT_GROUP_LABEL,
+    MAX_ASSIGNMENTS, MAX_CUSTOM_GROUPS,
+};
 use crate::idpolicy::{self, IdPolicy};
 use crate::normalize::{IdKey, Level};
 use rusqlite::{params, Connection};
@@ -335,6 +339,7 @@ struct State {
     general: GeneralSettings,
     storage: StorageOverride,
     grouping: Option<UpdateGrouping>,
+    custom_groups: CustomGroups,
     flow_ids: FlowIdSettings,
     sources: BTreeMap<String, SourceSettings>,
 }
@@ -411,6 +416,10 @@ impl Settings {
                     "general" => serde_json::from_str(&v).map(|x| state.general = x),
                     "storage" => serde_json::from_str(&v).map(|x| state.storage = x),
                     "grouping" => serde_json::from_str(&v).map(|x| state.grouping = Some(x)),
+                    "source_groups" => serde_json::from_str::<CustomGroups>(&v).map(|mut x| {
+                        x.normalize();
+                        state.custom_groups = x;
+                    }),
                     "flow_ids" => serde_json::from_str(&v).map(|x| state.flow_ids = x),
                     k => match k.strip_prefix("source:") {
                         Some(name) => serde_json::from_str(&v).map(|x| {
@@ -605,6 +614,11 @@ impl Settings {
         }
     }
 
+    /// Custom groups and manual assignments (any signed-in user reads them).
+    pub fn custom_groups(&self) -> CustomGroups {
+        self.state.read().unwrap().custom_groups.clone()
+    }
+
     /// The line-size cap and the non-JSON switch, read per ingest batch.
     pub fn ingest_rules(&self) -> (usize, bool) {
         let g = &self.state.read().unwrap().general;
@@ -739,6 +753,160 @@ impl Settings {
         self.state.write().unwrap().grouping = u;
         self.install_policy();
         Ok(self.grouping())
+    }
+
+    /// Change the custom groups with `f`, then normalize, save and keep.
+    /// Not affected by the QUIET_GROUP_BY lock (that locks the mode only).
+    fn edit_custom_groups<T>(
+        &self,
+        by: Option<i64>,
+        f: impl FnOnce(&mut CustomGroups) -> Result<T, SettingsError>,
+    ) -> Result<(T, CustomGroups), SettingsError> {
+        // One writer at a time: hold the db lock across read-modify-write.
+        let db = self.db.lock().unwrap();
+        let mut next = self.state.read().unwrap().custom_groups.clone();
+        let out = f(&mut next)?;
+        next.normalize();
+        let empty = next == CustomGroups::default();
+        if empty {
+            db.execute("DELETE FROM settings WHERE k = 'source_groups'", [])?;
+        } else {
+            db.execute(
+                "INSERT INTO settings (k, v, updated, by) VALUES ('source_groups', ?1, ?2, ?3)
+                 ON CONFLICT (k) DO UPDATE SET v = ?1, updated = ?2, by = ?3",
+                params![
+                    serde_json::to_string(&next)?,
+                    chrono::Utc::now().timestamp_millis(),
+                    by
+                ],
+            )?;
+        }
+        self.state.write().unwrap().custom_groups = next.clone();
+        Ok((out, next))
+    }
+
+    /// Sources → New group, optionally with the sources picked in the dialog
+    /// moved into it in the same write. Names are unique among custom groups
+    /// (case-insensitive); the new group goes last among custom groups.
+    pub fn create_group(
+        &self,
+        name: &str,
+        sources: &[String],
+        by: Option<i64>,
+    ) -> Result<CustomGroup, SettingsError> {
+        let name = clean_group_name(name).or_else(invalid)?;
+        check_sources(sources, 0)?;
+        let (g, _) = self.edit_custom_groups(by, |c| {
+            if c.groups.len() >= MAX_CUSTOM_GROUPS {
+                return invalid(format!("at most {MAX_CUSTOM_GROUPS} custom groups"));
+            }
+            if c.name_taken(&name, None) {
+                return invalid(format!("a group named “{name}” already exists"));
+            }
+            let id = loop {
+                let id = format!("g_{:08x}", rand::random::<u32>());
+                if c.get(&id).is_none() {
+                    break id;
+                }
+            };
+            let g = CustomGroup {
+                id,
+                name,
+                order: c.groups.len() as u32,
+            };
+            c.groups.push(g.clone());
+            for s in sources {
+                c.assigned.insert(s.clone(), g.id.clone());
+            }
+            if c.assigned.len() > MAX_ASSIGNMENTS {
+                return invalid(format!(
+                    "at most {MAX_ASSIGNMENTS} sources in custom groups"
+                ));
+            }
+            Ok(g)
+        })?;
+        Ok(g)
+    }
+
+    /// Rename a custom group and/or move it to position `order` (clamped).
+    /// `Ok(None)`: no such group.
+    pub fn update_group(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        order: Option<u32>,
+        by: Option<i64>,
+    ) -> Result<Option<CustomGroups>, SettingsError> {
+        let name = name.map(clean_group_name).transpose().or_else(invalid)?;
+        let (found, all) = self.edit_custom_groups(by, |c| {
+            let Some(at) = c.groups.iter().position(|g| g.id == id) else {
+                return Ok(false);
+            };
+            if let Some(n) = name {
+                if c.name_taken(&n, Some(id)) {
+                    return invalid(format!("a group named “{n}” already exists"));
+                }
+                c.groups[at].name = n;
+            }
+            if let Some(to) = order {
+                let g = c.groups.remove(at);
+                let to = (to as usize).min(c.groups.len());
+                c.groups.insert(to, g);
+            }
+            Ok(true)
+        })?;
+        Ok(found.then_some(all))
+    }
+
+    /// Delete a custom group: its sources go back to their automatic group.
+    /// `Ok(None)`: no such group.
+    pub fn delete_group(
+        &self,
+        id: &str,
+        by: Option<i64>,
+    ) -> Result<Option<CustomGroups>, SettingsError> {
+        let (found, all) = self.edit_custom_groups(by, |c| {
+            let before = c.groups.len();
+            c.groups.retain(|g| g.id != id);
+            // normalize() drops the assignments to it.
+            Ok(c.groups.len() != before)
+        })?;
+        Ok(found.then_some(all))
+    }
+
+    /// Move `sources` into custom group `group`, or back to automatic
+    /// grouping with `None`.
+    pub fn assign_sources(
+        &self,
+        sources: &[String],
+        group: Option<&str>,
+        by: Option<i64>,
+    ) -> Result<CustomGroups, SettingsError> {
+        check_sources(sources, 1)?;
+        let (_, all) = self.edit_custom_groups(by, |c| {
+            match group {
+                Some(id) => {
+                    if c.get(id).is_none() {
+                        return invalid(format!("no custom group {id:?}"));
+                    }
+                    for s in sources {
+                        c.assigned.insert(s.clone(), id.to_string());
+                    }
+                    if c.assigned.len() > MAX_ASSIGNMENTS {
+                        return invalid(format!(
+                            "at most {MAX_ASSIGNMENTS} sources in custom groups"
+                        ));
+                    }
+                }
+                None => {
+                    for s in sources {
+                        c.assigned.remove(s);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        Ok(all)
     }
 
     pub fn put_flow_ids(
@@ -878,6 +1046,18 @@ pub struct Masker {
     pub unmasked: Vec<PiiKind>,
 }
 
+/// Source names sent to the custom-group writes: at least `min`, at most
+/// 1000, each a valid source name.
+fn check_sources(sources: &[String], min: usize) -> Result<(), SettingsError> {
+    if sources.len() < min || sources.len() > 1000 {
+        return invalid(format!("sources: {min}–1000 source names"));
+    }
+    if let Some(bad) = sources.iter().find(|s| !crate::tokens_api::valid_source(s)) {
+        return invalid(format!("source: 1–128 characters ({bad:?})"));
+    }
+    Ok(())
+}
+
 /// At most this many custom id fields in one order.
 pub const MAX_CUSTOM_ID_KEYS: usize = 8;
 
@@ -989,6 +1169,139 @@ mod tests {
             (GroupMode::Label, "team", Origin::Flag, true)
         );
         assert!(s.put_grouping(None, None).is_err());
+    }
+
+    #[test]
+    fn custom_groups_create_rename_reorder_assign_delete_and_survive_restart() {
+        let path = tmp();
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        assert_eq!(s.custom_groups(), CustomGroups::default());
+        let names = |s: &Settings| {
+            s.custom_groups()
+                .groups
+                .iter()
+                .map(|g| (g.name.clone(), g.order))
+                .collect::<Vec<_>>()
+        };
+        let staging = s
+            .create_group(
+                "  Legivent staging ",
+                &["staging-api".into(), "staging-bot".into()],
+                Some(1),
+            )
+            .unwrap();
+        assert_eq!(
+            (staging.name.as_str(), staging.order),
+            ("Legivent staging", 0)
+        );
+        assert!(staging.id.starts_with("g_"));
+        let jobs = s.create_group("Jobs", &[], Some(1)).unwrap();
+        assert_eq!(jobs.order, 1);
+        // Names: trimmed, 1–48 characters, unique ignoring case.
+        assert!(s.create_group("legivent STAGING", &[], None).is_err());
+        assert!(s.create_group(" ", &[], None).is_err());
+        assert!(s.create_group(&"x".repeat(49), &[], None).is_err());
+        assert!(s.create_group("Bad", &["".into()], None).is_err());
+        assert_eq!(names(&s).len(), 2, "a refused create changes nothing");
+
+        // Rename keeps the id (and so the assignments); reorder moves it.
+        let all = s
+            .update_group(&jobs.id, Some("Workers"), Some(0), Some(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(all.groups[0].id, jobs.id);
+        assert_eq!(
+            names(&s),
+            [
+                ("Workers".to_string(), 0),
+                ("Legivent staging".to_string(), 1)
+            ]
+        );
+        assert!(s
+            .update_group(&jobs.id, Some("legivent staging"), None, None)
+            .is_err());
+        // Renaming to its own name in another case is fine.
+        assert!(s
+            .update_group(&jobs.id, Some("WORKERS"), None, None)
+            .is_ok());
+        assert!(s
+            .update_group("g_nope", Some("x"), None, None)
+            .unwrap()
+            .is_none());
+        // Past the end clamps to last.
+        s.update_group(&jobs.id, None, Some(99), None).unwrap();
+        assert_eq!(s.custom_groups().groups[1].id, jobs.id);
+
+        // Move a source; moving it again replaces the assignment; Automatic resets.
+        s.assign_sources(&["worker".into()], Some(&jobs.id), None)
+            .unwrap();
+        s.assign_sources(&["staging-bot".into()], Some(&jobs.id), None)
+            .unwrap();
+        let c = s.custom_groups();
+        assert_eq!(c.group_for("staging-bot").unwrap().id, jobs.id);
+        assert_eq!(c.members(&staging.id), 1);
+        s.assign_sources(&["staging-bot".into()], None, None)
+            .unwrap();
+        assert!(s.custom_groups().group_for("staging-bot").is_none());
+        assert!(s
+            .assign_sources(&["x".into()], Some("g_nope"), None)
+            .is_err());
+        assert!(s.assign_sources(&[], None, None).is_err());
+
+        assert_eq!(s.custom_groups().group_for("worker").unwrap().id, jobs.id);
+
+        drop(s);
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        let c = s.custom_groups();
+        assert_eq!(names(&s).len(), 2, "survives a restart");
+        assert_eq!(c.group_for("staging-api").unwrap().id, staging.id);
+
+        // Delete: the group goes, its sources go back to automatic; the rest
+        // keep their order.
+        assert!(s.delete_group(&staging.id, None).unwrap().is_some());
+        assert!(s.delete_group(&staging.id, None).unwrap().is_none());
+        let c = s.custom_groups();
+        assert!(c.group_for("staging-api").is_none());
+        assert!(c.assigned.is_empty());
+        assert_eq!(names(&s), [("WORKERS".to_string(), 0)]);
+        assert!(s.delete_group(&jobs.id, None).unwrap().is_some());
+        drop(s);
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        assert_eq!(s.custom_groups(), CustomGroups::default());
+    }
+
+    #[test]
+    fn env_locks_the_grouping_mode_but_not_custom_groups_and_off_keeps_them() {
+        let path = tmp();
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        let g = s.create_group("Edge", &["traefik".into()], None).unwrap();
+        // Off: the groups and assignments are kept.
+        s.put_grouping(
+            Some(UpdateGrouping {
+                mode: GroupMode::Off,
+                label: String::new(),
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.custom_groups().group_for("traefik").unwrap().id, g.id);
+        drop(s);
+        let env = Defaults {
+            group_by: Some(GroupMode::Auto),
+            ..Default::default()
+        };
+        let s = Settings::open(Some(&path), env, false).unwrap();
+        assert!(s.grouping().locked);
+        assert!(s.put_grouping(None, None).is_err(), "mode locked");
+        // Custom groups stay editable under the lock.
+        s.update_group(&g.id, Some("Edge proxies"), None, None)
+            .unwrap()
+            .unwrap();
+        s.create_group("More", &[], None).unwrap();
+        s.assign_sources(&["api".into()], Some(&g.id), None)
+            .unwrap();
+        assert_eq!(s.custom_groups().members(&g.id), 2);
+        assert!(s.delete_group(&g.id, None).unwrap().is_some());
     }
 
     #[test]

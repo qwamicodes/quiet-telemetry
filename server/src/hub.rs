@@ -70,6 +70,19 @@ pub struct SourceMeta {
     /// grouping is off). Filled in by [`Source::info`].
     pub group: Option<String>,
     pub group_kind: Option<GroupKind>,
+    /// The custom group (Sources → Move to group) it was moved into, when
+    /// `group_kind` is `manual`. Set by `/api/sources`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub group_id: Option<String>,
+    /// Where it sits without a custom group (what "Automatic" puts it back
+    /// to); sent only when it was moved into a custom group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auto_group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auto_group_kind: Option<GroupKind>,
     pub lines: u64,
     pub last_ts: Option<i64>,
 }
