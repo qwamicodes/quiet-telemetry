@@ -4,6 +4,20 @@ Technical choices made while building quiet, newest slice first. Each one
 stands unless Kwaame pushes back. The product-level log lives with the
 project notes; this file records what the code does and why.
 
+## Field card Diagram tab (2026-10-23)
+
+Approved by Kwaame 2026-10-23 (boards v0.1-04.8 … 04.14, 09.4), PNG export in the first cut.
+
+- **Custom layout, no graph library.** Cards sit in columns by depth (left → right) or bands (top → down), each centred on its parent row when free, else below the card above it; edges are square SVG elbows. A tree needs no general graph layout, so @xyflow/elkjs/dagre were not worth their weight. Pan/zoom is a CSS transform; the minimap is SVG.
+- **Lazy chunk.** `components/diagram/diagram-view.tsx` + `lib/diagram.ts` load on first use; the card only imports `lib/diagram-stats.ts` (thresholds + the "17 keys · 4 objects · depth 2 · 812 B" label).
+- **Thresholds are constants** in `lib/diagram-stats.ts`: depth 3, 5 array items, 200 keys / 32 KB. Keys count across every object (the boards disagree: 04.8 shows root keys, 04.11 the total).
+- **PNG export draws on a canvas** from the same layout and the theme's CSS variables (no html-to-image dependency). It draws what is open; masked values arrive masked from the server.
+- **Filter by value** uses `dotted.key:value` (the server walks dots); through an array (no index syntax in the search language) it searches the value as a phrase.
+- **Use as a flow id…** opens Settings → Flow id order with `?add=<dotted.key>` staged at the end, unsaved (owners save; members see a note).
+- **Esc** is handled in the capture phase while the diagram is open, so it closes the menu / search / full screen / the diagram before the flow's "back to stream".
+- **Remember collapsed branches** stores folded/opened paths per source in localStorage.
+- Not built: a separate flat logfmt diagram (parsed lines already have fields and get the normal diagram); plain-text lines keep Fields disabled as before (the 04.12 board shows guessed fields).
+
 ## v0.1 design parity (2026-10-22, PR #11)
 
 Choices made while matching the v0.1 boards (`docs/v01-parity.md` has the
