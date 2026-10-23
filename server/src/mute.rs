@@ -1,12 +1,15 @@
-//! Muted-lines matching (board 06.3), the server's copy of `web/src/lib/mute.ts`.
+//! Muted-lines matching (boards 06.13–06.25, 03.15–03.23), the server's copy
+//! of `web/src/lib/mute.ts`.
 //!
-//! The browser hides muted lines in the stream and search; the server only
-//! needs to agree with it when an export follows the search's muted state
-//! (`/api/export?muted=hide|auto`). Keep the two in step: same rule shapes,
-//! same case-insensitive `*` globs, same field lookup.
+//! The browser hides muted lines in the stream and search; the server agrees
+//! with it when an export follows the search's muted state
+//! (`/api/export?muted=hide|auto`) and when it counts what a rule hides
+//! (`/api/mute/stats`, `/api/mute/preview`). Keep the two in step: same rule
+//! shapes, same case-insensitive `*` globs, same field lookup, same route
+//! pick order.
 
 use crate::normalize::LogLine;
-use crate::settings::MuteRule;
+use crate::settings::{route_path, MuteRule, MuteShape};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
@@ -59,7 +62,7 @@ fn text_of(v: &Value) -> Option<String> {
 /// A field's value as text: `msg`/`message` fall back to the row summary,
 /// `level` and `source` come from the line, a key with dots in it is tried
 /// whole before as a path.
-fn field_text(line: &LogLine, path: &str) -> Option<String> {
+pub(crate) fn field_text(line: &LogLine, path: &str) -> Option<String> {
     let obj = line.fields.as_ref().and_then(Value::as_object);
     if (path == "msg" || path == "message") && obj.is_none_or(|o| !o.contains_key(path)) {
         return Some(line.msg.clone());
@@ -84,10 +87,71 @@ fn field_text(line: &LogLine, path: &str) -> Option<String> {
     text_of(v)
 }
 
+/// Where a line's route can be, in pick order (03.19).
+pub const ROUTE_KEYS: [&str; 5] = ["route", "path", "http.route", "req.url", "url"];
+/// Where a line's request method can be.
+pub const METHOD_KEYS: [&str; 5] = [
+    "method",
+    "http.method",
+    "req.method",
+    "request.method",
+    "http.request.method",
+];
+
+/// `*` matches within one path segment: both sides must have as many `/`,
+/// then each segment is a plain glob.
+fn glob_segments(pattern: &str, path: &str) -> bool {
+    if pattern.matches('/').count() != path.matches('/').count() {
+        return false;
+    }
+    pattern
+        .split('/')
+        .zip(path.split('/'))
+        .all(|(p, t)| glob(p, t))
+}
+
+/// The line's route as its first field in [`ROUTE_KEYS`] has it, reduced to
+/// the path (`?query`, `#hash`, scheme and host dropped), and that key.
+pub fn pick_route(line: &LogLine) -> Option<(&'static str, String)> {
+    ROUTE_KEYS.iter().find_map(|k| {
+        field_text(line, k)
+            .filter(|v| !v.is_empty())
+            .map(|v| (*k, route_path(&v)))
+    })
+}
+
+/// The line's request method, uppercased.
+pub fn method_of(line: &LogLine) -> Option<String> {
+    METHOD_KEYS
+        .iter()
+        .find_map(|k| field_text(line, k).filter(|v| !v.is_empty()))
+        .map(|m| m.to_ascii_uppercase())
+}
+
+fn route_matches(line: &LogLine, pattern: &str) -> bool {
+    ROUTE_KEYS.iter().any(|k| {
+        field_text(line, k).is_some_and(|v| glob_segments(pattern, &route_path(&v)))
+    })
+}
+
+/// Whether `line` matches `r` (enabled or not: callers pick the rules).
 pub fn matches(line: &LogLine, r: &MuteRule) -> bool {
-    match r.field.as_deref() {
-        Some(f) => field_text(line, f).is_some_and(|t| glob(&r.value, &t)),
-        None => line.raw.to_lowercase().contains(&r.value.to_lowercase()),
+    match r.shape {
+        MuteShape::Route => route_matches(line, &r.value),
+        MuteShape::MethodRoute => {
+            route_matches(line, &r.value)
+                && r.method.as_deref().is_some_and(|m| {
+                    method_of(line).is_some_and(|x| x.eq_ignore_ascii_case(m))
+                })
+        }
+        MuteShape::Message => {
+            field_text(line, r.field.as_deref().unwrap_or("msg")).is_some_and(|t| glob(&r.value, &t))
+        }
+        MuteShape::Field => match r.field.as_deref() {
+            Some(f) => field_text(line, f).is_some_and(|t| glob(&r.value, &t)),
+            None => line.raw.to_lowercase().contains(&r.value.to_lowercase()),
+        },
+        MuteShape::Text => line.raw.to_lowercase().contains(&r.value.to_lowercase()),
     }
 }
 
@@ -105,9 +169,15 @@ mod tests {
     }
 
     fn rule(field: Option<&str>, value: &str) -> MuteRule {
+        MuteRule::legacy(field, value)
+    }
+
+    fn shaped(shape: MuteShape, value: &str, method: Option<&str>) -> MuteRule {
         MuteRule {
-            field: field.map(String::from),
+            shape,
             value: value.into(),
+            method: method.map(String::from),
+            ..Default::default()
         }
     }
 
@@ -142,5 +212,52 @@ mod tests {
         assert!(matches(&plain, &rule(Some("msg"), "*heartbeat")));
         assert!(is_muted(&plain, &[rule(None, "nope"), rule(None, "HEART")]));
         assert!(!is_muted(&plain, &[]));
+    }
+
+    #[test]
+    fn routes_ignore_query_host_and_match_any_route_field() {
+        let l = line(r#"{"msg":"request completed","method":"get","path":"/api/v1/health?probe=1"}"#);
+        let r = shaped(MuteShape::Route, "/api/v1/health", None);
+        assert!(matches(&l, &r));
+        assert_eq!(pick_route(&l), Some(("path", "/api/v1/health".into())));
+        assert_eq!(method_of(&l).as_deref(), Some("GET"));
+        assert!(!matches(&line(r#"{"path":"/api/v1/healthz"}"#), &r));
+        // pino-http: req.url, full URL: host and scheme dropped.
+        let pino = line(r#"{"req":{"url":"https://x.io/api/v1/health#top","method":"HEAD"}}"#);
+        assert!(matches(&pino, &r));
+        assert_eq!(pick_route(&pino), Some(("req.url", "/api/v1/health".into())));
+        // route wins the pick, but any route field can match.
+        let both = line(r#"{"route":"/orders/:id","path":"/orders/7"}"#);
+        assert_eq!(pick_route(&both), Some(("route", "/orders/:id".into())));
+        assert!(matches(&both, &shaped(MuteShape::Route, "/orders/7", None)));
+        // `*` stays inside one segment.
+        let seg = shaped(MuteShape::Route, "/api/v1/orders/*", None);
+        assert!(matches(&line(r#"{"path":"/api/v1/orders/42"}"#), &seg));
+        assert!(!matches(&line(r#"{"path":"/api/v1/orders/42/items"}"#), &seg));
+        assert!(matches(
+            &line(r#"{"path":"/api/v1/healthz"}"#),
+            &shaped(MuteShape::Route, "/api/v1/health*", None)
+        ));
+        // No route field: never a route match.
+        assert!(!matches(&line("plain /api/v1/health"), &r));
+    }
+
+    #[test]
+    fn method_route_message_and_legacy_shapes() {
+        let get = line(r#"{"msg":"request completed","method":"GET","path":"/api/v1/ping"}"#);
+        let head = line(r#"{"msg":"request completed","method":"HEAD","path":"/api/v1/ping"}"#);
+        let r = shaped(MuteShape::MethodRoute, "/api/v1/ping", Some("get"));
+        assert!(matches(&get, &r));
+        assert!(!matches(&head, &r));
+        assert!(!matches(&line(r#"{"path":"/api/v1/ping"}"#), &r), "no method");
+        let m = shaped(MuteShape::Message, "Request completed", None);
+        assert!(matches(&get, &m) && matches(&head, &m));
+        assert!(!matches(&line(r#"{"msg":"request completed slowly"}"#), &m));
+        assert!(matches(&line("heartbeat ok"), &shaped(MuteShape::Message, "heartbeat ok", None)));
+        // Legacy rules read as before.
+        assert_eq!(rule(None, "x").shape, MuteShape::Text);
+        assert_eq!(rule(Some("msg"), "x").shape, MuteShape::Message);
+        assert_eq!(rule(Some("path"), "x").shape, MuteShape::Field);
+        assert!(!matches(&line(r#"{"path":"/api/v1/health?probe=1"}"#), &rule(Some("path"), "/api/v1/health")));
     }
 }

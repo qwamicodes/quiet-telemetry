@@ -13,6 +13,7 @@ mod hub;
 mod idpolicy;
 mod lint;
 mod mute;
+mod mute_api;
 mod normalize;
 mod pipe;
 mod pipeline;

@@ -89,6 +89,7 @@ async fn write<T: Send + 'static>(
     let settings = s.pipeline.settings().clone();
     let failed = |e: SettingsError| match e {
         SettingsError::Invalid(m) => bad(StatusCode::BAD_REQUEST, "invalid", &m),
+        SettingsError::NotFound(m) => bad(StatusCode::NOT_FOUND, "not_found", &m),
         SettingsError::Store(e) => {
             tracing::error!(error = %e, "custom group write failed");
             bad(
