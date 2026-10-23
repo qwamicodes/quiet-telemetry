@@ -2,6 +2,7 @@
 import type { FlowIdSettings } from "./FlowIdSettings";
 import type { GeneralSettings } from "./GeneralSettings";
 import type { GroupingSettings } from "./GroupingSettings";
+import type { MuteRule } from "./MuteRule";
 import type { MutedSearch } from "./MutedSearch";
 import type { SourceSettings } from "./SourceSettings";
 import type { StorageSettings } from "./StorageSettings";
@@ -9,4 +10,8 @@ import type { StorageSettings } from "./StorageSettings";
 /**
  * `GET /api/settings`: everything at once (any signed-in user).
  */
-export type SettingsResponse = { general: GeneralSettings, storage: StorageSettings, muted_search: MutedSearch, grouping: GroupingSettings, flow_ids: FlowIdSettings, sources: { [key in string]: SourceSettings }, };
+export type SettingsResponse = { general: GeneralSettings, storage: StorageSettings, muted_search: MutedSearch, grouping: GroupingSettings, flow_ids: FlowIdSettings, sources: { [key in string]: SourceSettings }, 
+/**
+ * Global muted-lines rules (Settings → Muted lines), every source.
+ */
+muted_global: Array<MuteRule>, };
