@@ -1262,7 +1262,8 @@ mod tests {
         assert!(s.delete_group(&staging.id, None).unwrap().is_none());
         let c = s.custom_groups();
         assert!(c.group_for("staging-api").is_none());
-        assert!(c.assigned.is_empty());
+        assert_eq!(c.assigned.len(), 1, "only the other group's source is left");
+        assert_eq!(c.group_for("worker").unwrap().id, jobs.id);
         assert_eq!(names(&s), [("WORKERS".to_string(), 0)]);
         assert!(s.delete_group(&jobs.id, None).unwrap().is_some());
         drop(s);
