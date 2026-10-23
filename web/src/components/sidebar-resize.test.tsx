@@ -121,24 +121,24 @@ describe('sidebar resize handle', () => {
   })
 })
 
-describe('⌘B', () => {
-  function Keys({ onB }: { onB: () => void }) {
-    useHotkeys({ 'mod+b': onB })
-    return (
-      <>
-        <input aria-label="plain" />
-        <div aria-label="rich" contentEditable suppressContentEditableWarning tabIndex={0} />
-      </>
-    )
-  }
+function Keys({ onB }: { onB: () => void }) {
+  useHotkeys({ 'mod+b': onB })
+  return (
+    <>
+      <input aria-label="plain" />
+      <p data-testid="rich" contentEditable suppressContentEditableWarning />
+    </>
+  )
+}
 
+describe('⌘B', () => {
   it('fires anywhere, also from a plain input, but leaves bold to a rich-text field', () => {
     let n = 0
     render(<Keys onB={() => n++} />)
     fireEvent.keyDown(document.body, { key: 'b', metaKey: true })
     fireEvent.keyDown(screen.getByLabelText('plain'), { key: 'b', ctrlKey: true })
     expect(n).toBe(2)
-    fireEvent.keyDown(screen.getByLabelText('rich'), { key: 'b', metaKey: true })
+    fireEvent.keyDown(screen.getByTestId('rich'), { key: 'b', metaKey: true })
     expect(n).toBe(2)
   })
 })
