@@ -1,5 +1,6 @@
 import { useNavigate } from '@tanstack/react-router'
 import {
+  BracesIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -27,6 +28,7 @@ import { kindLabel } from '@/lib/connect'
 import { copy, copyText } from '@/lib/copy'
 import { lineStats, STRUCTURED_ONLY, statsLabel } from '@/lib/diagram-stats'
 import { bytes, fmtTime } from '@/lib/format'
+import { expandJsonStrings, parsedRoot, textQuery } from '@/lib/json-string'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { cn } from '@/lib/utils'
 
@@ -121,6 +123,42 @@ function ValueCopy({ k, v }: { k: string; v: unknown }) {
     >
       <Value v={v} />
     </button>
+  )
+}
+
+/** Marks a value that was parsed out of a JSON string (and from which field). */
+function ParsedBadge({ root }: { root: string }) {
+  const tip = `Parsed from the JSON string in ${root}`
+  return (
+    <span
+      data-testid="parsed-badge"
+      role="img"
+      aria-label={tip}
+      title={tip}
+      className="relative z-10 mr-1 inline-flex translate-y-[2px] text-muted-foreground"
+    >
+      <BracesIcon className="size-3" />
+    </span>
+  )
+}
+
+/** "N string values parsed as JSON · Show as sent" (only when a value parsed). */
+function ParsedBar({ count, asSent, onToggle }: { count: number; asSent: boolean; onToggle: () => void }) {
+  return (
+    <div
+      data-testid="parsed-bar"
+      className="flex items-center gap-2 px-4 pb-2 font-mono text-[11px] text-muted-foreground"
+    >
+      <BracesIcon className="size-3 shrink-0" />
+      <span className="flex-1 truncate">
+        {asSent
+          ? `${count} ${count === 1 ? 'string holds' : 'strings hold'} JSON · shown as sent`
+          : `${count} string ${count === 1 ? 'value' : 'values'} parsed as JSON`}
+      </span>
+      <Button variant="ghost" size="xs" aria-pressed={asSent} onClick={onToggle}>
+        {asSent ? 'Parse JSON' : 'Show as sent'}
+      </Button>
+    </div>
   )
 }
 
@@ -278,13 +316,21 @@ export function FieldCard({
   }
   const [wrap, setWrap] = useState(true)
   const [picked, setPicked] = useState<string | null>(null)
+  // String values holding JSON show as structure unless the user asks for them as sent.
+  const [asSent, setAsSent] = useState(false)
+  const expanded = useMemo(() => (line.fields ? expandJsonStrings(line.fields) : null), [line.fields])
+  const parsedCount = expanded?.parsed.size ?? 0
+  const fields = expanded && !asSent ? expanded.fields : line.fields
+  const parsed = useMemo(() => (expanded && !asSent ? expanded.parsed : new Map<string, string>()), [expanded, asSent])
   const active: Tab = diagram !== 'off' ? 'diagram' : !line.fields && tab !== 'raw' ? 'raw' : tab
-  const json = line.fields ? JSON.stringify(line.fields, null, 2) : ''
+  const json = useMemo(() => (fields ? JSON.stringify(fields, null, 2) : ''), [fields])
   const bad = line.level === 'error' || line.level === 'fatal'
-  const groups = line.fields ? sections(line.fields) : []
+  const groups = useMemo(() => (fields ? sections(fields) : []), [fields])
   const count = groups.reduce((n, g) => n + g.rows.length, 0)
   const pickedValue = picked != null ? groups.flatMap((g) => g.rows).find(([k]) => k === picked)?.[1] : undefined
-  const stats = useMemo(() => (line.fields ? lineStats(line.fields, line.raw) : null), [line.fields, line.raw])
+  const pickedRoot = picked != null ? parsedRoot(picked, parsed) : undefined
+  const stats = useMemo(() => (fields ? lineStats(fields, line.raw) : null), [fields, line.raw])
+  const diagramLine = useMemo(() => ({ ...line, fields: fields ?? {} }), [line, fields])
   const full = diagram === 'full'
 
   // A new line resets the picked field.
@@ -294,7 +340,7 @@ export function FieldCard({
     setPicked(null)
   }
 
-  const copyJson = () => copy(line.fields ? json : JSON.stringify({ raw: line.raw }), 'line as JSON')
+  const copyJson = () => copy(fields ? json : JSON.stringify({ raw: line.raw }), 'line as JSON')
   useHotkeys(
     hotkeys && diagram === 'off'
       ? {
@@ -307,7 +353,10 @@ export function FieldCard({
   const filter = () => {
     if (picked == null) return
     const v = copyText(pickedValue)
-    navigate({ to: '/search', search: { q: `${picked}:${/\s/.test(v) ? `"${v}"` : v}` } })
+    // Search can't look inside a JSON string field, so a value parsed out of
+    // one searches the line's text for it instead.
+    const q = pickedRoot ? textQuery(pickedValue) : `${picked}:${/\s/.test(v) ? `"${v}"` : v}`
+    navigate({ to: '/search', search: { q } })
   }
 
   const tabs = (
@@ -364,6 +413,12 @@ export function FieldCard({
             </span>
             <span className="flex-1" />
             {tabs}
+            {parsedCount > 0 && (
+              <Button variant="ghost" size="sm" aria-pressed={asSent} onClick={() => setAsSent((a) => !a)}>
+                <BracesIcon />
+                {asSent ? 'Parse JSON strings' : 'JSON strings as sent'}
+              </Button>
+            )}
             <span className="mx-1 h-5 w-px bg-border" />
             {fullButton}
             {onClose && (
@@ -439,6 +494,9 @@ export function FieldCard({
                 </span>
               )}
             </div>
+            {parsedCount > 0 && active !== 'raw' && (
+              <ParsedBar count={parsedCount} asSent={asSent} onToggle={() => setAsSent((a) => !a)} />
+            )}
           </>
         )}
         <TabsContent value="fields" className="min-h-0 overflow-y-auto px-4 pb-4">
@@ -449,30 +507,34 @@ export function FieldCard({
                 <span>{g.rows.length}</span>
               </div>
               <fieldset aria-label={g.name} className="m-0 min-w-0 border-0 p-0">
-                {g.rows.map(([k, v]) => (
-                  <div
-                    key={k}
-                    className={cn(
-                      'relative grid w-full grid-cols-[minmax(0,2fr)_minmax(0,3fr)_32px] gap-3 border-border/60 border-b py-1.5 text-left hover:bg-row-hover',
-                      picked === k && 'bg-row-selected',
-                    )}
-                  >
-                    {/* The whole row picks the field (for "Filter by value"); the value copies. */}
-                    <button
-                      type="button"
-                      aria-label={k}
-                      aria-pressed={picked === k}
-                      title={k}
-                      onClick={() => setPicked(picked === k ? null : k)}
-                      className="absolute inset-0 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
-                    />
-                    <span className="truncate text-syntax-key">{k}</span>
-                    <span className="break-all">
-                      <ValueCopy k={k} v={v} />
-                    </span>
-                    <span className="text-right text-[11px] text-muted-foreground">{kind(v)}</span>
-                  </div>
-                ))}
+                {g.rows.map(([k, v]) => {
+                  const root = parsedRoot(k, parsed)
+                  return (
+                    <div
+                      key={k}
+                      className={cn(
+                        'relative grid w-full grid-cols-[minmax(0,2fr)_minmax(0,3fr)_32px] gap-3 border-border/60 border-b py-1.5 text-left hover:bg-row-hover',
+                        picked === k && 'bg-row-selected',
+                      )}
+                    >
+                      {/* The whole row picks the field (for "Filter by value"); the value copies. */}
+                      <button
+                        type="button"
+                        aria-label={k}
+                        aria-pressed={picked === k}
+                        title={k}
+                        onClick={() => setPicked(picked === k ? null : k)}
+                        className="absolute inset-0 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                      />
+                      <span className="truncate text-syntax-key">{k}</span>
+                      <span className="break-all">
+                        {root && <ParsedBadge root={root} />}
+                        <ValueCopy k={k} v={v} />
+                      </span>
+                      <span className="text-right text-[11px] text-muted-foreground">{kind(v)}</span>
+                    </div>
+                  )
+                })}
               </fieldset>
             </div>
           ))}
@@ -516,7 +578,7 @@ export function FieldCard({
           </dl>
         </TabsContent>
         <TabsContent value="diagram" className="flex min-h-0 flex-col">
-          {line.fields && active === 'diagram' && (
+          {fields && active === 'diagram' && (
             <Suspense
               fallback={
                 <div className="flex flex-1 flex-col gap-3 p-6" data-testid="diagram-loading">
@@ -526,7 +588,8 @@ export function FieldCard({
               }
             >
               <DiagramView
-                line={line as LogLine & { fields: Record<string, unknown> }}
+                line={diagramLine}
+                parsed={parsed}
                 full={full}
                 onFullChange={(f) => setDiagram(f ? 'full' : 'wide')}
                 onExit={() => setDiagram('off')}
@@ -566,9 +629,20 @@ export function FieldCard({
             </>
           ) : (
             <>
-              <Button variant="outline" disabled={picked == null} onClick={filter}>
+              <Button
+                variant="outline"
+                disabled={
+                  picked == null || (pickedRoot != null && pickedValue !== null && typeof pickedValue === 'object')
+                }
+                title={
+                  pickedRoot
+                    ? `Search can't look inside the JSON string in ${pickedRoot}; this searches the line text for the value`
+                    : undefined
+                }
+                onClick={filter}
+              >
                 <FilterIcon />
-                {picked ? `Filter by ${picked}` : 'Filter by value'}
+                {picked ? (pickedRoot ? `Search for ${picked}` : `Filter by ${picked}`) : 'Filter by value'}
               </Button>
               <Button variant="outline" onClick={copyJson}>
                 <CopyIcon />

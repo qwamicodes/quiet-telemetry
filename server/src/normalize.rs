@@ -346,9 +346,32 @@ fn collect_ids(map: &Map<String, Value>, depth: usize, out: &mut Vec<CorrId>) {
         return;
     }
     for v in map.values() {
-        if let Value::Object(child) = v {
-            collect_ids(child, depth + 1, out);
+        match v {
+            Value::Object(child) => collect_ids(child, depth + 1, out),
+            // A field holding a JSON object as a string (`"message":"{\"request_id\":…}"`).
+            Value::String(s) => {
+                if let Some(child) = json_in_string(s) {
+                    collect_ids(&child, depth + 1, out);
+                }
+            }
+            _ => {}
         }
+    }
+}
+
+/// Largest string looked into for a JSON object (ids only; the UI caps its own parse).
+const JSON_STRING_MAX: usize = 64 * 1024;
+
+/// A string field that holds a JSON object, parsed; `None` for anything else
+/// (plain text, arrays, primitives, invalid or oversized JSON).
+pub fn json_in_string(s: &str) -> Option<Map<String, Value>> {
+    let t = s.trim();
+    if t.len() > JSON_STRING_MAX || !t.starts_with('{') || !t.ends_with('}') {
+        return None;
+    }
+    match serde_json::from_str::<Value>(t).ok()? {
+        Value::Object(m) => Some(m),
+        _ => None,
     }
 }
 
@@ -367,19 +390,27 @@ pub fn id_value(map: &Map<String, Value>, key: &IdKey) -> Option<String> {
 /// A custom id field: the exact top-level key first (`x-request-id`,
 /// `ctx.trace` written flat), then the dotted path (`ctx` → `trace`).
 pub fn custom_id(map: &Map<String, Value>, name: &str) -> Option<String> {
-    let v = map.get(name).or_else(|| {
-        if !name.contains('.') {
-            return None;
+    let v = match map.get(name) {
+        Some(v) => v.clone(),
+        None => {
+            if !name.contains('.') {
+                return None;
+            }
+            let mut parts = name.split('.');
+            let mut cur = map.get(parts.next()?)?.clone();
+            for p in parts {
+                cur = match cur {
+                    Value::Object(mut m) => m.remove(p)?,
+                    // Step into a field that holds a JSON object as a string.
+                    Value::String(s) => json_in_string(&s)?.remove(p)?,
+                    _ => return None,
+                };
+            }
+            cur
         }
-        let mut parts = name.split('.');
-        let mut cur = map.get(parts.next()?)?;
-        for p in parts {
-            cur = cur.as_object()?.get(p)?;
-        }
-        Some(cur)
-    })?;
+    };
     match v {
-        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::String(s) if !s.is_empty() => Some(s),
         Value::Number(n) => Some(n.to_string()),
         _ => None,
     }
@@ -606,5 +637,56 @@ mod tests {
             parse_epoch(&serde_json::json!(1760000000123456789u64)),
             Some(1_760_000_000_123)
         );
+    }
+
+    #[test]
+    fn ids_inside_a_json_string_field() {
+        let raw = r#"{"msg":"worker done","payload":"{\"request_id\":\"r-77\",\"job\":{\"jobId\":\"j-9\"}}"}"#;
+        let l = normalize(raw, "api", None, NOW);
+        assert!(l
+            .ids
+            .iter()
+            .any(|i| i.key == IdKey::RequestId && i.value == "r-77"));
+        assert!(l
+            .ids
+            .iter()
+            .any(|i| i.key == IdKey::JobId && i.value == "j-9"));
+        // The field itself is stored as sent (a string), never rewritten.
+        assert!(l.fields.unwrap()["payload"].is_string());
+    }
+
+    #[test]
+    fn top_level_id_wins_over_one_inside_a_string() {
+        let raw = r#"{"request_id":"outer","body":"{\"request_id\":\"inner\"}"}"#;
+        let l = normalize(raw, "api", None, NOW);
+        assert_eq!(l.display_id.unwrap().value, "outer");
+    }
+
+    #[test]
+    fn json_in_string_only_takes_objects() {
+        assert!(json_in_string(r#" {"a":1} "#).is_some());
+        assert!(json_in_string("[1,2]").is_none());
+        assert!(json_in_string("{not json}").is_none());
+        assert!(json_in_string("plain text").is_none());
+        assert!(json_in_string(r#""{\"a\":1}""#).is_none());
+        let big = format!(r#"{{"a":"{}"}}"#, "x".repeat(JSON_STRING_MAX));
+        assert!(json_in_string(&big).is_none());
+    }
+
+    #[test]
+    fn custom_id_steps_into_a_json_string() {
+        let map = match serde_json::json!({
+            "ctx": "{\"trace\":\"t-1\",\"n\":5}",
+            "obj": {"inner": "{\"k\":\"v\"}"},
+            "flat.key": "f"
+        }) {
+            Value::Object(m) => m,
+            _ => unreachable!(),
+        };
+        assert_eq!(custom_id(&map, "ctx.trace").as_deref(), Some("t-1"));
+        assert_eq!(custom_id(&map, "ctx.n").as_deref(), Some("5"));
+        assert_eq!(custom_id(&map, "obj.inner.k").as_deref(), Some("v"));
+        assert_eq!(custom_id(&map, "flat.key").as_deref(), Some("f"));
+        assert_eq!(custom_id(&map, "ctx.missing"), None);
     }
 }

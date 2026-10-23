@@ -480,3 +480,23 @@ configurable because it ships as an update. Boards v0.1-06.7, 06.8, 03.8,
   than a compact select row; the Type column still shows the receiver
   (`docker`), not `swarm`.
 
+## JSON sent as a string (2026-10-23)
+
+- **Display only, never stored rewritten.** Lines are stored as sent; the UI
+  parses string values that, trimmed, start with `{`/`[` (or a double-encoded
+  `"…"` holding one) and yield an object or array (`web/src/lib/json-string.ts`).
+  Caps: 256 KB per string, depth 32, 200 strings per line, 4 levels of strings
+  inside strings; an LRU of 500 parses plus a WeakMap per fields object.
+- **Where.** Field card Fields / JSON / Diagram (one toggle, "Show as sent",
+  shared by the three tabs; Copy and Download .json follow what is shown), and
+  the stream row preview. Raw is untouched.
+- **Search can't see inside.** Server filters (`key:value`, SQL `json_extract`)
+  only reach real fields, so a value from inside a string filters as a text
+  search for the value (Fields: "Search for <key>"; Diagram: Filter / Exclude
+  value). Making `json_extract` step into string JSON was left out (needs
+  per-path `json()` nesting in SQL; not small).
+- **Ingest ids.** `collect_ids` and custom dotted id keys step into a string
+  field holding a JSON **object** (≤ 64 KB, arrays not looked into), so a
+  `message` carrying `{"request_id":…}` joins its flow. Top-level ids still
+  win the display id. Applies to lines ingested after the upgrade.
+

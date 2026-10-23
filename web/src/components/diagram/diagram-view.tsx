@@ -65,6 +65,7 @@ import {
   valueText,
 } from '@/lib/diagram'
 import { fmtSize, type LineStats, lineStats } from '@/lib/diagram-stats'
+import { insideParsed, textQuery } from '@/lib/json-string'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
@@ -184,6 +185,8 @@ export type DiagramViewProps = {
   onFullChange: (full: boolean) => void
   /** Esc (outside search and full screen): back to the 400px card. */
   onExit: () => void
+  /** Values that were JSON strings (ids as `.payload`), drawn as cards and marked. */
+  parsed?: ReadonlyMap<string, string>
 }
 
 /**
@@ -191,7 +194,7 @@ export type DiagramViewProps = {
  * dotted canvas with pan and zoom, row actions, search, folding, a minimap for
  * large lines, PNG export and per-browser settings.
  */
-export default function DiagramView({ line, full, onFullChange, onExit }: DiagramViewProps) {
+export default function DiagramView({ line, full, onFullChange, onExit, parsed }: DiagramViewProps) {
   const navigate = useNavigate()
   const fields = line.fields
   const stats: LineStats = useMemo(() => lineStats(fields, line.raw), [fields, line.raw])
@@ -389,8 +392,14 @@ export default function DiagramView({ line, full, onFullChange, onExit }: Diagra
   const leaf = (r: DRow) => r.kind !== 'obj' && r.kind !== 'arr' && !r.more
   const copyValue = (r: DRow) => copy(copyText(r.value ?? null), r.key || 'value')
   const copyPath = (r: DRow) => copy(displayPath(r.segs), 'path')
+  // Search can't look inside a JSON string field: values parsed out of one search the text.
   const filterBy = (r: DRow, exclude = false) =>
-    navigate({ to: '/search', search: { q: filterQuery(r.segs, r.value, exclude) } })
+    navigate({
+      to: '/search',
+      search: {
+        q: insideParsed(r.segs, parsed) ? textQuery(r.value, exclude) : filterQuery(r.segs, r.value, exclude),
+      },
+    })
   const highlightOf = (r: DRow) => copyText(r.value)
   const toggleHighlight = (r: DRow) => setHighlight((h) => (h === highlightOf(r) ? null : highlightOf(r)))
   const stageFlowId = (r: DRow) => navigate({ to: '/settings/flow-id-order', search: { add: dottedPath(r.segs) } })
@@ -591,6 +600,7 @@ export default function DiagramView({ line, full, onFullChange, onExit }: Diagra
               layout={layout}
               line={line}
               flowIds={flowIds}
+              parsed={parsed}
               dim={searchOn && !matchedNodes.has(n.id)}
               matches={matches}
               matchedRows={matchedRows}
@@ -810,6 +820,7 @@ function Card({
   layout,
   line,
   flowIds,
+  parsed,
   dim,
   matches,
   matchedRows,
@@ -830,6 +841,7 @@ function Card({
   layout: Layout
   line: LogLine
   flowIds: ReadonlySet<string>
+  parsed?: ReadonlyMap<string, string>
   dim: boolean
   matches: Match[]
   matchedRows: ReadonlySet<string>
@@ -869,6 +881,16 @@ function Card({
         style={{ height: LAYOUT.header }}
       >
         <span className="truncate">{n.title}</span>
+        {parsed?.has(n.id) && (
+          <span
+            data-testid="parsed-card"
+            title="Parsed from a JSON string"
+            className="shrink-0 border px-1 text-[10px] text-muted-foreground leading-4"
+          >
+            from string
+          </span>
+        )}
+        <span className="flex-1" />
         <span className="shrink-0 text-muted-foreground">{countLabel(n.kind, n.count)}</span>
       </header>
       {n.rows.map((r, i) => {
@@ -949,6 +971,14 @@ function Card({
             </button>
             {levelHint && <span className="ml-1.5 shrink-0 text-[11px] text-muted-foreground">{levelHint}</span>}
             {r.preview && <span className="ml-1.5 truncate text-[11px] text-muted-foreground">{r.preview}</span>}
+            {parsed?.has(r.id) && (
+              <span
+                title="Sent as a string holding JSON"
+                className="ml-2 shrink-0 border px-1 text-[10px] text-muted-foreground leading-4"
+              >
+                json str
+              </span>
+            )}
             {flowIds.has(r.id) && (
               <span className="ml-2 shrink-0 border border-brand/40 px-1 text-[10px] text-brand leading-4">
                 flow id
