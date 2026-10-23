@@ -242,7 +242,14 @@ export function About() {
         >
           GitHub <ExternalLinkIcon />
         </Button>
-        <span className="px-2 text-sm">License · MIT</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          nativeButton={false}
+          render={<a href={`${REPO_URL}/blob/main/LICENSE.md`} target="_blank" rel="noreferrer" />}
+        >
+          License · FSL-1.1-MIT <ExternalLinkIcon />
+        </Button>
         <Button variant="ghost" size="sm" onClick={copyDebug} disabled={!a}>
           <CopyIcon /> Copy debug info
         </Button>
