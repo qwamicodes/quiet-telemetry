@@ -73,6 +73,13 @@ export const searchSearch = z.object({
    * follows the setting (per source, else Settings → General, else hidden).
    */
   muted: z.enum(['include', 'hide']).optional().catch(undefined),
+  /**
+   * Histogram click: results re-anchored at this instant (unix ms). Newest
+   * first lists lines at or before it, oldest first at or after it; the
+   * histogram and the total still cover the whole range. Ignored when outside
+   * the range.
+   */
+  at: ms,
 })
 export type SearchSearch = z.infer<typeof searchSearch>
 

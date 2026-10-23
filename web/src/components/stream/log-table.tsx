@@ -20,6 +20,7 @@ import { STRUCTURED_ONLY } from '@/lib/diagram-stats'
 import { fmtDuration } from '@/lib/flow'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtRowTime } from '@/lib/format'
+import { inSpan, jumpIndex, nearestIndex, type Span } from '@/lib/histogram-jump'
 import { parseJsonString } from '@/lib/json-string'
 import { chip, lineDuration, previewFields, type RowParts, rowParts } from '@/lib/row'
 import { useDebounced } from '@/lib/use-debounced'
@@ -133,6 +134,7 @@ const LogRow = memo(function LogRow({
   summary,
   actions,
   wrap,
+  flash = false,
 }: {
   line: LogLine
   selected: boolean
@@ -140,6 +142,8 @@ const LogRow = memo(function LogRow({
   summary: FlowSummary | null | undefined
   actions: RowActions
   wrap: boolean
+  /** In the histogram minute just jumped to: briefly tinted. */
+  flash?: boolean
 }) {
   const bad = line.level === 'error' || line.level === 'fatal'
   const dur = lineDuration(line)
@@ -151,6 +155,7 @@ const LogRow = memo(function LogRow({
     <div
       data-line-id={line.id}
       aria-selected={selected}
+      data-flash={flash || undefined}
       role="row"
       tabIndex={-1}
       onClick={() => actions.onSelect(line)}
@@ -161,6 +166,7 @@ const LogRow = memo(function LogRow({
         wrap ? 'min-h-7 py-1' : 'h-7',
         bad && 'bg-row-error shadow-[inset_2px_0_0_var(--status-err)]',
         selected && 'bg-row-selected shadow-[inset_2px_0_0_var(--brand)]',
+        flash && !selected && 'bg-brand/10 shadow-[inset_2px_0_0_var(--brand)]',
         expanded && 'border-b-0',
       )}
     >
@@ -404,6 +410,8 @@ export function LogTable({
   direction = 'bottom',
   actions,
   onUnseen,
+  jump = null,
+  flash = null,
 }: {
   /** Oldest first, as the stream keeps them. */
   lines: LogLine[]
@@ -424,6 +432,13 @@ export function LogTable({
   actions: RowActions
   /** How many lines arrived since you stopped following, and how far up you are. */
   onUnseen?: (unseen: number, scrolledUp: number) => void
+  /**
+   * Histogram jump: put the first row of `span` (in display order) at the top.
+   * A new `n` asks again; it waits until a row of the span is here.
+   */
+  jump?: { span: Span; n: number } | null
+  /** Rows in this span are tinted (the minute just jumped to). */
+  flash?: Span | null
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const lastSeen = useRef(0)
@@ -444,6 +459,20 @@ export function LogTable({
     }
     if (follow) lastSeen.current = lines.length ? lines[lines.length - 1].id : 0
   }, [rows, lines, follow, top, v])
+
+  // Histogram jump (once per request): the minute's first row at the top. The
+  // scroll it causes must not read as "back at the live edge".
+  const jumped = useRef(0)
+  const quietUntil = useRef(0)
+  useLayoutEffect(() => {
+    if (!jump || jumped.current === jump.n || follow) return
+    let i = jumpIndex(rows, jump.span)
+    if (i < 0) i = nearestIndex(rows, jump.span)
+    if (i < 0) return
+    jumped.current = jump.n
+    quietUntil.current = Date.now() + 400
+    v.scrollToIndex(i, { align: 'start' })
+  }, [jump, rows, follow, v])
 
   // Keep the keyboard selection on screen.
   useEffect(() => {
@@ -468,7 +497,7 @@ export function LogTable({
 
   const onScroll = () => {
     const el = ref.current
-    if (!el) return
+    if (!el || Date.now() < quietUntil.current) return
     const atEdge = top ? el.scrollTop < ROW * 2 : el.scrollHeight - el.scrollTop - el.clientHeight < ROW * 2
     if (atEdge !== follow) onFollow(atEdge)
   }
@@ -528,6 +557,7 @@ export function LogTable({
                   summary={summary}
                   actions={actions}
                   wrap={wrap}
+                  flash={flash != null && inSpan(l.ts, flash)}
                 />
                 {l.id === expandedId && <RowPreview line={l} summary={summary} actions={actions} />}
               </div>

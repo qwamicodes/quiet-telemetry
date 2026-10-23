@@ -500,3 +500,25 @@ configurable because it ships as an update. Boards v0.1-06.7, 06.8, 03.8,
   `message` carrying `{"request_id":…}` joins its flow. Top-level ids still
   win the display id. Applies to lines ingested after the upgrade.
 
+## Histogram click → jump (2026-10-23)
+
+- **Stream.** A bar is a button only when it has lines for the levels on.
+  Clicking pauses (the existing `follow = false` state), then: if the buffer's
+  oldest line is older than the minute, scroll there; otherwise fetch
+  `/api/search?source&levels&q&since=<minute>&until=<oldest buffered>&order=oldest&limit=1000`
+  and show those lines above the buffer (deduped by id) until the stream goes
+  back to live. No server change: search already takes the stream's filters.
+  If the gap is wider than one 1000-line page, the footer says so; the rows in
+  between are not loaded (scroll on Search for those).
+- **Scroll target.** The first row of the minute in display order goes to the
+  top (newest-at-bottom: its first line; newest-on-top: its newest line). If
+  every line of the minute is hidden client-side (muted), the nearest row.
+  The programmatic scroll is ignored for 400 ms so it never reads as "back at
+  the live edge".
+- **Search.** A bar overlapping the loaded results scrolls there; otherwise the
+  page is re-anchored with `at=` (unix ms): newest first `until = at` (the
+  bar's last ms), oldest first `since = at` (the bar's start). The histogram,
+  total and searched/took come from a separate one-line overview query over
+  the whole range while `at` is set; "now" stays pinned so the histogram does
+  not move. Changing query, source, range or order clears `at`; an `at`
+  outside the range is ignored.

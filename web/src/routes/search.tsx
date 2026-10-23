@@ -15,9 +15,10 @@ import type { MutedMode, SearchParams } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, fmtCount, fmtWindow } from '@/lib/format'
+import { anchoredBounds, anchorFor, barAt, barWidth, loadedSpan, type Span } from '@/lib/histogram-jump'
 import { useSearchMuted } from '@/lib/mute'
 import { displayIds, groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
-import { useSearchLines } from '@/lib/search-api'
+import { useSearchLines, useSearchOverview } from '@/lib/search-api'
 import { searchBounds } from '@/lib/search-params'
 import { useSimilarValues } from '@/lib/similar'
 import { useHotkeys } from '@/lib/use-hotkeys'
@@ -43,7 +44,7 @@ export function SearchPage() {
     setShownQ(q)
     setText(splitQuery(q).text)
   }
-  const setQ = (next: string) => navigate({ search: (s) => ({ ...s, q: next || undefined }) })
+  const setQ = (next: string) => navigate({ search: (s) => ({ ...s, q: next || undefined, at: undefined }) })
   const submit = () => setQ(joinQuery(chips, text))
   const addChip = (c: string) => setQ(joinQuery([...chips.filter((x) => x !== c), c], text))
   const removeChip = (c: string) =>
@@ -54,16 +55,33 @@ export function SearchPage() {
       ),
     )
 
-  // "Now" is pinned per search so the query key (and the page cursor) stay stable.
-  const bounds = useMemo(() => searchBounds(search), [search])
-  const params: SearchParams = {
+  // "Now" is pinned per search so the query key (and the page cursor) stay
+  // stable; re-anchoring at a histogram bar (`at`) keeps it.
+  const pinKey = JSON.stringify([search.range, search.from, search.to, q, search.source, search.order, search.view])
+  const [pinned, setPinned] = useState(() => ({ key: pinKey, now: Date.now() }))
+  let now = pinned.now
+  if (pinned.key !== pinKey) {
+    now = Date.now()
+    setPinned({ key: pinKey, now })
+  }
+  const bounds = useMemo(
+    () => searchBounds({ range: search.range, from: search.from, to: search.to }, now),
+    [search.range, search.from, search.to, now],
+  )
+  const whole: SearchParams = {
     q: q || undefined,
     source: search.source,
     since: bounds.since,
     until: bounds.until,
     order: search.order,
   }
+  // A histogram click outside the loaded results re-anchors them at that time.
+  const anchored = anchoredBounds(bounds, search.at, search.order)
+  const at = anchored === bounds ? undefined : search.at
+  const params: SearchParams = { ...whole, since: anchored.since, until: anchored.until }
   const res = useSearchLines(params)
+  // The whole range's total and histogram while re-anchored.
+  const overview = useSearchOverview(whole, at != null)
   // Results of the previous query, shown dimmed while this one is in flight.
   const refreshing = res.isPlaceholderData
   // Nothing settled for this query yet: skeletons (also when the previous
@@ -84,7 +102,39 @@ export function SearchPage() {
   const summaries = useFlowSummaries(ids)
   const flows = useMemo(() => groupByFlow(lines, summaries).length, [lines, summaries])
   const words = useMemo(() => terms(q), [q])
-  const total = first?.total ?? lines.length
+  const head = at != null ? overview.data : first
+  const total = (at != null ? head?.total : first?.total) ?? lines.length
+
+  // Histogram click → that time in the results (loaded already: scroll; else
+  // re-anchor the page there with `at=`, which keeps it linkable).
+  const [jump, setJump] = useState<{ span: Span; n: number; bar: number; key: string } | null>(null)
+  const [flash, setFlash] = useState<Span | null>(null)
+  const jumpKey = JSON.stringify([pinKey, search.muted])
+  const curJump = jump && jump.key === jumpKey ? jump : null
+  const onJump = (span: Span, bar: number) => {
+    const n = (jump?.n ?? 0) + 1
+    setJump({ span, n, bar, key: jumpKey })
+    setFlash(span)
+    const covered = loadedSpan({
+      lines: found,
+      since: anchored.since,
+      until: anchored.until,
+      order: search.order,
+      hasMore: Boolean(res.hasNextPage),
+    })
+    const loaded = !refreshing && span.from < covered.to && span.to > covered.from
+    if (!loaded) navigate({ search: (s) => ({ ...s, at: anchorFor(span, search.order) }) })
+  }
+  const settledJump = !loading && !refreshing
+  useEffect(() => {
+    if (!flash || !settledJump) return
+    const t = setTimeout(() => setFlash(null), 1600)
+    return () => clearTimeout(t)
+  }, [flash, settledJump])
+  const histogram = head?.histogram ?? null
+  const selectedBar = histogram
+    ? (curJump?.bar ?? barAt(histogram, at, barWidth(histogram, head?.since ?? 0, head?.until ?? 0)))
+    : -1
 
   useHotkeys({ '/': () => inputRef.current?.focus() })
   useEffect(() => {
@@ -108,7 +158,9 @@ export function SearchPage() {
       <div className="flex items-center gap-2">
         <Select
           value={search.source ?? ALL}
-          onValueChange={(v) => navigate({ search: (s) => ({ ...s, source: v === ALL ? undefined : String(v) }) })}
+          onValueChange={(v) =>
+            navigate({ search: (s) => ({ ...s, source: v === ALL ? undefined : String(v), at: undefined }) })
+          }
         >
           <SelectTrigger aria-label="Source" className="h-9 w-44">
             <SelectValue>{(v: string) => (v === ALL ? 'All sources' : v)}</SelectValue>
@@ -135,8 +187,10 @@ export function SearchPage() {
           from={search.from}
           to={search.to}
           retentionMs={retentionMs}
-          onRange={(range) => navigate({ search: (s) => ({ ...s, range, from: undefined, to: undefined }) })}
-          onCustom={(from, to) => navigate({ search: (s) => ({ ...s, from, to }) })}
+          onRange={(range) =>
+            navigate({ search: (s) => ({ ...s, range, from: undefined, to: undefined, at: undefined }) })
+          }
+          onCustom={(from, to) => navigate({ search: (s) => ({ ...s, from, to, at: undefined }) })}
           q={q}
           source={search.source}
         />
@@ -162,10 +216,24 @@ export function SearchPage() {
               aria-label="Updating results"
             />
           )}
-          {first &&
+          {head &&
             !refreshing &&
-            ` · ${fmtClock(first.since)}–${fmtClock(first.until)} · searched ${fmtCount(first.searched)} lines in ${first.took_ms}ms`}
+            ` · ${fmtClock(head.since)}–${fmtClock(head.until)} · searched ${fmtCount(head.searched)} lines in ${head.took_ms}ms`}
         </p>
+        {at != null && (
+          <span className="flex items-center gap-1.5 border border-brand/40 px-1.5 py-0.5 font-mono text-xs">
+            {search.order === 'newest' ? `from ${fmtClock(at)} back` : `from ${fmtClock(at)} on`}
+            <button
+              type="button"
+              aria-label="Show results from the whole range"
+              title="Show results from the whole range"
+              onClick={() => navigate({ search: (s) => ({ ...s, at: undefined }) })}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <XIcon className="size-3" />
+            </button>
+          </span>
+        )}
         <span className="flex-1" />
         <ToggleGroup
           aria-label="View"
@@ -181,7 +249,9 @@ export function SearchPage() {
         </ToggleGroup>
         <Select
           value={search.order}
-          onValueChange={(v) => navigate({ search: (s) => ({ ...s, order: v as 'newest' | 'oldest' }), replace: true })}
+          onValueChange={(v) =>
+            navigate({ search: (s) => ({ ...s, order: v as 'newest' | 'oldest', at: undefined }), replace: true })
+          }
         >
           <SelectTrigger aria-label="Order" size="sm" className="w-36">
             <SelectValue>{(v: string) => (v === 'oldest' ? 'Oldest first' : 'Newest first')}</SelectValue>
@@ -197,9 +267,9 @@ export function SearchPage() {
         </Button>
       </div>
 
-      {first?.histogram && total > 0 && (
-        <div className={cn('transition-opacity', refreshing && 'opacity-55')}>
-          <Histogram buckets={first.histogram} since={first.since} until={first.until} />
+      {head && histogram && total > 0 && (
+        <div className={cn('transition-opacity', refreshing && at == null && 'opacity-55')}>
+          <Histogram buckets={histogram} since={head.since} until={head.until} selected={selectedBar} onJump={onJump} />
         </div>
       )}
 
@@ -231,7 +301,14 @@ export function SearchPage() {
                 size="sm"
                 onClick={() =>
                   navigate({
-                    search: (s) => ({ ...s, range: '24h', from: undefined, to: undefined, source: undefined }),
+                    search: (s) => ({
+                      ...s,
+                      range: '24h',
+                      from: undefined,
+                      to: undefined,
+                      source: undefined,
+                      at: undefined,
+                    }),
                   })
                 }
               >
@@ -280,6 +357,8 @@ export function SearchPage() {
             summaries={summaries}
             mutedIds={mutedIds}
             refreshing={refreshing}
+            jump={curJump}
+            flash={flash}
           />
         </>
       )}
