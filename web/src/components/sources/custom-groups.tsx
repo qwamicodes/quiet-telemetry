@@ -308,16 +308,21 @@ function NewGroupForm({
           </span>
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2" data-testid="new-group-footer">
-          <span className="flex items-center gap-1.5 whitespace-nowrap font-mono text-[11px] text-muted-foreground">
-            <UsersIcon className="size-3.5 shrink-0" /> Visible to everyone · owners can edit
-          </span>
+          {/* Board 06.10 names who can edit here; v0.1 has owners and members only, and everyone sees groups. */}
           <span
-            className="whitespace-nowrap font-mono text-[11px] text-muted-foreground sm:ml-auto"
-            data-testid="picked-count"
+            className="flex items-center gap-1.5 whitespace-nowrap font-mono text-[11px] text-muted-foreground"
+            title="Visible to everyone · owners can edit"
+            data-testid="new-group-access"
           >
-            {picked.size} selected
+            <UsersIcon className="size-3.5 shrink-0" /> owners can edit
           </span>
           <div className="ml-auto flex shrink-0 items-center gap-2">
+            <span
+              className="mr-1 whitespace-nowrap font-mono text-[11px] text-muted-foreground"
+              data-testid="picked-count"
+            >
+              {picked.size} selected
+            </span>
             <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
             </Button>
