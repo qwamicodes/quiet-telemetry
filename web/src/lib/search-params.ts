@@ -26,8 +26,15 @@ export type StreamSearch = z.infer<typeof streamSearch>
 /** `/flow/$id` and `/line/$lineId` — `line` is the step whose field card is open. */
 export const flowSearch = z.object({
   line: z.coerce.number().int().positive().optional().catch(undefined),
+  /** `card=diagram`: open the selected line's card on its Diagram tab, wide (Stream preview → Diagram, `D`). */
+  card: z.enum(['diagram']).optional().catch(undefined),
 })
 export type FlowSearch = z.infer<typeof flowSearch>
+
+/** Settings → Flow id order: `?add=wideEvents.checkout_session_id` (Diagram → "Use as a flow id…") stages a key. */
+export const flowIdOrderSearch = z.object({
+  add: z.string().trim().min(1).max(64).optional().catch(undefined),
+})
 
 /**
  * Path params. A broken link (empty or absurd id, a line id that isn't a

@@ -715,8 +715,44 @@ function CanonicalTab() {
           incidental lines to a minimum: four lines with no ids and no timing become one line quiet can draw as a flow.
           Don't log a provider payload and flattened copies of it; no emails, phones, names, tokens or card data.
         </section>
+        <DiagramHelp />
       </div>
     </div>
+  )
+}
+
+/** How to read a nested line: the field card's Diagram tab (boards 04.8 … 04.14). */
+function DiagramHelp() {
+  return (
+    <section
+      className="flex flex-col gap-2 border bg-card p-4 text-xs leading-relaxed"
+      aria-label="Read a line as a diagram"
+    >
+      <Caps>Read a line as a diagram</Caps>
+      <p className="text-muted-foreground">
+        Nested lines (wideEvents, errors, provider responses) read best as a diagram: open any line's card and pick{' '}
+        <span className="text-foreground">Diagram</span> (Fields · JSON · Raw · Diagram), or press <Kbd>D</Kbd> on a
+        previewed stream row. Each object is a card of <span className="font-mono">key: value</span> rows, children to
+        the right; the card grows over the flow and <Kbd>Esc</Kbd> shrinks it back.
+      </p>
+      <ul className="flex flex-col gap-1 text-muted-foreground">
+        <li>
+          Click a value to copy it; right-click a row for Copy path, Filter / Exclude value, Highlight this value and
+          Use as a flow id….
+        </li>
+        <li>
+          <Kbd>/</Kbd> searches keys and values and opens folded branches with a match; <Kbd>0</Kbd> fits, <Kbd>+</Kbd>{' '}
+          <Kbd>−</Kbd> zoom, drag or scroll to pan.
+        </li>
+        <li>
+          Big lines stay readable: past depth 3 branches start collapsed, arrays show 5 items, and over ~200 keys or 32
+          KB a notice offers Expand all and a minimap. Nothing is dropped: Raw and JSON hold the whole line.
+        </li>
+        <li>
+          Export image saves a PNG of what is drawn (masked fields stay masked). Plain-text lines have no diagram.
+        </li>
+      </ul>
+    </section>
   )
 }
 

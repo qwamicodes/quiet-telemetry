@@ -230,6 +230,8 @@ A flow is every line that shares a correlation id (`request_id`, `job_id`, `trac
 
 Traces: lines with OTLP span ids (spans sent to `/v1/traces`, or any line with `span_id` + `parent_span_id`) form a span tree inside their flow (they stitch by `trace_id`). Each span sits under its parent span (indented, with an "in <parent>" edge), and log records carrying a `span_id` sit under that span. Span events become child steps. The flow header says "span tree".
 
+Diagram: the field card's 4th tab draws the line as cards (one per object / array) with edges from parent rows, on a pan/zoom canvas; it widens over the flow column, `Esc` shrinks it back, Full screen hides the sidebar. `?card=diagram` on a flow URL opens it (Stream preview → **Diagram**, `D`). Thresholds: past depth 3 starts collapsed, arrays show 5 items, ~200 keys / 32 KB = large line (notice, minimap, Expand all). Settings (direction, depth, array cap, wrap, remember collapsed branches) live in this browser's localStorage; Export image draws a PNG client-side from the same layout.
+
 UI: `/flow/<id>?line=<line id>` (the step whose card is open) and `/line/<line id>`. `j`/`k` move between steps. The stream's **Steps** column and search's **Group by flow** use `/api/flow-summaries`, so a request and its job's retry lines land in one group ("2 of 5 lines match · 6 steps").
 
 ## Search

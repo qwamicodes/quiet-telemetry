@@ -15,6 +15,7 @@ import { ServerUnreachable } from '@/components/server-unreachable'
 import { authQuery, inviteParams, resetParams, signInSearch } from '@/lib/auth-api'
 import { connectSearch } from '@/lib/connect'
 import {
+  flowIdOrderSearch,
   flowParams,
   flowSearch,
   guideSearch,
@@ -200,6 +201,7 @@ const settingsStorageRoute = createRoute({
 const settingsFlowIdsRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/flow-id-order',
+  validateSearch: flowIdOrderSearch,
   component: SettingsFlowIds,
 })
 const settingsAboutRoute = createRoute({

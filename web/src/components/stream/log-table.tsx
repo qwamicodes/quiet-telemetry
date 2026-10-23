@@ -7,13 +7,16 @@ import {
   FilterIcon,
   GitForkIcon,
   LoaderCircleIcon,
+  WaypointsIcon,
 } from 'lucide-react'
 import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { FlowSummary, LogLine } from '@/gen'
+import { STRUCTURED_ONLY } from '@/lib/diagram-stats'
 import { fmtDuration } from '@/lib/flow'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtRowTime } from '@/lib/format'
@@ -66,6 +69,8 @@ export function StepSquares({ summary }: { summary: FlowSummary | null | undefin
 export interface RowActions {
   onSelect: (l: LogLine) => void
   onOpenFlow: (l: LogLine) => void
+  /** The line's card on its Diagram tab, wide (04.14, `D`). */
+  onOpenDiagram: (l: LogLine) => void
   onCopy: (l: LogLine) => void
   /** Add a `key:value` chip to the stream filter. */
   onFilter: (chip: string) => void
@@ -295,6 +300,28 @@ export function RowPreview({
           Open flow
           <CornerDownLeftIcon className="opacity-60" />
         </Button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span className="inline-flex">
+                <Button size="xs" variant="outline" disabled={!line.fields} onClick={() => actions.onOpenDiagram(line)}>
+                  <WaypointsIcon />
+                  Diagram
+                  <Kbd className="h-4 min-w-4 text-[10px]">D</Kbd>
+                </Button>
+              </span>
+            }
+          />
+          <TooltipContent>
+            {line.fields ? (
+              <>
+                Open this line as a diagram, wide <Kbd>D</Kbd>
+              </>
+            ) : (
+              STRUCTURED_ONLY
+            )}
+          </TooltipContent>
+        </Tooltip>
         <Button size="xs" variant="outline" onClick={() => actions.onCopy(line)}>
           <CopyIcon />
           Copy JSON

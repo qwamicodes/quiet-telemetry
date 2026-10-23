@@ -1,4 +1,4 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useSearch } from '@tanstack/react-router'
 import { ArrowDownIcon, ArrowUpIcon, GripVerticalIcon, PlusIcon, XIcon } from 'lucide-react'
 import { type FormEvent, type KeyboardEvent, useState } from 'react'
 import { Caps, PageHeader, ReadOnlyNote, SettingRow } from '@/components/settings/kit'
@@ -230,26 +230,44 @@ export function IdOrderEditor({
 /** Settings → Flow id order (board v0.1-07.8): instance order, match by key or value, per-source overrides. */
 export function FlowIdOrder() {
   const settings = useSettings().data
+  const { add } = useSearch({ strict: false }) as { add?: string }
   if (!settings) return <p className="text-muted-foreground">Loading…</p>
   return (
     <FlowIdForm
       key={JSON.stringify(settings.flow_ids)}
       saved={settings.flow_ids}
       overrides={Object.entries(settings.sources).filter(([, s]) => s.id_keys != null)}
+      add={add}
     />
   )
+}
+
+/** Why a key from the diagram (`?add=`) could not be staged, or null when it was. */
+export function stageProblem(order: IdKey[], key: string): string | null {
+  if (order.includes(key)) return `${key} is already in the order`
+  if (isBuiltinIdKey(key)) return null
+  if (!validCustomIdKey(key)) return `${key} can't be an id field: use letters, digits and . _ - : @`
+  if (order.filter((k) => !isBuiltinIdKey(k)).length >= MAX_CUSTOM_ID_KEYS)
+    return `At most ${MAX_CUSTOM_ID_KEYS} custom id fields`
+  return null
 }
 
 function FlowIdForm({
   saved,
   overrides,
+  add,
 }: {
   saved: FlowIdSettings
   overrides: [string, { id_keys: IdKey[] | null; display_name: string | null }][]
+  /** A key picked in the Diagram ("Use as a flow id…"): staged at the end of the order, unsaved. */
+  add?: string
 }) {
   const owner = isOwner(useMe())
   const save = useSaveFlowIds()
-  const [draft, setDraft] = useState(saved)
+  const problem = add ? stageProblem(saved.order, add) : null
+  const [draft, setDraft] = useState(() =>
+    add && !problem && owner ? { ...saved, order: [...saved.order, add] } : saved,
+  )
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
   const first = draft.order[0]
   const second = draft.order[1]
@@ -277,6 +295,15 @@ function FlowIdForm({
         sub="quiet opens a line's flow using the first of these ids it finds. Drag to reorder. Keys you remove stop counting as correlation ids."
       />
       {!owner && <ReadOnlyNote />}
+      {add && (
+        <p data-testid="staged-id-key" className="border border-brand/40 bg-row-selected px-3 py-2 font-mono text-xs">
+          {problem
+            ? problem
+            : owner
+              ? `${add} from the diagram is added at the end. Move it up to make it win, then Save changes.`
+              : `${add} from the diagram: ask an owner to add it here.`}
+        </p>
+      )}
       <IdOrderEditor
         value={draft.order}
         onChange={(order) => setDraft({ ...draft, order })}

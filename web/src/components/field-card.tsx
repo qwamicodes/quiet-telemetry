@@ -7,24 +7,37 @@ import {
   FilterIcon,
   GitForkIcon,
   ListIcon,
+  MaximizeIcon,
+  MinimizeIcon,
+  WaypointsIcon,
   WrapTextIcon,
   XIcon,
 } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { lazy, type ReactNode, Suspense, useMemo, useState } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { LogLine } from '@/gen'
 import { useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
+import { copy, copyText } from '@/lib/copy'
+import { lineStats, STRUCTURED_ONLY, statsLabel } from '@/lib/diagram-stats'
 import { bytes, fmtTime } from '@/lib/format'
-import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { cn } from '@/lib/utils'
 
-type Tab = 'fields' | 'json' | 'raw'
+export { copyText }
+
+type Tab = 'fields' | 'json' | 'raw' | 'diagram'
+/** The Diagram tab's size: off (another tab), wide over the flow column, or full screen. */
+export type DiagramMode = 'off' | 'wide' | 'full'
+
+/** The Diagram tab is its own chunk: it loads the first time a line is opened as a diagram. */
+const DiagramView = lazy(() => import('@/components/diagram/diagram-view'))
 
 /** Flatten nested objects to dotted keys (3 levels), keeping arrays and deeper objects as JSON. */
 export function flatten(obj: Record<string, unknown>, prefix = '', depth = 0, out: [string, unknown][] = []) {
@@ -92,18 +105,6 @@ function Value({ v }: { v: unknown }) {
   if (typeof v === 'string') return <span className="text-syntax-string">{v}</span>
   return <span className="text-muted-foreground">{JSON.stringify(v)}</span>
 }
-
-async function copy(text: string, what: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-    toast.success(`Copied ${what}`)
-  } catch {
-    toast.error('Clipboard is not available here')
-  }
-}
-
-/** The text a value copies as: strings unquoted, the rest as JSON (`42`, `true`, `null`, `{…}`). */
-export const copyText = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v))
 
 /** A Fields-tab value: underlined on hover, click (or Enter/Space) copies the full value. */
 function ValueCopy({ k, v }: { k: string; v: unknown }) {
@@ -206,9 +207,29 @@ function levelNote(l: LogLine): string {
   return l.level && v != null && String(v) !== l.level ? ` · level ${String(v)} → ${l.level}` : ''
 }
 
+/** A tab that is off on plain-text lines keeps its place, with a tooltip saying why (04.12). */
+function GatedTab({ value, enabled, children }: { value: Tab; enabled: boolean; children: ReactNode }) {
+  if (enabled) return <TabsTrigger value={value}>{children}</TabsTrigger>
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span className="inline-flex h-full" />}>
+        <TabsTrigger value={value} disabled>
+          {children}
+        </TabsTrigger>
+      </TooltipTrigger>
+      <TooltipContent className="flex-col items-start gap-1">
+        <span>{STRUCTURED_ONLY}</span>
+        <span className="font-mono text-[11px] opacity-70">This one is plain text. Raw shows it as sent.</span>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 /**
- * One line: Fields (by section), JSON and Raw. The stream shows it beside the
- * table; a flow shows it for the selected step node.
+ * One line: Fields (by section), JSON, Raw and Diagram. A flow shows it for
+ * the selected step node (and a one-node flow inline). Diagram grows the card
+ * over the flow column (`diagram: 'wide'`) or the whole window (`'full'`);
+ * the owner lays that out from `onDiagramChange`.
  */
 export function FieldCard({
   line,
@@ -222,6 +243,8 @@ export function FieldCard({
   subtitle,
   title,
   className,
+  diagram: diagramProp,
+  onDiagramChange,
 }: {
   /** Replaces the line's message as the heading (a flow shows the step name). */
   title?: string
@@ -239,18 +262,30 @@ export function FieldCard({
   /** Replaces the source in the header (`attempt 2`, `row 28`). */
   subtitle?: string
   className?: string
+  /** Controlled Diagram mode (the flow keeps it across steps); uncontrolled when omitted. */
+  diagram?: DiagramMode
+  onDiagramChange?: (m: DiagramMode) => void
 }) {
   const navigate = useNavigate()
   const sources = useSources().data
-  const [tab, setTab] = useState<Tab>(line.fields ? 'fields' : 'raw')
+  const [tab, setTab] = useState<Exclude<Tab, 'diagram'>>(line.fields ? 'fields' : 'raw')
+  const [ownDiagram, setOwnDiagram] = useState<DiagramMode>('off')
+  const structured = Boolean(line.fields)
+  const diagram: DiagramMode = structured ? (diagramProp ?? ownDiagram) : 'off'
+  const setDiagram = (m: DiagramMode) => {
+    setOwnDiagram(m)
+    onDiagramChange?.(m)
+  }
   const [wrap, setWrap] = useState(true)
   const [picked, setPicked] = useState<string | null>(null)
-  const active: Tab = !line.fields && tab !== 'raw' ? 'raw' : tab
+  const active: Tab = diagram !== 'off' ? 'diagram' : !line.fields && tab !== 'raw' ? 'raw' : tab
   const json = line.fields ? JSON.stringify(line.fields, null, 2) : ''
   const bad = line.level === 'error' || line.level === 'fatal'
   const groups = line.fields ? sections(line.fields) : []
   const count = groups.reduce((n, g) => n + g.rows.length, 0)
   const pickedValue = picked != null ? groups.flatMap((g) => g.rows).find(([k]) => k === picked)?.[1] : undefined
+  const stats = useMemo(() => (line.fields ? lineStats(line.fields, line.raw) : null), [line.fields, line.raw])
+  const full = diagram === 'full'
 
   // A new line resets the picked field.
   const [shownId, setShownId] = useState(line.id)
@@ -261,7 +296,7 @@ export function FieldCard({
 
   const copyJson = () => copy(line.fields ? json : JSON.stringify({ raw: line.raw }), 'line as JSON')
   useHotkeys(
-    hotkeys
+    hotkeys && diagram === 'off'
       ? {
           c: copyJson,
           f: () => filter(),
@@ -275,70 +310,138 @@ export function FieldCard({
     navigate({ to: '/search', search: { q: `${picked}:${/\s/.test(v) ? `"${v}"` : v}` } })
   }
 
-  return (
-    <section aria-label="Line details" className={cn('flex min-h-0 w-100 shrink-0 flex-col border bg-card', className)}>
-      <header className="flex flex-col gap-2 border-b p-4">
-        <div className="flex items-start gap-2">
-          <StatusDot status={bad ? 'err' : line.level === 'warn' ? 'warn' : 'ok'} className="mt-1.5" />
-          <h2 className="line-clamp-2 flex-1 break-all font-medium font-mono text-[13px]">{title ?? line.msg}</h2>
-          {onOpenFlow && (
-            <IconButton label="Open flow (enter)" onClick={onOpenFlow}>
-              <GitForkIcon />
-            </IconButton>
-          )}
-          <IconButton label="Copy raw line" onClick={() => copy(line.raw, 'raw line')}>
-            <CopyIcon />
-          </IconButton>
-          {onClose && (
-            <IconButton label="Close (esc)" onClick={onClose}>
-              <XIcon />
-            </IconButton>
-          )}
-        </div>
-        <div className="flex items-center gap-2 font-mono text-muted-foreground text-xs">
-          <LevelBadge level={line.level} />
-          <span title={new Date(line.ts).toISOString()}>{fmtTime(line.ts)}</span>
-          <span className="truncate">· {subtitle ?? line.source}</span>
-          <span className="flex-1" />
-          {position && (
-            <>
-              <span className="tabular-nums">
-                {position.index + 1} / {position.total}
-              </span>
-              {onPrev && (
-                <IconButton label="Previous (k)" onClick={onPrev}>
-                  <ChevronLeftIcon />
-                </IconButton>
-              )}
-              {onNext && (
-                <IconButton label="Next (j)" onClick={onNext}>
-                  <ChevronRightIcon />
-                </IconButton>
-              )}
-            </>
-          )}
-        </div>
-        {line.flags && line.flags.length > 0 && (
-          <div className="font-mono text-[11px] text-status-warn">{line.flags.join(' · ')}</div>
-        )}
-      </header>
+  const tabs = (
+    <TabsList>
+      <TabsTrigger value="fields" disabled={!line.fields}>
+        Fields
+      </TabsTrigger>
+      <GatedTab value="json" enabled={structured}>
+        JSON
+      </GatedTab>
+      <TabsTrigger value="raw">Raw</TabsTrigger>
+      <GatedTab value="diagram" enabled={structured}>
+        <WaypointsIcon className="size-3.5" />
+        Diagram
+      </GatedTab>
+    </TabsList>
+  )
+  const fullButton = (
+    <Button variant="ghost" size="sm" onClick={() => setDiagram(full ? 'wide' : 'full')}>
+      {full ? <MinimizeIcon /> : <MaximizeIcon />}
+      {full ? 'Exit full screen' : 'Full screen'}
+      {full && <Kbd className="ml-1">Esc</Kbd>}
+    </Button>
+  )
 
-      <Tabs value={active} onValueChange={(v) => setTab(v as Tab)} className="min-h-0 flex-1 gap-0 p-4">
-        <div className="flex items-center justify-between pb-3">
-          <TabsList>
-            <TabsTrigger value="fields" disabled={!line.fields}>
-              Fields
-            </TabsTrigger>
-            <TabsTrigger value="json" disabled={!line.fields}>
-              JSON
-            </TabsTrigger>
-            <TabsTrigger value="raw">Raw</TabsTrigger>
-          </TabsList>
-          <span className="font-mono text-[11px] text-muted-foreground">
-            {line.fields ? `${count} fields` : `${bytes(line.raw)} B`}
-          </span>
-        </div>
-        <TabsContent value="fields" className="min-h-0 overflow-y-auto">
+  return (
+    <section
+      aria-label="Line details"
+      data-diagram={diagram}
+      className={cn(
+        'flex min-h-0 w-100 shrink-0 flex-col border bg-card',
+        className,
+        full && 'fixed inset-0 z-40 w-auto max-w-none border-0',
+      )}
+    >
+      <Tabs
+        value={active}
+        onValueChange={(v) => {
+          if (v === 'diagram') setDiagram(full ? 'full' : 'wide')
+          else {
+            setDiagram('off')
+            setTab(v as Exclude<Tab, 'diagram'>)
+          }
+        }}
+        className="min-h-0 flex-1 gap-0"
+      >
+        {full ? (
+          <header className="flex h-12 shrink-0 items-center gap-3 border-b px-4">
+            <StatusDot status={bad ? 'err' : line.level === 'warn' ? 'warn' : 'ok'} />
+            <h2 className="truncate font-medium font-mono text-[13px]">{title ?? line.msg}</h2>
+            <LevelBadge level={line.level} />
+            <span className="shrink-0 font-mono text-muted-foreground text-xs">
+              {fmtTime(line.ts)} · {subtitle ?? line.source}
+            </span>
+            <span className="flex-1" />
+            {tabs}
+            <span className="mx-1 h-5 w-px bg-border" />
+            {fullButton}
+            {onClose && (
+              <IconButton label="Close (esc)" onClick={onClose}>
+                <XIcon />
+              </IconButton>
+            )}
+          </header>
+        ) : (
+          <>
+            <header className="flex flex-col gap-2 border-b p-4">
+              <div className="flex items-start gap-2">
+                <StatusDot status={bad ? 'err' : line.level === 'warn' ? 'warn' : 'ok'} className="mt-1.5" />
+                <h2 className="line-clamp-2 flex-1 break-all font-medium font-mono text-[13px]">{title ?? line.msg}</h2>
+                {onOpenFlow && (
+                  <IconButton label="Open flow (enter)" onClick={onOpenFlow}>
+                    <GitForkIcon />
+                  </IconButton>
+                )}
+                <IconButton label="Copy raw line" onClick={() => copy(line.raw, 'raw line')}>
+                  <CopyIcon />
+                </IconButton>
+                {onClose && (
+                  <IconButton label="Close (esc)" onClick={onClose}>
+                    <XIcon />
+                  </IconButton>
+                )}
+              </div>
+              <div className="flex items-center gap-2 font-mono text-muted-foreground text-xs">
+                <LevelBadge level={line.level} />
+                <span title={new Date(line.ts).toISOString()}>{fmtTime(line.ts)}</span>
+                <span className="truncate">· {subtitle ?? line.source}</span>
+                <span className="flex-1" />
+                {position && (
+                  <>
+                    <span className="tabular-nums">
+                      {position.index + 1} / {position.total}
+                    </span>
+                    {onPrev && (
+                      <IconButton label="Previous (k)" onClick={onPrev}>
+                        <ChevronLeftIcon />
+                      </IconButton>
+                    )}
+                    {onNext && (
+                      <IconButton label="Next (j)" onClick={onNext}>
+                        <ChevronRightIcon />
+                      </IconButton>
+                    )}
+                  </>
+                )}
+              </div>
+              {line.flags && line.flags.length > 0 && (
+                <div className="font-mono text-[11px] text-status-warn">{line.flags.join(' · ')}</div>
+              )}
+            </header>
+            <div
+              className={cn(
+                'flex items-center justify-between gap-3 px-4 pt-4 pb-3',
+                active === 'diagram' && 'border-b',
+              )}
+            >
+              {tabs}
+              {active === 'diagram' && stats ? (
+                <span className="flex items-center gap-3">
+                  <span data-testid="diagram-stats" className="font-mono text-[11px] text-muted-foreground">
+                    {statsLabel(stats)}
+                  </span>
+                  {fullButton}
+                </span>
+              ) : (
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  {line.fields ? `${count} fields` : `${bytes(line.raw)} B`}
+                </span>
+              )}
+            </div>
+          </>
+        )}
+        <TabsContent value="fields" className="min-h-0 overflow-y-auto px-4 pb-4">
           {groups.map((g) => (
             <div key={g.name} className="font-mono text-xs">
               <div className="flex justify-between pt-3 pb-1 text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
@@ -374,10 +477,10 @@ export function FieldCard({
             </div>
           ))}
         </TabsContent>
-        <TabsContent value="json" className="min-h-0 overflow-auto">
+        <TabsContent value="json" className="min-h-0 overflow-auto px-4 pb-4">
           <JsonView json={json} />
         </TabsContent>
-        <TabsContent value="raw" className="min-h-0 overflow-auto">
+        <TabsContent value="raw" className="min-h-0 overflow-auto px-4 pb-4">
           <pre
             data-testid="raw-view"
             className={cn(
@@ -412,51 +515,75 @@ export function FieldCard({
             ))}
           </dl>
         </TabsContent>
+        <TabsContent value="diagram" className="flex min-h-0 flex-col">
+          {line.fields && active === 'diagram' && (
+            <Suspense
+              fallback={
+                <div className="flex flex-1 flex-col gap-3 p-6" data-testid="diagram-loading">
+                  <Skeleton className="h-40 w-96" />
+                  <Skeleton className="ml-[420px] h-24 w-72" />
+                </div>
+              }
+            >
+              <DiagramView
+                line={line as LogLine & { fields: Record<string, unknown> }}
+                full={full}
+                onFullChange={(f) => setDiagram(f ? 'full' : 'wide')}
+                onExit={() => setDiagram('off')}
+              />
+            </Suspense>
+          )}
+        </TabsContent>
       </Tabs>
-      <footer
-        className={cn('grid gap-2 border-t p-3', onOpenInStream && active === 'fields' ? 'grid-cols-3' : 'grid-cols-2')}
-      >
-        {active === 'json' ? (
-          <>
-            <Button variant="outline" onClick={copyJson}>
-              <CopyIcon />
-              Copy as JSON
-            </Button>
-            <Button variant="outline" onClick={() => save(json, `quiet-line-${line.id}.json`)}>
-              <DownloadIcon />
-              Download .json
-            </Button>
-          </>
-        ) : active === 'raw' ? (
-          <>
-            <Button variant="outline" onClick={() => copy(line.raw, 'raw line')}>
-              <CopyIcon />
-              Copy raw line
-            </Button>
-            <Button variant="outline" aria-pressed={wrap} onClick={() => setWrap((w) => !w)}>
-              <WrapTextIcon />
-              {wrap ? 'Wrap' : 'No wrap'}
-            </Button>
-          </>
-        ) : (
-          <>
-            <Button variant="outline" disabled={picked == null} onClick={filter}>
-              <FilterIcon />
-              {picked ? `Filter by ${picked}` : 'Filter by value'}
-            </Button>
-            <Button variant="outline" onClick={copyJson}>
-              <CopyIcon />
-              Copy as JSON
-            </Button>
-            {onOpenInStream && (
-              <Button variant="outline" onClick={onOpenInStream}>
-                <ListIcon />
-                Open in stream
+      {active !== 'diagram' && (
+        <footer
+          className={cn(
+            'grid gap-2 border-t p-3',
+            onOpenInStream && active === 'fields' ? 'grid-cols-3' : 'grid-cols-2',
+          )}
+        >
+          {active === 'json' ? (
+            <>
+              <Button variant="outline" onClick={copyJson}>
+                <CopyIcon />
+                Copy as JSON
               </Button>
-            )}
-          </>
-        )}
-      </footer>
+              <Button variant="outline" onClick={() => save(json, `quiet-line-${line.id}.json`)}>
+                <DownloadIcon />
+                Download .json
+              </Button>
+            </>
+          ) : active === 'raw' ? (
+            <>
+              <Button variant="outline" onClick={() => copy(line.raw, 'raw line')}>
+                <CopyIcon />
+                Copy raw line
+              </Button>
+              <Button variant="outline" aria-pressed={wrap} onClick={() => setWrap((w) => !w)}>
+                <WrapTextIcon />
+                {wrap ? 'Wrap' : 'No wrap'}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" disabled={picked == null} onClick={filter}>
+                <FilterIcon />
+                {picked ? `Filter by ${picked}` : 'Filter by value'}
+              </Button>
+              <Button variant="outline" onClick={copyJson}>
+                <CopyIcon />
+                Copy as JSON
+              </Button>
+              {onOpenInStream && (
+                <Button variant="outline" onClick={onOpenInStream}>
+                  <ListIcon />
+                  Open in stream
+                </Button>
+              )}
+            </>
+          )}
+        </footer>
+      )}
     </section>
   )
 }
