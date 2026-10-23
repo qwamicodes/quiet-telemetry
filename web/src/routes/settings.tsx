@@ -1,6 +1,7 @@
 import { Link, Outlet } from '@tanstack/react-router'
 import {
   DatabaseIcon,
+  EyeOffIcon,
   InfoIcon,
   KeyRoundIcon,
   MoonIcon,
@@ -17,6 +18,7 @@ import { Account } from '@/components/settings/account'
 import { General } from '@/components/settings/general'
 import { FlowIdOrder } from '@/components/settings/id-order'
 import { Members } from '@/components/settings/members'
+import { MutedLinesSettings } from '@/components/settings/muted-lines'
 import { Storage } from '@/components/settings/storage'
 import { IngestTokens } from '@/components/tokens/token-table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -46,6 +48,7 @@ function NavLink({
     | '/settings/members'
     | '/settings/ingest-tokens'
     | '/settings/flow-id-order'
+    | '/settings/muted-lines'
     | '/settings/storage'
     | '/settings/appearance'
     | '/settings/about'
@@ -87,6 +90,9 @@ export function SettingsLayout() {
         <NavLink to="/settings/flow-id-order" icon={<NetworkIcon />}>
           Flow id order
         </NavLink>
+        <NavLink to="/settings/muted-lines" icon={<EyeOffIcon />}>
+          Muted lines
+        </NavLink>
         <NavLink to="/settings/storage" icon={<DatabaseIcon />}>
           Storage
         </NavLink>
@@ -110,6 +116,10 @@ export function SettingsGeneral() {
 
 export function SettingsStorage() {
   return <Storage />
+}
+
+export function SettingsMuted() {
+  return <MutedLinesSettings />
 }
 
 export function SettingsFlowIds() {

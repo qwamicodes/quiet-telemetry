@@ -38,6 +38,7 @@ import {
   SettingsGeneral,
   SettingsLayout,
   SettingsMembers,
+  SettingsMuted,
   SettingsStorage,
   SettingsTokens,
 } from '@/routes/settings'
@@ -204,6 +205,11 @@ const settingsFlowIdsRoute = createRoute({
   validateSearch: flowIdOrderSearch,
   component: SettingsFlowIds,
 })
+const settingsMutedRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/muted-lines',
+  component: SettingsMuted,
+})
 const settingsAboutRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/about',
@@ -234,6 +240,7 @@ export const routeTree = rootRoute.addChildren([
     settingsMembersRoute,
     settingsTokensRoute,
     settingsFlowIdsRoute,
+    settingsMutedRoute,
     settingsStorageRoute,
     settingsAppearanceRoute,
     settingsAboutRoute,
