@@ -139,6 +139,7 @@ export function Segmented<T extends string>({
       {options.map((o) => {
         const on = o.value === value
         return (
+          // biome-ignore lint/a11y/useSemanticElements: a segmented control styled as buttons, radio semantics kept
           <button
             key={o.value}
             type="button"

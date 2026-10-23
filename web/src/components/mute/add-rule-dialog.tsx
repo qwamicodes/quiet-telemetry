@@ -331,9 +331,10 @@ function Form({
       {d.shape === 'field' && (
         <div className="flex flex-col gap-1.5">
           <div className="grid grid-cols-[minmax(0,1fr)_40px_minmax(0,1.5fr)] items-end gap-2">
-            <label className="flex flex-col gap-1.5 text-sm">
-              Field
+            <div className="flex flex-col gap-1.5 text-sm">
+              <label htmlFor={`${id}-field`}>Field</label>
               <Input
+                id={`${id}-field`}
                 autoFocus
                 list={`${id}-fields`}
                 value={d.field}
@@ -341,17 +342,18 @@ function Form({
                 placeholder="user_agent"
                 className="font-mono"
               />
-            </label>
+            </div>
             <span className="flex h-9 items-center justify-center border font-mono text-muted-foreground">=</span>
-            <label className="flex flex-col gap-1.5 text-sm">
-              Value
+            <div className="flex flex-col gap-1.5 text-sm">
+              <label htmlFor={`${id}-value`}>Value</label>
               <Input
+                id={`${id}-value`}
                 value={d.value}
                 onChange={(e) => set({ value: e.target.value })}
                 placeholder="kube-probe/*"
                 className="font-mono"
               />
-            </label>
+            </div>
           </div>
           <datalist id={`${id}-fields`}>
             {fieldKeys.map((k) => (
@@ -391,11 +393,15 @@ function Form({
             {sourceCopies.length} {sourceCopies.length === 1 ? 'source already mutes' : 'sources already mute'} it:{' '}
             <span className="font-mono text-muted-foreground text-xs">{sourceCopies.map(([n]) => n).join(', ')}</span>
           </span>
-          <label className="flex items-center gap-2 text-xs">
-            <Checkbox checked={removeSourceRules} onCheckedChange={(v) => setRemoveSourceRules(Boolean(v))} />
+          <span className="flex items-center gap-2 text-xs">
+            <Checkbox
+              aria-label="Also remove the source rules"
+              checked={removeSourceRules}
+              onCheckedChange={(v) => setRemoveSourceRules(Boolean(v))}
+            />
             Also remove the {sourceCopies.length} source {sourceCopies.length === 1 ? 'rule' : 'rules'} (the global rule
             covers them)
-          </label>
+          </span>
         </div>
       )}
 

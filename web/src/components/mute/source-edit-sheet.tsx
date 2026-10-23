@@ -134,9 +134,10 @@ function DraftTab({
         <fieldset disabled={!owner} className="flex flex-col gap-5">
           {tab === 'general' ? (
             <>
-              <label className="flex flex-col gap-1.5 text-sm">
-                Display name
+              <div className="flex flex-col gap-1.5 text-sm">
+                <label htmlFor="edit-display-name">Display name</label>
                 <Input
+                  id="edit-display-name"
                   autoFocus
                   placeholder={name}
                   maxLength={64}
@@ -147,7 +148,7 @@ function DraftTab({
                 <span className="text-muted-foreground text-xs">
                   Shown in the sidebar and in flows. Lines keep their original name ({name}).
                 </span>
-              </label>
+              </div>
               <div className="flex items-center justify-between gap-4 text-sm">
                 <span className="flex flex-col">
                   <span>Hide from the sidebar</span>
@@ -166,14 +167,14 @@ function DraftTab({
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between text-sm">
                 <span>Flow id order</span>
-                <label className="flex items-center gap-2 text-muted-foreground text-xs">
+                <span className="flex items-center gap-2 text-muted-foreground text-xs">
                   use default
                   <Switch
                     aria-label="Use the instance order"
                     checked={draft.id_keys == null}
                     onCheckedChange={(v) => set({ id_keys: v ? null : [...globalOrder] })}
                   />
-                </label>
+                </span>
               </div>
               <IdOrderEditor
                 value={draft.id_keys ?? globalOrder}

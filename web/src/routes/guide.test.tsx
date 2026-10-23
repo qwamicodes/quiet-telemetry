@@ -65,6 +65,7 @@ const settings: SettingsResponse = {
   grouping: { mode: 'auto', label: 'quiet.group', origin: 'default', locked: false },
   flow_ids: { order: ['request_id', 'job_id', 'trace_id', 'correlation_id'], match_by: 'value' },
   sources: {},
+  muted_global: [],
 }
 
 const report = (src: string): LintReport => ({

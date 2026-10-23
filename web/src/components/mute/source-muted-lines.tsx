@@ -237,7 +237,11 @@ function SourceRuleRow({
                 aria-label="Rule value"
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
-                onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), setEditing(false))}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Escape') return
+                  e.stopPropagation()
+                  setEditing(false)
+                }}
                 className="h-7 font-mono text-[13px]"
               />
               <Button type="submit" size="icon-sm" variant="outline" aria-label="Save rule">
