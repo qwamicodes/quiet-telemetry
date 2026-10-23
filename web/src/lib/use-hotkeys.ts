@@ -5,6 +5,10 @@ export type Hotkeys = Record<string, (e: KeyboardEvent) => void>
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
 
+const isRichText = (t: EventTarget | null) =>
+  t instanceof HTMLElement &&
+  (t.isContentEditable || t.closest('[contenteditable]:not([contenteditable="false"])') !== null)
+
 /** Bold / italic / underline in a rich-text field: never taken from it. */
 const TEXT_FORMAT = new Set(['mod+b', 'mod+i', 'mod+u'])
 
@@ -22,7 +26,7 @@ export function useHotkeys(keys: Hotkeys) {
       const key = e.key === ' ' ? 'space' : e.key.toLowerCase()
       const combo = mod ? `mod+${key}` : key
       if (!mod && key !== 'escape' && isTyping(e.target)) return
-      if (TEXT_FORMAT.has(combo) && e.target instanceof HTMLElement && e.target.isContentEditable) return
+      if (TEXT_FORMAT.has(combo) && isRichText(e.target)) return
       if (e.altKey) return
       // `mod+shift+c` when one is registered; otherwise shift is ignored.
       const fn = (mod && e.shiftKey ? ref.current[`mod+shift+${key}`] : undefined) ?? ref.current[combo]

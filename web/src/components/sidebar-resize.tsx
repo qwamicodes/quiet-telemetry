@@ -125,7 +125,7 @@ export function SidebarResizeHandle() {
     if (e.button !== 0) return
     e.preventDefault()
     const rect = aside()?.getBoundingClientRect()
-    const startW = Math.round(rect?.width ?? width)
+    const startW = Math.round(rect?.width || width)
     e.currentTarget.setPointerCapture(e.pointerId)
     e.currentTarget.focus({ preventScroll: true })
     drag.current = {
