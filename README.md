@@ -256,6 +256,8 @@ SQLite (bundled, WAL) in `--data-dir`. One set of tables per hour: the lines (on
 
 Owners change these in the UI; members see them read-only. Writes need a session and the CSRF header, like every `/api` write. Everything is stored in the `settings` table of `quiet.db` (kept on disk even with `--store memory`) and applies at once, without a restart.
 
+**Custom source groups:** owners can also make their own groups on **Sources** (New group, a source's ⋯ → Move to group, a group header's ⋯ → Rename / Move up / Move down / Delete). A group you assign wins over automatic grouping, sits above the automatic groups, and survives mode Off (the list goes flat; the groups come back). Deleting a group puts its sources back to automatic grouping and deletes no lines. `QUIET_GROUP_BY` locks only the mode. API: `GET|POST /api/source-groups`, `PATCH|DELETE /api/source-groups/:id`, `PUT /api/source-groups/assign`.
+
 **Precedence (source grouping):** the opposite of storage. `QUIET_GROUP_BY` / `QUIET_GROUP_LABEL` → a value saved in Settings → General → Source grouping → `auto`. With either variable set, the control is read-only and says so.
 
 **Precedence (storage):** a value saved in Settings → Storage → the `--retention` / `--max-disk` flag or `QUIET_RETENTION` / `QUIET_MAX_DISK` → the built-in default (24h, 5GB). The page shows where each value comes from (*set here*, *from flag*, *default*); "use flag" deletes the saved value so the flag applies again. If a flag seems ignored, check Settings → Storage.

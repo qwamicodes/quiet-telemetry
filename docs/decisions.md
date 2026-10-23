@@ -438,3 +438,35 @@ configurable because it ships as an update. Boards v0.1-06.7, 06.8, 03.8,
 - The Sources page keeps the 06.1 stat cards above the filters (06.7 omits
   them; both are v0.1 boards).
 - **Field card values copy on click** (Fields tab only; keys and types unchanged): the value is its own button over a row-wide pick button, since a button can't nest in the row button; the rest of the row still picks the field for Filter by value.
+
+## Custom source groups (2026-10-23, boards v0.1-06.9 – 06.12, 07.10)
+
+- **Model.** `source_groups` in the settings table: `{ groups: [{ id, name,
+  order }], assigned: { source → group id } }`. Ids are `g_` + 8 hex, so a
+  rename keeps assignments and the UI's collapse state (`manual:<id>`).
+  Names: 1–48 characters, trimmed, unique ignoring case; at most 64 groups.
+- **Placement.** `/api/sources` applies assignments on each read: a moved
+  source gets `group_kind: "manual"`, `group_id`, and its automatic group in
+  `auto_group` / `auto_group_kind` (for "Automatic" and "N moved to …").
+  Assignment wins over `quiet.group` → Compose → Stack → Standalone, and over
+  Ingest for pushed sources. Custom groups sort first, in their own order;
+  `custom_groups` is listed in `/api/sources` so every view orders the same.
+- **Off** leaves `group` null (flat) but keeps groups and assignments; they
+  return when the mode does. **`QUIET_GROUP_BY` locks the mode only**, never
+  custom groups.
+- **Delete** drops the group and its assignments; sources fall back to
+  automatic grouping, lines are untouched. The UI offers Undo (recreate with
+  the same name, sources and position).
+- **Permissions.** "Owners and admins" = the owner role (v0.1 has owner and
+  member only). Writes are owner-only (403 `owner_only`) and need CSRF; any
+  signed-in user reads.
+- **API.** `GET/POST /api/source-groups`, `PATCH/DELETE /api/source-groups/:id`
+  (`{ name?, order? }`), `PUT /api/source-groups/assign` (`{ sources, group |
+  null }`). Create takes the dialog's picked sources in the same write.
+- **UI deviations from the boards.** The New group checklist narrows to the
+  filter (the board shows non-matching rows too); Settings → General keeps the
+  full Source grouping controls inline (as before) and adds the "make your own
+  groups from Sources · N custom groups" row with a Sources → link, rather
+  than a compact select row; the Type column still shows the receiver
+  (`docker`), not `swarm`.
+

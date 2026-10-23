@@ -23,6 +23,7 @@ mod search_api;
 mod server;
 mod settings;
 mod settings_api;
+mod source_groups_api;
 mod store;
 mod stream_api;
 mod system;

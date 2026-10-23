@@ -3,4 +3,4 @@
 /**
  * What a source's group is.
  */
-export type GroupKind = "compose" | "stack" | "custom" | "standalone" | "ingest";
+export type GroupKind = "compose" | "stack" | "custom" | "standalone" | "ingest" | "manual";

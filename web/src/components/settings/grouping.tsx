@@ -1,10 +1,12 @@
-import { LockIcon, TerminalIcon } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { ArrowRightIcon, FolderIcon, LockIcon, TerminalIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { GroupIcon } from '@/components/source-group-header'
 import { Input } from '@/components/ui/input'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import type { GroupingSettings, GroupMode, UpdateGrouping } from '@/gen'
 import { useGroupingPreview } from '@/lib/settings-api'
+import { useCustomGroups } from '@/lib/source-groups-api'
 import { useDebounced } from '@/lib/use-debounced'
 import { cn } from '@/lib/utils'
 
@@ -66,6 +68,7 @@ export function SourceGrouping({
   const label = useDebounced(draft.label.trim(), 250)
   const preview = useGroupingPreview(draft.mode, validLabel(label) ? label : saved.label, true).data
   const labelOk = draft.mode !== 'label' || validLabel(draft.label)
+  const custom = useCustomGroups().length
 
   return (
     <section aria-label="Source grouping" className="flex flex-col gap-3 border-b py-5">
@@ -82,6 +85,23 @@ export function SourceGrouping({
           How the Sources page, the sidebar and the source picker fold sources. HTTP, OTLP, Vector and Fluent Bit pushes
           always sit under Ingest. Streaming stays one source at a time.
         </p>
+        <div className="flex items-center gap-2 text-xs" data-testid="custom-groups-row">
+          <FolderIcon className="size-3.5 shrink-0 text-brand" />
+          <span>You can also make your own groups from Sources</span>
+          <span className="font-mono text-[11px] text-muted-foreground">
+            · {custom} custom {custom === 1 ? 'group' : 'groups'}
+            {custom > 0 && draft.mode === 'off' ? ' · kept while grouping is off' : ''}
+          </span>
+          <span className="flex-1" />
+          <Link to="/sources" className="flex items-center gap-1 text-foreground hover:underline">
+            Sources <ArrowRightIcon className="size-3.5" />
+          </Link>
+        </div>
+        {locked && (
+          <p className="text-[11px] text-muted-foreground">
+            The environment locks the mode only; custom groups stay editable on Sources.
+          </p>
+        )}
       </div>
       <RadioGroup
         aria-label="Source grouping"

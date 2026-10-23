@@ -33,7 +33,7 @@ import type {
 } from '@/gen'
 import { fetchJson, sendJson } from '@/lib/api'
 import { AUTH_KEY } from '@/lib/auth-api'
-import { BUILTIN_ID_KEYS, dockerStatus, idKey, ingestToken, level } from '@/lib/schemas'
+import { BUILTIN_ID_KEYS, dockerStatus, idKey, ingestToken, level, groupKind as sharedGroupKind } from '@/lib/schemas'
 
 // ---- schemas (each satisfies its generated type) ----------------------------
 
@@ -114,7 +114,7 @@ export const groupingSettings = z.object({
   origin: z.enum(['setting', 'flag', 'default']),
   locked: z.boolean(),
 }) satisfies z.ZodType<GroupingSettings>
-const groupKind = z.enum(['compose', 'stack', 'custom', 'standalone', 'ingest'])
+const groupKind = sharedGroupKind
 export const groupingPreview = z.object({
   groups: z.array(z.object({ name: z.string(), kind: groupKind, sources: z.array(z.string()) })),
   found: z.number(),

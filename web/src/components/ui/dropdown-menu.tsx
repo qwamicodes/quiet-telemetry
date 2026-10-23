@@ -1,4 +1,5 @@
 import { Menu as MenuPrimitive } from '@base-ui/react/menu'
+import { ChevronRightIcon } from 'lucide-react'
 import type * as React from 'react'
 import { cn } from '@/lib/utils'
 
@@ -59,6 +60,35 @@ function DropdownMenuSeparator({ className, ...props }: MenuPrimitive.Separator.
   return <MenuPrimitive.Separator className={cn('-mx-1 my-1 h-px bg-border', className)} {...props} />
 }
 
+/** A submenu (Base UI `SubmenuRoot`): wrap a `DropdownMenuSubTrigger` and a `DropdownMenuSubContent`. */
+const DropdownMenuSub = MenuPrimitive.SubmenuRoot
+
+function DropdownMenuSubTrigger({ className, children, ...props }: MenuPrimitive.SubmenuTrigger.Props) {
+  return (
+    <MenuPrimitive.SubmenuTrigger
+      data-slot="dropdown-menu-sub-trigger"
+      className={cn(
+        "flex h-7 cursor-default items-center gap-2 px-2 outline-none select-none data-disabled:pointer-events-none data-disabled:opacity-50 data-highlighted:bg-muted data-popup-open:bg-muted [&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg:not([class*='text-'])]:text-muted-foreground",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+      <ChevronRightIcon className="ml-auto" />
+    </MenuPrimitive.SubmenuTrigger>
+  )
+}
+
+function DropdownMenuSubContent({
+  className,
+  align = 'start',
+  side = 'left',
+  sideOffset = 4,
+  ...props
+}: MenuPrimitive.Popup.Props & Pick<MenuPrimitive.Positioner.Props, 'align' | 'side' | 'sideOffset'>) {
+  return <DropdownMenuContent className={className} align={align} side={side} sideOffset={sideOffset} {...props} />
+}
+
 /** A plain heading inside the popup (not Base UI's GroupLabel; see above). */
 function DropdownMenuHeader({ className, ...props }: React.ComponentProps<'div'>) {
   return <div className={cn('flex flex-col px-2 py-1.5', className)} {...props} />
@@ -70,5 +100,8 @@ export {
   DropdownMenuHeader,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 }

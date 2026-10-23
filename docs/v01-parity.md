@@ -99,6 +99,8 @@ Legend: **fixed** = built in this branch · **partial** = the main part is built
 | 07.9 Appearance | Matches. | — |
 | 07.10 General | Lacked **Public URL**, **Timestamps** (14:07:35 / 14:07:35.412 / 2s ago), **Max line size**, **Keep non-JSON lines**; timezone is a free input instead of a select. | fixed |
 | 07.11 Source grouping | No setting. | fixed: Settings → General → Source grouping (auto / custom label / off) with live preview; `QUIET_GROUP_BY` / `QUIET_GROUP_LABEL` win and lock the control. |
+| 06.9 – 06.12 Custom groups | No custom groups. | fixed: New group dialog (name 0/48, optional checklist), source ⋯ → Move to group (custom groups, New group…, Automatic), group header ⋯ (Rename F2, Move up / down, Delete), Custom filter, rules hint, “N moved to …” note; sidebar / picker / ⌘K follow. See *Custom source groups* in decisions.md. |
+| 07.10 General · Source grouping row | No custom group count. | fixed: “You can also make your own groups from Sources · N custom groups” + Sources → (full grouping controls stay inline). |
 
 ## 08 · System states & errors
 

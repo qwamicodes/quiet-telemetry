@@ -19,7 +19,7 @@
 use crate::accounts::Accounts;
 use crate::auth::{AuthConfig, LoginLimiter, Viewer};
 use crate::export::ExportTokens;
-use crate::grouping::{GroupKind, GroupMode, Grouping};
+use crate::grouping::{CustomGroup, CustomGroups, GroupKind, GroupMode, Grouping};
 use crate::hub::{Line, SourceInfo, SourceKind};
 use crate::normalize::LogLine;
 use crate::pipeline::Pipeline;
@@ -147,6 +147,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::flow_api::routes())
         .merge(crate::tokens_api::routes())
         .merge(crate::settings_api::routes())
+        .merge(crate::source_groups_api::routes())
         .merge(crate::auth_api::session_routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -222,19 +223,44 @@ async fn health(State(s): State<AppState>) -> Json<Health> {
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct SourcesResponse {
     pub sources: Vec<SourceInfo>,
+    /// Custom groups made on the Sources page, in display order (above the
+    /// automatic groups). Kept, and listed, when grouping is off too.
+    pub custom_groups: Vec<CustomGroup>,
 }
 
 async fn sources(State(s): State<AppState>) -> Json<SourcesResponse> {
-    let settings = s.pipeline.settings().sources();
+    let settings = s.pipeline.settings();
+    let custom = settings.custom_groups();
+    let per_source = settings.sources();
     let mut sources = s.pipeline.hub().list();
     for src in &mut sources {
-        if let Some(st) = settings.get(&src.name) {
+        if let Some(st) = per_source.get(&src.name) {
             src.display_name = st.display_name.clone();
             src.hidden = st.hidden;
             src.paused = st.paused;
         }
     }
-    Json(SourcesResponse { sources })
+    apply_custom_groups(&mut sources, &custom);
+    Json(SourcesResponse {
+        sources,
+        custom_groups: custom.groups,
+    })
+}
+
+/// A source moved into a custom group shows under it instead of its
+/// automatic group (kept in `auto_group` for "Automatic" and the "N moved to"
+/// note). Grouping off (`group` is `null`): left flat.
+pub fn apply_custom_groups(sources: &mut [SourceInfo], custom: &CustomGroups) {
+    for src in sources {
+        if src.meta.group_kind.is_none() {
+            continue;
+        }
+        if let Some(g) = custom.group_for(&src.name) {
+            src.meta.auto_group = src.meta.group.replace(g.name.clone());
+            src.meta.auto_group_kind = src.meta.group_kind.replace(GroupKind::Manual);
+            src.meta.group_id = Some(g.id.clone());
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -278,7 +304,8 @@ async fn grouping_preview(
             .filter(|l| !l.is_empty())
             .unwrap_or(current.label),
     };
-    Json(preview(&s.pipeline.hub().labels(), &g))
+    let custom = s.pipeline.settings().custom_groups();
+    Json(preview(&s.pipeline.hub().labels(), &g, &custom))
 }
 
 pub fn preview(
@@ -288,12 +315,13 @@ pub fn preview(
         std::collections::HashMap<String, String>,
     )],
     g: &Grouping,
+    custom: &CustomGroups,
 ) -> GroupingPreview {
     let mut sorted: Vec<_> = sources.iter().collect();
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
     let mut groups: Vec<PreviewGroup> = Vec::new();
     for (name, kind, labels) in &sorted {
-        if let Some((gname, gkind)) = g.group_of(*kind, labels) {
+        if let Some((gname, gkind, _)) = g.place(name, *kind, labels, custom) {
             match groups
                 .iter_mut()
                 .find(|x| x.name == gname && x.kind == gkind)
@@ -307,12 +335,27 @@ pub fn preview(
             }
         }
     }
-    let rank = |k: GroupKind| match k {
-        GroupKind::Standalone => 1,
-        GroupKind::Ingest => 2,
-        _ => 0,
+    // Custom groups first, in their own order; then projects and stacks by
+    // name, then Standalone, then Ingest.
+    let custom_at = |p: &PreviewGroup| {
+        custom
+            .groups
+            .iter()
+            .position(|c| p.kind == GroupKind::Manual && c.name == p.name)
+            .unwrap_or(0)
     };
-    groups.sort_by(|a, b| rank(a.kind).cmp(&rank(b.kind)).then(a.name.cmp(&b.name)));
+    let rank = |k: GroupKind| match k {
+        GroupKind::Manual => 0,
+        GroupKind::Standalone => 2,
+        GroupKind::Ingest => 3,
+        _ => 1,
+    };
+    groups.sort_by(|a, b| {
+        rank(a.kind)
+            .cmp(&rank(b.kind))
+            .then(custom_at(a).cmp(&custom_at(b)))
+            .then(a.name.cmp(&b.name))
+    });
     let docker: Vec<_> = sorted
         .iter()
         .filter(|s| s.1 == SourceKind::Docker)
@@ -733,7 +776,7 @@ mod tests {
             mode: GroupMode::Label,
             label: "quiet.group".into(),
         };
-        let p = preview(&src, &g);
+        let p = preview(&src, &g, &CustomGroups::default());
         let names: Vec<_> = p
             .groups
             .iter()
@@ -748,7 +791,9 @@ mod tests {
             mode: GroupMode::Off,
             ..Default::default()
         };
-        assert!(preview(&src, &off).groups.is_empty());
+        assert!(preview(&src, &off, &CustomGroups::default())
+            .groups
+            .is_empty());
     }
 
     #[tokio::test]

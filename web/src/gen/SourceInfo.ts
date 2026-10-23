@@ -23,4 +23,14 @@ containers: Array<string>,
  * Its group under the current Settings → Source grouping (`null` when
  * grouping is off). Filled in by [`Source::info`].
  */
-group: string | null, group_kind: GroupKind | null, lines: number, last_ts: number | null, };
+group: string | null, group_kind: GroupKind | null, 
+/**
+ * The custom group (Sources → Move to group) it was moved into, when
+ * `group_kind` is `manual`. Set by `/api/sources`.
+ */
+group_id?: string, 
+/**
+ * Where it sits without a custom group (what "Automatic" puts it back
+ * to); sent only when it was moved into a custom group.
+ */
+auto_group?: string, auto_group_kind?: GroupKind, lines: number, last_ts: number | null, };

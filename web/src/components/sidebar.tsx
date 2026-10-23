@@ -19,6 +19,7 @@ import { useHealth, useSources } from '@/lib/api'
 import { useConnection } from '@/lib/connection'
 import { fmtWindow } from '@/lib/format'
 import { groupSources, useCollapsedGroups } from '@/lib/source-groups'
+import { useCustomGroups } from '@/lib/source-groups-api'
 import { useRates } from '@/lib/use-rates'
 
 function NavItem({
@@ -61,7 +62,9 @@ export function Sidebar({
   const rates = useRates(sources)
   // Hidden sources stay under Sources and in search, not here (unless open now).
   const listed = sources?.filter((s) => !s.hidden || s.name === activeSource)
-  const groups = groupSources(listed ?? [], listed ?? [])
+  // Custom groups first, in their order (06.9).
+  const custom = useCustomGroups()
+  const groups = groupSources(listed ?? [], listed ?? [], undefined, custom)
   // Grouping off, or a single group (say, only Ingest): no headers, just the list.
   const flat = groups.length <= 1
   const { isCollapsed, toggle, toggleAll, allCollapsed } = useCollapsedGroups()

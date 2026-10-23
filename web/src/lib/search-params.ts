@@ -95,7 +95,7 @@ export const sourceParams = z.object({
 /** `/sources?group=compose:apps&kind=stack`: the Sources page filtered to one group (⌘K Groups). */
 export const sourcesSearch = z.object({
   group: z.string().max(300).optional().catch(undefined),
-  kind: z.enum(['all', 'standalone', 'stack']).optional().catch(undefined),
+  kind: z.enum(['all', 'custom', 'standalone', 'stack']).optional().catch(undefined),
 })
 export type SourcesSearch = z.infer<typeof sourcesSearch>
 

@@ -1,4 +1,13 @@
-import { BoxIcon, ChevronRightIcon, EllipsisIcon, LayersIcon, PlugIcon, SearchIcon, TagIcon } from 'lucide-react'
+import {
+  BoxIcon,
+  ChevronRightIcon,
+  EllipsisIcon,
+  FolderIcon,
+  LayersIcon,
+  PlugIcon,
+  SearchIcon,
+  TagIcon,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
 import { StatusDot } from '@/components/status-dot'
 import type { GroupKind } from '@/gen'
@@ -6,7 +15,16 @@ import { groupSummary, KIND_TAG, type SourceGroup, sourceStatus } from '@/lib/so
 import { cn } from '@/lib/utils'
 
 export function GroupIcon({ kind, className }: { kind: GroupKind; className?: string }) {
-  const Icon = kind === 'ingest' ? PlugIcon : kind === 'standalone' ? BoxIcon : kind === 'custom' ? TagIcon : LayersIcon
+  const Icon =
+    kind === 'ingest'
+      ? PlugIcon
+      : kind === 'standalone'
+        ? BoxIcon
+        : kind === 'custom'
+          ? TagIcon
+          : kind === 'manual'
+            ? FolderIcon
+            : LayersIcon
   return (
     <Icon className={cn('size-3.5 shrink-0', kind === 'ingest' ? 'text-muted-foreground' : 'text-brand', className)} />
   )
@@ -26,9 +44,11 @@ export function GroupDots({ group, now }: { group: SourceGroup; now?: number }) 
 const fmtRate = (r: number) => (r === 0 ? '0' : r < 1 ? r.toFixed(1) : String(Math.round(r)))
 
 /**
- * A collapsible group row (boards v0.1-06.7 / 06.8 / 03.8): chevron, stack
- * icon, name, kind tag, `N/M sending · K shown`, member dots when collapsed;
- * the table variant adds the aggregate rate and the row actions.
+ * A collapsible group row (boards v0.1-06.7 / 06.8 / 06.9 / 03.8): chevron,
+ * stack (or folder, for a custom group) icon, name, kind tag, `N/M sending ·
+ * K shown`, an optional note (“assigned by you”, “4 moved to Legivent
+ * staging”), member dots when collapsed; the table variant adds the
+ * aggregate rate and the row actions.
  */
 export function SourceGroupHeader({
   group,
@@ -37,6 +57,7 @@ export function SourceGroupHeader({
   compact = false,
   rate,
   actions,
+  note,
 }: {
   group: SourceGroup
   collapsed: boolean
@@ -47,6 +68,8 @@ export function SourceGroupHeader({
   rate?: number
   /** Search + ⋯ menu (table variant). */
   actions?: ReactNode
+  /** After the summary (table variant). */
+  note?: string | null
 }) {
   const allStopped = group.sending === 0 && group.total > 0
   return (
@@ -69,7 +92,12 @@ export function SourceGroupHeader({
           {group.name}
         </span>
         {!compact && (
-          <span className="shrink-0 border px-1 font-mono text-[10px] text-muted-foreground">
+          <span
+            className={cn(
+              'shrink-0 px-1 font-mono text-[10px]',
+              group.kind === 'manual' ? 'bg-brand/15 text-brand' : 'border text-muted-foreground',
+            )}
+          >
             {KIND_TAG[group.kind]}
           </span>
         )}
@@ -78,6 +106,11 @@ export function SourceGroupHeader({
         )}
         {!compact && (
           <span className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">{groupSummary(group)}</span>
+        )}
+        {!compact && note && (
+          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground" data-testid="group-note">
+            · {note}
+          </span>
         )}
         {collapsed && <GroupDots group={group} />}
         {compact && <span className="flex-1" />}

@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import type { SourceInfo } from '@/gen'
 import { useSources } from '@/lib/api'
 import { groupOf, groupSources, type SourceGroup, sourceStatus, useCollapsedGroups } from '@/lib/source-groups'
+import { useCustomGroups } from '@/lib/source-groups-api'
 import { useRates } from '@/lib/use-rates'
 import { cn } from '@/lib/utils'
 
@@ -32,7 +33,8 @@ export function SourcePicker({ source, name }: { source: SourceInfo | undefined;
   const shown = q
     ? listed.filter((s) => `${s.name} ${s.display_name ?? ''} ${s.group ?? ''}`.toLowerCase().includes(q))
     : listed
-  const groups = groupSources(listed, shown)
+  const custom = useCustomGroups()
+  const groups = groupSources(listed, shown, undefined, custom)
   const items: Item[] = useMemo(() => {
     if (groups.length === 0) return shown.map((s) => ({ type: 'source' as const, source: s, nested: false }))
     const out: Item[] = []
