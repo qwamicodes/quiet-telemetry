@@ -14,7 +14,8 @@ import { Button } from '@/components/ui/button'
 import type { LevelTally, LogLine } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { useConnection } from '@/lib/connection'
-import { fmtTime, fmtWindow } from '@/lib/format'
+import { fmtClock, fmtTime, fmtWindow } from '@/lib/format'
+import { bufferCovers, fetchHistory, historyQuery, mergeHistory, type Span } from '@/lib/histogram-jump'
 import { chipOf, isOn, type LevelChip, levelsFromParam, levelsToParam, toggleChip } from '@/lib/levels'
 import { useMuted } from '@/lib/mute'
 import { joinQuery, splitQuery } from '@/lib/query'
@@ -138,9 +139,17 @@ export function StreamPage() {
   // Until the backlog for the current source + filters is in, the table is
   // loading: previous rows stay (dimmed) or skeletons show, never "no lines".
   const pending = Boolean(source) && !settled
+  // Histogram jump: lines fetched from history for a minute the buffer no
+  // longer (or never) held, shown above it until the stream returns to live.
+  const [history, setHistory] = useState<{ key: string; lines: LogLine[]; truncated: boolean } | null>(null)
+  const [jump, setJump] = useState<{ span: Span; n: number; ready: boolean } | null>(null)
+  const [flash, setFlash] = useState<Span | null>(null)
+  const filterKey = JSON.stringify([source, levelsCsv, search.q ?? ''])
+  const historyLines = history && history.key === filterKey ? history.lines : null
+  const all = useMemo(() => (historyLines ? mergeHistory(historyLines, received) : received), [historyLines, received])
   // Muted lines (06.3): hidden unless "show"; the count stays visible.
   const [showMuted, setShowMuted] = useState(false)
-  const { visible: lines, muted } = useMuted(received, showMuted)
+  const { visible: lines, muted } = useMuted(all, showMuted)
   const stats = useStreamStats(source, search.q)
   const [follow, setFollow] = useState(true)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -159,6 +168,8 @@ export function StreamPage() {
     setExpandedId(null)
     setFollow(true)
     setShowOld(false)
+    setHistory(null)
+    setJump(null)
   }
 
   // "Pause stream" in ⌘K.
@@ -333,6 +344,9 @@ export function StreamPage() {
     if (live === 'connecting') return 'loading recent lines · then streaming live'
     if (pending) return filtered ? 'loading matching lines · then streaming live' : 'loading recent lines'
     if (offline) return `offline · showing the last ${lines.length.toLocaleString()} lines`
+    if (jump && !jump.ready) return `paused · loading ${fmtClock(jump.span.from)} from history…`
+    if (live === 'paused' && jump)
+      return `paused · at ${fmtClock(jump.span.from)}${history?.truncated ? ` · first ${history.lines.length.toLocaleString()} lines from then, more before the live buffer` : ''} · ${unseen.toLocaleString()} new lines buffered`
     if (live === 'paused')
       return `paused · ${scrolledUp ? `scrolled ${scrolledUp.toLocaleString()} ${scrolledUp === 1 ? 'line' : 'lines'} up · ` : ''}${unseen.toLocaleString()} new lines buffered`
     if (filtered && countsFresh && matched === 0)
@@ -350,6 +364,70 @@ export function StreamPage() {
     setUnseen(u)
     setScrolledUp(up)
   }, [])
+
+  // Back to live (pill, G, the top bar, scrolling to the edge) drops the
+  // jump: history rows, the marked bar and the tint.
+  useEffect(() => {
+    if (!follow) return
+    setHistory(null)
+    setJump(null)
+    setFlash(null)
+  }, [follow])
+  // Filters changed: history fetched for the old ones no longer applies.
+  const [jumpFilters, setJumpFilters] = useState(filterKey)
+  if (jumpFilters !== filterKey) {
+    setJumpFilters(filterKey)
+    setJump(null)
+    setFlash(null)
+  }
+  const jumpSeq = useRef(0)
+  const jumpAbort = useRef<AbortController | null>(null)
+  useEffect(() => () => jumpAbort.current?.abort(), [])
+  /** Histogram bar → that minute: pause, load it if needed, scroll, tint. */
+  const jumpTo = (span: Span) => {
+    if (!source) return
+    const n = ++jumpSeq.current
+    setFollow(false)
+    setSelectedId(null)
+    setExpandedId(null)
+    jumpAbort.current?.abort()
+    const have = historyLines ? mergeHistory(historyLines, received) : received
+    if (bufferCovers(have, span)) {
+      setJump({ span, n, ready: true })
+      return
+    }
+    setJump({ span, n, ready: false })
+    const ctl = new AbortController()
+    jumpAbort.current = ctl
+    // Up to the oldest line held, so history and buffer meet without a gap
+    // when the minute is close; the server's page cap bounds the rest.
+    const oldest = have.length ? Math.min(...have.slice(0, 50).map((l) => l.ts)) : Date.now()
+    const key = filterKey
+    fetchHistory(
+      historyQuery({ source, levels: levelsCsv, q: search.q, span, until: Math.min(oldest, Date.now()) }),
+      ctl.signal,
+    )
+      .then((res) => {
+        if (jumpSeq.current !== n) return
+        setHistory({ key, lines: res.lines, truncated: res.next_cursor != null })
+        setJump({ span, n, ready: true })
+      })
+      .catch((e: unknown) => {
+        if (ctl.signal.aborted || jumpSeq.current !== n) return
+        setJump(null)
+        toast.error(`Couldn't load ${fmtClock(span.from)}`, {
+          description: e instanceof Error ? e.message : undefined,
+        })
+      })
+  }
+  // Tint the minute's rows for a moment once they are on screen.
+  const readyJump = jump?.ready ? jump : null
+  useEffect(() => {
+    if (!readyJump) return
+    setFlash(readyJump.span)
+    const t = setTimeout(() => setFlash(null), 1600)
+    return () => clearTimeout(t)
+  }, [readyJump])
 
   // First run: nothing has sent a line yet.
   if (sources?.length === 0 && !source) return <Welcome />
@@ -406,6 +484,8 @@ export function StreamPage() {
         levels={levels}
         loading={!snap}
         dim={offline || conn.down}
+        selected={jump?.span.from ?? null}
+        onJump={source ? jumpTo : undefined}
       />
       {filtered && countsFresh && matched != null && matched > 0 && (
         <div className="mx-6 mb-2 flex items-center gap-2 font-mono text-muted-foreground text-xs">
@@ -436,6 +516,8 @@ export function StreamPage() {
           dim={offline || conn.down}
           actions={actions}
           onUnseen={onUnseen}
+          jump={readyJump}
+          flash={flash}
           empty={
             !source ? (
               <span className="text-muted-foreground">Waiting for the first source…</span>

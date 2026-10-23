@@ -7,6 +7,7 @@ import { StatusDot } from '@/components/status-dot'
 import type { FlowSummary, LogLine } from '@/gen'
 import { fmtDuration } from '@/lib/flow'
 import { fmtRowTime, fmtTime } from '@/lib/format'
+import { inSpan, jumpIndex, nearestIndex, type Span } from '@/lib/histogram-jump'
 import { type FlowGroup, groupByFlow, highlight, notableFields } from '@/lib/query'
 import { cn } from '@/lib/utils'
 
@@ -59,18 +60,26 @@ function LineRow({
   showSource,
   onPick,
   muted = false,
+  flash = false,
 }: {
   line: LogLine
   words: string[]
   showSource: boolean
   onPick: (f: string) => void
+  /** In the histogram bar just jumped to: briefly tinted. */
+  flash?: boolean
   /** Matches its source's muted-lines rules and is shown anyway: dimmed and tagged. */
   muted?: boolean
 }) {
   return (
     <div
-      className={cn('flex h-full items-center gap-3 px-9 font-mono text-[13px]', muted && 'opacity-50')}
+      className={cn(
+        'flex h-full items-center gap-3 px-9 font-mono text-[13px] transition-colors',
+        muted && 'opacity-50',
+        flash && 'bg-brand/10 shadow-[inset_2px_0_0_var(--brand)]',
+      )}
       data-line-id={line.id}
+      data-flash={flash || undefined}
       data-muted={muted || undefined}
     >
       <span className="w-24 shrink-0 text-muted-foreground tabular-nums">{fmtRowTime(line.ts, 'seconds')}</span>
@@ -196,7 +205,16 @@ export function SearchResults({
   summaries,
   mutedIds,
   refreshing = false,
+  jump = null,
+  flash = null,
 }: {
+  /**
+   * Histogram jump: scroll so the first result in `span` sits at the top. A
+   * new `n` asks again; it waits for results that aren't placeholders.
+   */
+  jump?: { span: Span; n: number } | null
+  /** Results in this span are tinted (the bar just jumped to). */
+  flash?: Span | null
   /** These are the previous search's results; the new search is in flight. Dimmed. */
   refreshing?: boolean
   summaries?: Map<string, FlowSummary | null>
@@ -239,6 +257,19 @@ export function SearchResults({
     if (hasMore && !loadingMore && lastIndex >= items.length - 10) onMore()
   }, [lastIndex, items.length, hasMore, loadingMore, onMore])
 
+  const jumped = useRef(0)
+  useEffect(() => {
+    if (!jump || jumped.current === jump.n || refreshing || !items.length) return
+    const at = items.map((it) => ({ ts: it.kind === 'line' ? it.line.ts : Number.NaN }))
+    let i = jumpIndex(at, jump.span)
+    if (i < 0) i = nearestIndex(at, jump.span)
+    if (i < 0) return
+    // A line that opens its group: show the group's header with it.
+    if (i > 0 && items[i - 1].kind === 'head') i--
+    jumped.current = jump.n
+    v.scrollToIndex(i, { align: 'start' })
+  }, [jump, items, refreshing, v])
+
   const toggle = (key: string) =>
     setClosed((s) => {
       const n = new Set(s)
@@ -279,6 +310,7 @@ export function SearchResults({
                     showSource={view === 'lines'}
                     onPick={onPick}
                     muted={mutedIds?.has(it.line.id) ?? false}
+                    flash={flash != null && inSpan(it.line.ts, flash)}
                   />
                 </div>
               )}

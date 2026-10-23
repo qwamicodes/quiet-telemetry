@@ -1,5 +1,6 @@
 import type { Bucket } from '@/gen'
 import { fmtClock } from '@/lib/format'
+import type { Span } from '@/lib/histogram-jump'
 import { isOn, type LevelChip } from '@/lib/levels'
 import { cn } from '@/lib/utils'
 
@@ -9,6 +10,9 @@ const H = 48
  * Volume over the last hour, one bar a minute, stacked info / warn / error
  * (debug sits with info). Only the levels that are on are drawn, so it shows
  * what the table shows. Empty minutes are gaps.
+ *
+ * With `onJump`, each bar is a button (click, or Enter / Space when focused)
+ * that takes the table to that minute; `selected` marks the minute jumped to.
  */
 export function StreamHistogram({
   buckets,
@@ -17,6 +21,8 @@ export function StreamHistogram({
   levels,
   loading,
   dim,
+  selected,
+  onJump,
 }: {
   buckets: Bucket[]
   since: number
@@ -24,6 +30,9 @@ export function StreamHistogram({
   levels: LevelChip[]
   loading?: boolean
   dim?: boolean
+  /** Start (unix ms) of the minute the table was taken to. */
+  selected?: number | null
+  onJump?: (span: Span) => void
 }) {
   const parts = buckets.map((b) => {
     const info = (isOn(levels, 'info') ? b.info : 0) + (isOn(levels, 'debug') ? b.debug : 0)
@@ -47,19 +56,51 @@ export function StreamHistogram({
               // biome-ignore lint/suspicious/noArrayIndexKey: placeholder bars
               <span key={i} className="flex-1 animate-pulse bg-muted" style={{ height: `${20 + ((i * 37) % 60)}%` }} />
             ))
-          : parts.map((p, i) => (
-              <span
-                // biome-ignore lint/suspicious/noArrayIndexKey: fixed-position buckets
-                key={i}
-                title={`${fmtClock(p.start)} · ${p.total.toLocaleString()} lines${p.error ? ` · ${p.error} errors` : ''}${p.warn ? ` · ${p.warn} warnings` : ''}`}
-                className="flex flex-1 flex-col-reverse"
-                style={{ height: p.total ? `${Math.max(6, (p.total / max) * 100)}%` : 0 }}
-              >
-                <span className="bg-chart-1" style={{ flexGrow: p.info }} />
-                <span className="bg-chart-3" style={{ flexGrow: p.warn }} />
-                <span className="bg-chart-2" style={{ flexGrow: p.error }} />
-              </span>
-            ))}
+          : parts.map((p, i) => {
+              const label = `${fmtClock(p.start)} · ${p.total.toLocaleString()} lines${p.error ? ` · ${p.error} errors` : ''}${p.warn ? ` · ${p.warn} warnings` : ''}`
+              const bar = (
+                <span
+                  className="flex w-full flex-col-reverse"
+                  style={{ height: p.total ? `${Math.max(6, (p.total / max) * 100)}%` : 0 }}
+                >
+                  <span className="bg-chart-1" style={{ flexGrow: p.info }} />
+                  <span className="bg-chart-3" style={{ flexGrow: p.warn }} />
+                  <span className="bg-chart-2" style={{ flexGrow: p.error }} />
+                </span>
+              )
+              if (!onJump || !p.total)
+                return (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: fixed-position buckets
+                  <span key={i} title={label} className="flex h-full flex-1 items-end">
+                    {bar}
+                  </span>
+                )
+              const isSelected = selected != null && selected === p.start
+              return (
+                <button
+                  // biome-ignore lint/suspicious/noArrayIndexKey: fixed-position buckets
+                  key={i}
+                  type="button"
+                  title={`${label} · click to jump`}
+                  aria-label={`${label}. Jump to ${fmtClock(p.start)}`}
+                  aria-pressed={isSelected}
+                  data-selected={isSelected || undefined}
+                  onClick={() => onJump({ from: p.start, to: p.start + width })}
+                  // The page's own Enter / Space shortcuts must not swallow the button's.
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') e.stopPropagation()
+                  }}
+                  className={cn(
+                    'group/bar relative flex h-full flex-1 cursor-pointer items-end outline-none',
+                    'hover:bg-foreground/5 focus-visible:bg-foreground/5 focus-visible:ring-1 focus-visible:ring-ring',
+                    '[&>span]:transition-opacity hover:[&>span]:opacity-80',
+                    isSelected && 'bg-brand/10 shadow-[inset_0_-2px_0_var(--brand)]',
+                  )}
+                >
+                  {bar}
+                </button>
+              )
+            })}
       </div>
       <figcaption className="flex justify-between font-mono text-[11px] text-muted-foreground tabular-nums">
         {ticks.map((t, i) => (

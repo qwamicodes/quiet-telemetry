@@ -1,4 +1,4 @@
-import { infiniteQueryOptions, keepPreviousData, useInfiniteQuery } from '@tanstack/react-query'
+import { infiniteQueryOptions, keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import type { ExportFormat, ExportParams, MutedMode, SearchParams } from '@/gen'
 import { fetchJson } from '@/lib/api'
 import { publicOrigin } from '@/lib/format'
@@ -43,6 +43,20 @@ export const searchQuery = (p: SearchParams) =>
  */
 export const useSearchLines = (p: SearchParams, enabled = true) =>
   useInfiniteQuery({ ...searchQuery(p), enabled, placeholderData: keepPreviousData })
+
+/**
+ * The whole range's total and histogram while the results are re-anchored at
+ * a histogram bar (`at=`): one line, `buckets` bars, cached like a search.
+ */
+export const useSearchOverview = (p: SearchParams, enabled: boolean) =>
+  useQuery({
+    queryKey: ['search-overview', p],
+    queryFn: ({ signal }) =>
+      fetchJson(`/api/search?${toQuery({ ...p, limit: 1, buckets: BUCKETS })}`, searchResponse, { signal }),
+    enabled,
+    staleTime: 10_000,
+    placeholderData: keepPreviousData,
+  })
 
 export type ExportOptions = {
   format: ExportFormat
