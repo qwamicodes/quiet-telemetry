@@ -9,6 +9,7 @@ const GROUPS: { title: string; rows: [string, string[]][] }[] = [
       ['jump to newest', ['G']],
       ['move between lines', ['J', 'K']],
       ['open flow', ['↵']],
+      ['open the line as a diagram', ['D']],
       ['preview the selected line', ['space']],
       ['filter', ['/']],
       ['errors only', ['E']],
@@ -24,6 +25,8 @@ const GROUPS: { title: string; rows: [string, string[]][] }[] = [
       ['filter stream by value', ['F']],
       ['open in stream', ['O']],
       ['back to stream', ['esc']],
+      ['diagram: search · fit · zoom', ['/', '0', '+', '−']],
+      ['diagram: back to card', ['esc']],
     ],
   },
   {

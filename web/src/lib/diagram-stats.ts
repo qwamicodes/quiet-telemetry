@@ -13,6 +13,9 @@ export const ARRAY_CAP = 5
 export const LARGE_KEYS = 200
 export const LARGE_BYTES = 32 * 1024
 
+/** Why JSON and Diagram are greyed out on a plain-text line (board 04.12). */
+export const STRUCTURED_ONLY = 'Diagram needs a structured line (JSON, logfmt or OTLP).'
+
 export type LineStats = {
   /** Keys across every object in the line. */
   keys: number

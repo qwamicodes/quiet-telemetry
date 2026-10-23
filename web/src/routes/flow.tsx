@@ -11,11 +11,12 @@ import {
   ListIcon,
   SearchIcon,
   SettingsIcon,
+  WaypointsIcon,
   WorkflowIcon,
 } from 'lucide-react'
 import { useState } from 'react'
 import { ExportDialog } from '@/components/export-dialog'
-import { FieldCard } from '@/components/field-card'
+import { type DiagramMode, FieldCard } from '@/components/field-card'
 import { FlowGraph } from '@/components/flow/flow-graph'
 import { Timeline } from '@/components/flow/timeline'
 import { LevelBadge } from '@/components/level-badge'
@@ -23,6 +24,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { Flow, FlowNotFound, LogLine } from '@/gen'
 import { fetchJson, useHealth, useSources } from '@/lib/api'
+import { kindLabel } from '@/lib/connect'
 import { flowTone, fmtDuration, statusLabel, stitchedBy } from '@/lib/flow'
 import { type FlowTarget, useFlow } from '@/lib/flow-api'
 import { fmtBytes, fmtClock, fmtDay, fmtTime, fmtWindow, publicHost } from '@/lib/format'
@@ -37,15 +39,15 @@ const lineRoute = getRouteApi('/line/$lineId')
 /** `/flow/$id`: every line sharing this id, stitched across ids. */
 export function FlowPage() {
   const { id } = flowRoute.useParams()
-  const { line } = flowRoute.useSearch()
-  return <FlowScreen target={{ id }} selectedLine={line} />
+  const { line, card } = flowRoute.useSearch()
+  return <FlowScreen target={{ id }} selectedLine={line} view={card} />
 }
 
 /** `/line/$lineId`: the flow of one line (a one-node flow when it has no ids). */
 export function LineFlowPage() {
   const { lineId } = lineRoute.useParams()
-  const { line } = lineRoute.useSearch()
-  return <FlowScreen target={{ line: lineId }} selectedLine={line ?? lineId} />
+  const { line, card } = lineRoute.useSearch()
+  return <FlowScreen target={{ line: lineId }} selectedLine={line ?? lineId} view={card} />
 }
 
 async function copy(text: string, what: string) {
@@ -94,7 +96,7 @@ function Crumbs({
   )
 }
 
-function FlowScreen({ target, selectedLine }: { target: FlowTarget; selectedLine?: number }) {
+function FlowScreen({ target, selectedLine, view }: { target: FlowTarget; selectedLine?: number; view?: 'diagram' }) {
   const res = useFlow(target)
   const label = 'id' in target ? target.id : `line ${target.line}`
   if (res.isPending)
@@ -116,7 +118,15 @@ function FlowScreen({ target, selectedLine }: { target: FlowTarget; selectedLine
       </div>
     )
   if (!res.data.found) return <NotFound nf={res.data} />
-  return <FlowView flow={res.data.flow} since={res.data.since} until={res.data.until} selectedLine={selectedLine} />
+  return (
+    <FlowView
+      flow={res.data.flow}
+      since={res.data.since}
+      until={res.data.until}
+      selectedLine={selectedLine}
+      view={view}
+    />
+  )
 }
 
 function FlowView({
@@ -124,11 +134,13 @@ function FlowView({
   since,
   until,
   selectedLine,
+  view,
 }: {
   flow: Flow
   since: number
   until: number
   selectedLine?: number
+  view?: 'diagram'
 }) {
   const navigate = useNavigate()
   const first = flow.lines[0]
@@ -149,6 +161,20 @@ function FlowView({
     select(next.line_id)
   }
   const [exporting, setExporting] = useState(false)
+  // Diagram grows the card over the flow column (04.8) and stays on while
+  // J / K move between steps; the URL keeps it so a reload (or Stream's `D`)
+  // opens straight on the diagram.
+  const [diagram, setDiagramState] = useState<DiagramMode>(view === 'diagram' ? 'wide' : 'off')
+  const setDiagram = (m: DiagramMode) => {
+    setDiagramState(m)
+    if ((m === 'off') !== (diagram === 'off'))
+      navigate({
+        to: '.',
+        search: (s: Record<string, unknown>) => ({ ...s, card: m === 'off' ? undefined : ('diagram' as const) }),
+        replace: true,
+      })
+  }
+  const wide = diagram !== 'off'
   const streamSearch = { source: home.source, q: opened?.value }
   const openInStream = () => navigate({ to: '/', search: streamSearch })
   // Flow + card keys (design 08.2): J/K step, O open in stream, Esc back to the stream.
@@ -157,7 +183,8 @@ function FlowView({
     j: () => !exporting && move(1),
     k: () => !exporting && move(-1),
     o: () => !exporting && openInStream(),
-    escape: () => !exporting && navigate({ to: '/', search: { source: home.source } }),
+    // With the diagram open its own Esc (capture phase) shrinks it back first.
+    escape: () => !exporting && !wide && navigate({ to: '/', search: { source: home.source } }),
   })
 
   const one = flow.line_count === 1
@@ -232,12 +259,18 @@ function FlowView({
 
       {one ? (
         <div className="flex min-h-0 flex-1 gap-6">
-          <FieldCard line={line} className="w-auto max-w-3xl flex-1" onOpenInStream={openInStream} />
-          <OneNodeAside line={line} since={since} until={until} />
+          <FieldCard
+            line={line}
+            className={cn('w-auto flex-1', !wide && 'max-w-3xl')}
+            onOpenInStream={openInStream}
+            diagram={diagram}
+            onDiagramChange={setDiagram}
+          />
+          {!wide && <OneNodeAside line={line} since={since} until={until} />}
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 gap-4">
-          <div className="flex min-w-0 flex-1 flex-col gap-3">
+          <div className={cn('flex min-w-0 flex-1 flex-col gap-3', wide && 'hidden')}>
             <Timeline flow={flow} />
             <FlowGraph flow={flow} selected={node.line_id} onSelect={select} />
             {flow.missing_parent && (
@@ -262,6 +295,9 @@ function FlowView({
             onNext={() => move(1)}
             subtitle={node.attempt != null ? `attempt ${node.attempt}` : undefined}
             title={node.name}
+            diagram={diagram}
+            onDiagramChange={setDiagram}
+            className={cn(wide && 'w-auto flex-1')}
           />
         </div>
       )}
@@ -307,8 +343,49 @@ function FlowView({
   )
 }
 
+/** How to get a structured line out of a shipper that logs plain text (board 04.12). */
+function shipperHint(source: string): { what: string; flag: string } | null {
+  if (/traefik/i.test(source)) return { what: 'switch its access log to JSON', flag: '--accesslog.format=json' }
+  if (/nginx/i.test(source)) return { what: 'give it a JSON log_format', flag: "log_format json escape=json '{…}';" }
+  if (/caddy/i.test(source)) return { what: 'use the JSON log encoder', flag: 'log { format json }' }
+  return null
+}
+
+/** A plain-text line: why Diagram and JSON are off, and how to get structured lines. */
+function PlainTextNote({ source, kind }: { source: string; kind?: string }) {
+  const hint = shipperHint(source)
+  return (
+    <div className="border border-dashed p-4" data-testid="plain-text-note">
+      <h2 className="flex items-center gap-2 font-medium">
+        <WaypointsIcon className="size-4 text-muted-foreground" />
+        No diagram for plain text
+      </h2>
+      <p className="mt-2 text-muted-foreground">
+        The Diagram and JSON tabs stay visible but disabled, so the card keeps its shape from line to line. Raw shows
+        the line as it was sent.
+      </p>
+      <p className="mt-3 text-muted-foreground">
+        {hint
+          ? `To get Fields, Diagram and a flow for ${source}, ${hint.what}:`
+          : `To get Fields, Diagram and a flow for ${source}, log one JSON object per line (pino, zap, structlog, slog's JSON handler)${kind ? ` or switch the ${kind} shipper to JSON` : ''}.`}
+      </p>
+      {hint && (
+        <div className="mt-2 flex items-center gap-2 border bg-code px-3 py-2 font-mono text-xs">
+          <span className="flex-1 truncate">{hint.flag}</span>
+          <Button variant="ghost" size="xs" onClick={() => copy(hint.flag, 'flag')}>
+            <CopyIcon />
+            Copy
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function OneNodeAside({ line, since, until }: { line: LogLine; since: number; until: number }) {
-  const sources = useSources().data?.length
+  const all = useSources().data
+  const sources = all?.length
+  const kind = all?.find((s) => s.name === line.source)?.kind
   const nearby = useQuery({
     queryKey: ['nearby', line.source, line.id],
     queryFn: () =>
@@ -321,6 +398,12 @@ function OneNodeAside({ line, since, until }: { line: LogLine; since: number; un
   const id = line.display_id
   return (
     <aside className="flex w-[480px] shrink-0 flex-col gap-6">
+      {!line.fields && (
+        <PlainTextNote
+          source={line.source}
+          kind={kind && kind !== 'docker' && kind !== 'http' ? kindLabel(kind) : undefined}
+        />
+      )}
       <div className="border border-dashed p-4">
         <h2 className="flex items-center gap-2 font-medium">
           <GitForkIcon className="size-4 text-muted-foreground" />A one-node flow is just the card

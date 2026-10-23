@@ -205,6 +205,16 @@ export function StreamPage() {
         : go({ to: '/line/$lineId', params: { lineId: l.id } }),
     [go],
   )
+  // Stream preview → Diagram (04.14): the line's card, wide, on its Diagram tab.
+  const openDiagram = useCallback(
+    (l: LogLine) => {
+      if (!l.fields) return
+      if (l.display_id)
+        go({ to: '/flow/$id', params: { id: l.display_id.value }, search: { line: l.id, card: 'diagram' } })
+      else go({ to: '/line/$lineId', params: { lineId: l.id }, search: { card: 'diagram' } })
+    },
+    [go],
+  )
 
   const actionsRef = useRef<RowActions | null>(null)
   actionsRef.current = {
@@ -214,6 +224,7 @@ export function StreamPage() {
       setExpandedId((e) => (e === l.id ? null : l.id))
     },
     onOpenFlow: openFlow,
+    onOpenDiagram: openDiagram,
     onCopy: (l) =>
       copyText(
         l.fields ? JSON.stringify(l.fields, null, 2) : JSON.stringify({ raw: l.raw }),
@@ -227,6 +238,7 @@ export function StreamPage() {
     () => ({
       onSelect: (l) => actionsRef.current?.onSelect(l),
       onOpenFlow: (l) => actionsRef.current?.onOpenFlow(l),
+      onOpenDiagram: (l) => actionsRef.current?.onOpenDiagram(l),
       onCopy: (l) => actionsRef.current?.onCopy(l),
       onFilter: (c) => actionsRef.current?.onFilter(c),
     }),
@@ -301,6 +313,7 @@ export function StreamPage() {
       setExpandedId(null)
     },
     enter: () => selected && openFlow(selected),
+    d: () => selected && openDiagram(selected),
     e: () => setLevels(['error']),
     x: clearFilters,
     '1': () => setLevels(toggleChip(levels, 'debug')),
