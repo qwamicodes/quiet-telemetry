@@ -170,6 +170,11 @@ describe('custom source groups (06.9)', () => {
     await user.type(within(dialog).getByRole('textbox', { name: 'Filter sources to pick' }), 'bot')
     await user.click(within(dialog).getByRole('button', { name: 'Select all 2 matches' }))
     expect(within(dialog).getByTestId('picked-count')).toHaveTextContent('3 selected')
+    // v0.1 has owners and members only; the board's width beats the shadcn sm:max-w-sm default
+    expect(within(dialog).getByTestId('new-group-access')).toHaveTextContent('owners can edit')
+    expect(dialog.textContent).not.toMatch(/admins/)
+    expect(dialog.className).toMatch(/sm:max-w-130/)
+    expect(within(dialog).getByTitle('staging-bot')).toHaveClass('truncate')
     await user.click(within(dialog).getByRole('button', { name: /Create group/ }))
     await waitFor(() => expect(calls.find((c) => c.method === 'POST')).toBeDefined())
     const post = calls.find((c) => c.method === 'POST')
