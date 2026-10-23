@@ -20,6 +20,7 @@ import { STRUCTURED_ONLY } from '@/lib/diagram-stats'
 import { fmtDuration } from '@/lib/flow'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtRowTime } from '@/lib/format'
+import { parseJsonString } from '@/lib/json-string'
 import { chip, lineDuration, previewFields, type RowParts, rowParts } from '@/lib/row'
 import { useDebounced } from '@/lib/use-debounced'
 import { cn } from '@/lib/utils'
@@ -264,32 +265,38 @@ export function RowPreview({
     >
       {fields.length > 0 ? (
         <dl className="grid grid-cols-3 gap-x-6 gap-y-1 font-mono text-xs">
-          {fields.map(([k, v]) => (
-            <div key={k} className="flex min-w-0 gap-2">
-              <dt className="w-28 shrink-0 truncate text-syntax-key">
-                {k}
-                {Array.isArray(v) || (v && typeof v === 'object') ? (
-                  <span className="text-muted-foreground">
-                    {' '}
-                    [{Array.isArray(v) ? v.length : Object.keys(v).length}]
-                  </span>
-                ) : null}
-              </dt>
-              <dd className="min-w-0 truncate">
-                {v === null ? (
-                  <span className="text-syntax-literal">null</span>
-                ) : typeof v === 'number' ? (
-                  <span className="text-syntax-number">{v}</span>
-                ) : typeof v === 'boolean' ? (
-                  <span className="text-syntax-literal">{String(v)}</span>
-                ) : typeof v === 'string' ? (
-                  <span className="text-syntax-string">{v}</span>
-                ) : (
-                  <span className="text-muted-foreground">{Array.isArray(v) ? `${v.length} items` : '{…}'}</span>
-                )}
-              </dd>
-            </div>
-          ))}
+          {fields.map(([k, sent]) => {
+            // A string holding JSON previews as the structure it holds.
+            const json = typeof sent === 'string' ? parseJsonString(sent) : undefined
+            const v = json ?? sent
+            return (
+              <div key={k} className="flex min-w-0 gap-2" title={json ? `${k}: JSON sent as a string` : undefined}>
+                <dt className="w-28 shrink-0 truncate text-syntax-key">
+                  {k}
+                  {json && <span className="text-muted-foreground"> json</span>}
+                  {Array.isArray(v) || (v && typeof v === 'object') ? (
+                    <span className="text-muted-foreground">
+                      {' '}
+                      [{Array.isArray(v) ? v.length : Object.keys(v).length}]
+                    </span>
+                  ) : null}
+                </dt>
+                <dd className="min-w-0 truncate">
+                  {v === null ? (
+                    <span className="text-syntax-literal">null</span>
+                  ) : typeof v === 'number' ? (
+                    <span className="text-syntax-number">{v}</span>
+                  ) : typeof v === 'boolean' ? (
+                    <span className="text-syntax-literal">{String(v)}</span>
+                  ) : typeof v === 'string' ? (
+                    <span className="text-syntax-string">{v}</span>
+                  ) : (
+                    <span className="text-muted-foreground">{Array.isArray(v) ? `${v.length} items` : '{…}'}</span>
+                  )}
+                </dd>
+              </div>
+            )
+          })}
         </dl>
       ) : (
         <pre className="whitespace-pre-wrap break-all font-mono text-xs">{line.raw}</pre>
