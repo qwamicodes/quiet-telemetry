@@ -1,5 +1,5 @@
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CustomGroup, GroupMode, Health, SettingsResponse, SourceInfo } from '@/gen'
@@ -142,7 +142,7 @@ describe('custom source groups (06.9)', () => {
       .map((b) => b.getAttribute('aria-label')?.split(' · ')[0])
     expect(headers).toEqual(['Legivent staging', 'Edge', 'thelegiventos-applications', 'Standalone', 'Ingest'])
     expect(within(t).getAllByText('custom').length).toBeGreaterThan(0)
-    expect(within(t).getByText('· assigned by you', { exact: false })).toBeInTheDocument()
+    expect(within(t).getAllByText('· assigned by you')).toHaveLength(2)
     expect(within(t).getByText('· 2 moved to Legivent staging')).toBeInTheDocument()
     expect(within(t).getByText('Nothing in this group yet')).toBeInTheDocument()
     expect(screen.getByTestId('group-rules-hint')).toHaveTextContent('A group you make wins over Compose / Stack.')
@@ -179,7 +179,8 @@ describe('custom source groups (06.9)', () => {
   })
 
   it('a source’s ⋯ → Move to group moves it into a custom group, and Automatic puts it back (06.11)', async () => {
-    const user = userEvent.setup()
+    // Base UI keeps a closing menu's backdrop around for a frame.
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
     renderAt('/sources')
     const t = await table()
     await user.click(within(t).getByRole('button', { name: 'staging-bot actions' }))
@@ -189,7 +190,8 @@ describe('custom source groups (06.9)', () => {
     expect(
       screen.getByText('Back to Standalone: no Compose project or stack on this service.', { exact: false }),
     ).toBeInTheDocument()
-    await user.click(screen.getByRole('menuitem', { name: /Automatic \(compose \/ stack\)/ }))
+    // A pointer move would leave the submenu trigger and close it; click the item directly.
+    fireEvent.click(screen.getByRole('menuitem', { name: /Automatic \(compose \/ stack\)/ }))
     await waitFor(() =>
       expect(calls).toContainEqual({
         url: '/api/source-groups/assign',
@@ -200,7 +202,7 @@ describe('custom source groups (06.9)', () => {
 
     await user.click(within(t).getByRole('button', { name: 'api actions' }))
     await user.click(await screen.findByRole('menuitem', { name: /Move to group/ }))
-    await user.click(await screen.findByRole('menuitem', { name: /Edge/ }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Edge/ }))
     await waitFor(() =>
       expect(calls).toContainEqual({
         url: '/api/source-groups/assign',
@@ -247,7 +249,7 @@ describe('custom source groups (06.9)', () => {
     const user = userEvent.setup()
     renderAt('/sources', member)
     const t = await table()
-    expect(within(t).getByText('· assigned by an owner')).toBeInTheDocument()
+    expect(within(t).getAllByText('· assigned by an owner').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: 'New group' })).not.toBeInTheDocument()
     await user.click(within(t).getByRole('button', { name: 'staging-bot actions' }))
     expect(await screen.findByRole('menuitem', { name: /Stream this source/ })).toBeInTheDocument()
