@@ -1,12 +1,27 @@
 //! Docker receiver: follow every running container on the local socket.
 //!
-//! Source naming (decision d-sources, 2026-10-22):
-//!   swarm service label → compose service label → container name.
-//! Containers that share a name (replicas, restarts) merge into one source.
+//! Source identity (decision d-docker-identity, 2026-10-23; replaces
+//! d-sources): every container is its own source, keyed by what stays the
+//! same when it is recreated, so two `api` services in different projects
+//! never share a source:
+//!
+//! - `quiet.source=<name>`: that name (give several containers the same one
+//!   to merge them on purpose).
+//! - Swarm task: the full service name (`<stack>_<svc>`), `.<slot>` for
+//!   replicas after the first.
+//! - Compose: `<project>.<service>`, `.<n>` for container numbers after 1.
+//! - Anything else: the container name.
+//!
+//! The UI shows a friendly label instead (the service, with ` · <project>`
+//! added only when another source shows the same service; see
+//! [`Hub::list`](crate::hub::Hub::list)). Before this, sources were keyed by
+//! the bare service name, which merged same-named services across projects;
+//! [`plan_migration`] carries those old sources over once.
 
 use super::Receiver;
 use crate::hub::SourceKind;
 use crate::pipeline::{Pipeline, RawLine};
+use crate::settings::DockerIdentity;
 use async_trait::async_trait;
 use bollard::container::{ListContainersOptions, LogOutput, LogsOptions};
 use bollard::system::EventsOptions;
@@ -14,51 +29,178 @@ use bollard::Docker;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 const SWARM_SERVICE: &str = "com.docker.swarm.service.name";
-use crate::grouping::SWARM_STACK;
+const SWARM_TASK: &str = "com.docker.swarm.task.name";
+use crate::grouping::{COMPOSE_PROJECT, SWARM_STACK};
 const COMPOSE_SERVICE: &str = "com.docker.compose.service";
+const COMPOSE_NUMBER: &str = "com.docker.compose.container-number";
 /// Opt a container out: `quiet.ignore=true`. Rename: `quiet.source=name`.
 const QUIET_IGNORE: &str = "quiet.ignore";
 const QUIET_SOURCE: &str = "quiet.source";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Naming {
+    /// The stable identity key (before aliases): see the module docs.
     pub source: String,
+    /// What versions before d-docker-identity named it (the bare service).
+    pub legacy: String,
+    /// Friendly label: the service (or container) name, ` #n` for replicas.
+    pub base: String,
+    /// The Compose project or Swarm stack, added to `base` when two sources
+    /// would show the same label.
+    pub context: Option<String>,
+    /// Named by `quiet.source`: merging is on purpose, never migrated.
+    pub explicit: bool,
+}
+
+fn label<'a>(labels: &'a HashMap<String, String>, k: &str) -> Option<&'a str> {
+    labels.get(k).map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
+/// The replica number of a Swarm task (`<service>.<slot>.<task id>`); global
+/// services (`<service>.<node id>.<task id>`) have none, and quiet only sees
+/// one node, so they never collide.
+fn swarm_slot(service: &str, task: Option<&str>) -> Option<u32> {
+    let rest = task?.strip_prefix(service)?.strip_prefix('.')?;
+    rest.split('.').next()?.parse().ok()
 }
 
 pub fn name_for(container_name: &str, labels: &HashMap<String, String>) -> Option<Naming> {
-    if labels
-        .get(QUIET_IGNORE)
-        .map(|v| v == "true")
-        .unwrap_or(false)
-    {
+    if label(labels, QUIET_IGNORE) == Some("true") {
         return None;
     }
-    let naming = |source: String| Naming { source };
-    if let Some(s) = labels.get(QUIET_SOURCE) {
-        return Some(naming(s.clone()));
+    let container = container_name.trim_start_matches('/').to_string();
+    if let Some(s) = label(labels, QUIET_SOURCE) {
+        return Some(Naming {
+            source: s.to_string(),
+            legacy: s.to_string(),
+            base: s.to_string(),
+            context: None,
+            explicit: true,
+        });
     }
-    if let Some(svc) = labels.get(SWARM_SERVICE) {
+    if let Some(svc) = label(labels, SWARM_SERVICE) {
+        let stack = label(labels, SWARM_STACK);
         // Swarm names services "<stack>_<svc>"; show the short one.
-        let short = match labels.get(SWARM_STACK) {
-            Some(st) => svc
-                .strip_prefix(&format!("{st}_"))
-                .unwrap_or(svc)
-                .to_string(),
-            None => svc.clone(),
+        let short = stack
+            .and_then(|st| svc.strip_prefix(&format!("{st}_")))
+            .unwrap_or(svc)
+            .to_string();
+        let slot = swarm_slot(svc, label(labels, SWARM_TASK)).filter(|n| *n > 1);
+        return Some(Naming {
+            source: match slot {
+                Some(n) => format!("{svc}.{n}"),
+                None => svc.to_string(),
+            },
+            base: match slot {
+                Some(n) => format!("{short} #{n}"),
+                None => short.clone(),
+            },
+            legacy: short,
+            context: stack.map(String::from),
+            explicit: false,
+        });
+    }
+    if let Some(svc) = label(labels, COMPOSE_SERVICE) {
+        let project = label(labels, COMPOSE_PROJECT);
+        let n = label(labels, COMPOSE_NUMBER)
+            .and_then(|n| n.parse::<u32>().ok())
+            .filter(|n| *n > 1);
+        let key = match project {
+            Some(p) => format!("{p}.{svc}"),
+            None => svc.to_string(),
         };
-        return Some(naming(short));
+        return Some(Naming {
+            source: match n {
+                Some(n) => format!("{key}.{n}"),
+                None => key,
+            },
+            base: match n {
+                Some(n) => format!("{svc} #{n}"),
+                None => svc.to_string(),
+            },
+            legacy: svc.to_string(),
+            context: project.map(String::from),
+            explicit: false,
+        });
     }
-    if let Some(svc) = labels.get(COMPOSE_SERVICE) {
-        return Some(naming(svc.clone()));
+    Some(Naming {
+        source: container.clone(),
+        legacy: container.clone(),
+        base: container,
+        context: None,
+        explicit: false,
+    })
+}
+
+/// The source name a container's lines land in: its identity key, or the
+/// old source it took over in the migration. A key that an alias already
+/// uses for another container (a plain container named like an old merged
+/// service) gets `.container` so the two never share a source.
+pub fn resolve(naming: &Naming, ident: &DockerIdentity) -> String {
+    if let Some(name) = ident.aliases.get(&naming.source) {
+        return name.clone();
     }
-    Some(naming(container_name.trim_start_matches('/').to_string()))
+    if !naming.explicit && ident.aliases.values().any(|v| *v == naming.source) {
+        return format!("{}.container", naming.source);
+    }
+    naming.source.clone()
+}
+
+/// What the one-time migration from service-name sources does.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Migration {
+    /// Identity key → old source it keeps writing to (the old source had
+    /// exactly one running container, so its lines, settings, custom group,
+    /// mutes and search name carry on unchanged).
+    pub aliases: BTreeMap<String, String>,
+    /// Old merged source → the keys it splits into. Each new source inherits
+    /// the old one's settings (except its display name) and custom group;
+    /// the old source keeps its lines until they age out.
+    pub split: BTreeMap<String, Vec<String>>,
+}
+
+/// Plan the migration from the running containers' namings and the docker
+/// sources already stored. Pure, so the collision cases are unit-tested.
+pub fn plan_migration(namings: &[Naming], stored: &HashSet<String>) -> Migration {
+    let mut by_legacy: BTreeMap<&str, Vec<&Naming>> = BTreeMap::new();
+    // `quiet.source` containers resolve to their old name, so they keep it.
+    for n in namings {
+        by_legacy.entry(n.legacy.as_str()).or_default().push(n);
+    }
+    let mut m = Migration::default();
+    for (legacy, members) in by_legacy {
+        if !stored.contains(legacy) {
+            continue;
+        }
+        // A container that still resolves to the old name keeps it as is.
+        let keeps = members.iter().any(|n| n.source == legacy);
+        let movers: Vec<String> = {
+            let mut v: Vec<String> = members
+                .iter()
+                .filter(|n| n.source != legacy)
+                .map(|n| n.source.clone())
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        if movers.is_empty() {
+            continue;
+        }
+        if !keeps && movers.len() == 1 && !stored.contains(&movers[0]) {
+            m.aliases.insert(movers[0].clone(), legacy.to_string());
+        } else {
+            m.split.insert(legacy.to_string(), movers);
+        }
+    }
+    m
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -224,22 +366,21 @@ impl DockerReceiver {
                 ..Default::default()
             }))
             .await?;
-        for c in running {
-            if let Some(id) = c.id {
+        let running: Vec<(String, String, HashMap<String, String>)> = running
+            .into_iter()
+            .filter_map(|c| {
+                let id = c.id?;
                 let name = c
                     .names
                     .and_then(|n| n.into_iter().next())
-                    .unwrap_or_else(|| id[..12].to_string());
-                // Attach with a short tail so the stream has context.
-                self.follow(
-                    &docker,
-                    id,
-                    name,
-                    c.labels.unwrap_or_default(),
-                    Some(200),
-                    shutdown,
-                );
-            }
+                    .unwrap_or_else(|| id.chars().take(12).collect());
+                Some((id, name, c.labels.unwrap_or_default()))
+            })
+            .collect();
+        self.migrate(&running);
+        for (id, name, labels) in running {
+            // Attach with a short tail so the stream has context.
+            self.follow(&docker, id, name, labels, Some(200), shutdown);
         }
         self.update_status();
 
@@ -264,6 +405,46 @@ impl DockerReceiver {
         *self.status.lock().unwrap() = DockerStatus::Connected { containers: n };
     }
 
+    /// Once per data directory: carry sources named by the bare service
+    /// (before d-docker-identity) over to per-container identities. An old
+    /// source with one running container keeps being written to (alias); an
+    /// old merged one keeps its lines and hands its settings and custom group
+    /// to each container it splits into. Runs on the first connect only, so
+    /// a container that is stopped then keeps its new identity when it starts.
+    fn migrate(&self, running: &[(String, String, HashMap<String, String>)]) {
+        let settings = self.pipeline.settings();
+        if settings.docker_identity().migrated {
+            return;
+        }
+        let namings: Vec<Naming> = running
+            .iter()
+            .filter_map(|(_, name, labels)| name_for(name, labels))
+            .collect();
+        let hub = self.pipeline.hub();
+        let stored: HashSet<String> = hub
+            .labels()
+            .into_iter()
+            .filter(|(_, kind, _)| *kind == SourceKind::Docker)
+            .map(|(name, _, _)| name)
+            .collect();
+        let plan = plan_migration(&namings, &stored);
+        for old in plan.split.keys() {
+            if let Some(src) = hub.source(old) {
+                src.update_meta(|m| {
+                    m.label_base = Some(format!("{old} (merged, before the split)"));
+                });
+            }
+        }
+        match settings.finish_docker_migration(plan.aliases.clone(), &plan.split) {
+            Ok(_) => tracing::info!(
+                kept = plan.aliases.len(),
+                split = plan.split.len(),
+                "docker sources now one per container"
+            ),
+            Err(e) => tracing::warn!(error = ?e, "docker source migration not saved"),
+        }
+    }
+
     fn follow(
         &self,
         docker: &Docker,
@@ -279,20 +460,29 @@ impl DockerReceiver {
         if !self.following.lock().unwrap().insert(id.clone()) {
             return;
         }
+        let source_name = resolve(&naming, &self.pipeline.settings().docker_identity());
         let short = container_name.trim_start_matches('/').to_string();
         let source = self
             .pipeline
             .hub()
-            .ensure_source(&naming.source, SourceKind::Docker);
+            .ensure_source(&source_name, SourceKind::Docker);
         source.update_meta(|m| {
             if !m.containers.contains(&short) {
                 m.containers.push(short.clone());
             }
-            // The first container's labels decide the group (replicas share them).
-            if m.labels.is_empty() {
+            // One container per source, so its latest labels decide the
+            // group; sources merged on purpose (`quiet.source`) keep the
+            // first container's.
+            if m.labels.is_empty() || !naming.explicit {
                 m.labels = labels.clone();
             }
+            m.label_base = Some(naming.base.clone());
+            m.label_context = naming.context.clone();
         });
+        let naming = Naming {
+            source: source_name,
+            ..naming
+        };
 
         let docker = docker.clone();
         let pipeline = self.pipeline.clone();
@@ -402,7 +592,6 @@ impl LineSplitter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grouping::COMPOSE_PROJECT;
 
     #[cfg(not(windows))]
     #[test]
@@ -423,6 +612,14 @@ mod tests {
             .collect()
     }
 
+    fn compose(project: &str, svc: &str, n: &str) -> HashMap<String, String> {
+        labels(&[
+            (COMPOSE_PROJECT, project),
+            (COMPOSE_SERVICE, svc),
+            (COMPOSE_NUMBER, n),
+        ])
+    }
+
     #[test]
     fn naming_priority() {
         let n = name_for(
@@ -430,6 +627,7 @@ mod tests {
             &labels(&[
                 (SWARM_SERVICE, "shop_api"),
                 (SWARM_STACK, "shop"),
+                (SWARM_TASK, "shop_api.1.xyz"),
                 (COMPOSE_SERVICE, "x"),
             ]),
         )
@@ -437,24 +635,185 @@ mod tests {
         assert_eq!(
             n,
             Naming {
-                source: "api".into(),
+                source: "shop_api".into(),
+                legacy: "api".into(),
+                base: "api".into(),
+                context: Some("shop".into()),
+                explicit: false,
             }
         );
 
-        let n = name_for(
-            "/proj-worker-1",
-            &labels(&[(COMPOSE_SERVICE, "worker"), (COMPOSE_PROJECT, "proj")]),
-        )
-        .unwrap();
-        assert_eq!(n.source, "worker");
-        assert_eq!(name_for("/redis", &labels(&[])).unwrap().source, "redis");
+        let n = name_for("/proj-worker-1", &compose("proj", "worker", "1")).unwrap();
         assert_eq!(
-            name_for("/x", &labels(&[(QUIET_SOURCE, "payments")]))
+            (n.source.as_str(), n.base.as_str(), n.legacy.as_str()),
+            ("proj.worker", "worker", "worker")
+        );
+        assert_eq!(n.context.as_deref(), Some("proj"));
+        let n = name_for("/redis", &labels(&[])).unwrap();
+        assert_eq!((n.source.as_str(), n.base.as_str()), ("redis", "redis"));
+        let n = name_for("/x", &labels(&[(QUIET_SOURCE, "payments")])).unwrap();
+        assert_eq!(n.source, "payments");
+        assert!(n.explicit);
+        assert!(name_for("/x", &labels(&[(QUIET_IGNORE, "true")])).is_none());
+        // Compose without a project label (old engines): the service.
+        assert_eq!(
+            name_for("/w", &labels(&[(COMPOSE_SERVICE, "worker")]))
                 .unwrap()
                 .source,
-            "payments"
+            "worker"
         );
-        assert!(name_for("/x", &labels(&[(QUIET_IGNORE, "true")])).is_none());
+    }
+
+    /// Parnion: Results Checker Hub prod + staging, two Voltx envs and
+    /// Outline all run `postgres`/`redis`/`api`; each is its own source.
+    #[test]
+    fn same_service_in_different_projects_never_shares_a_source() {
+        let cases = [
+            (
+                "/rch-production-postgres",
+                compose("rch-infra-b2k5vv", "postgres", "1"),
+            ),
+            (
+                "/rch-staging-postgres",
+                compose("rch-infra-fy7d7a", "postgres", "1"),
+            ),
+            (
+                "/outline-postgres-1",
+                compose("outline-d63yzb", "postgres", "1"),
+            ),
+            (
+                "/rch-production-api",
+                compose("rch-apps-jz0tgd", "api", "1"),
+            ),
+            ("/rch-staging-api", compose("rch-apps-2wbbnm", "api", "1")),
+        ];
+        let keys: HashSet<String> = cases
+            .iter()
+            .map(|(n, l)| name_for(n, l).unwrap().source)
+            .collect();
+        assert_eq!(keys.len(), cases.len(), "{keys:?}");
+        assert!(keys.contains("rch-infra-b2k5vv.postgres"));
+        // Swarm stacks: `shop_api` and `blog_api` both show `api`.
+        let swarm = |svc: &str, stack: &str, task: &str| {
+            name_for(
+                task,
+                &labels(&[
+                    (SWARM_SERVICE, svc),
+                    (SWARM_STACK, stack),
+                    (SWARM_TASK, task),
+                ]),
+            )
+            .unwrap()
+        };
+        let a = swarm("shop_api", "shop", "shop_api.1.aaa");
+        let b = swarm("blog_api", "blog", "blog_api.1.bbb");
+        assert_ne!(a.source, b.source);
+        assert_eq!((a.base.as_str(), b.base.as_str()), ("api", "api"));
+    }
+
+    #[test]
+    fn replicas_and_recreated_containers() {
+        // Compose: number 1 keeps the plain key, later numbers get `.n`.
+        let one = name_for("/p-worker-1", &compose("p", "worker", "1")).unwrap();
+        let two = name_for("/p-worker-2", &compose("p", "worker", "2")).unwrap();
+        assert_eq!(
+            (one.source.as_str(), two.source.as_str()),
+            ("p.worker", "p.worker.2")
+        );
+        assert_eq!(two.base, "worker #2");
+        // Recreated (new id, same labels): same source.
+        assert_eq!(
+            name_for("/p-worker-1", &compose("p", "worker", "1"))
+                .unwrap()
+                .source,
+            one.source
+        );
+        // Swarm: the task id changes on every deploy, the slot doesn't.
+        let task = |t: &str| {
+            name_for(
+                t,
+                &labels(&[
+                    (SWARM_SERVICE, "shop_api"),
+                    (SWARM_STACK, "shop"),
+                    (SWARM_TASK, t),
+                ]),
+            )
+            .unwrap()
+            .source
+        };
+        assert_eq!(task("shop_api.1.old"), task("shop_api.1.new"));
+        assert_eq!(task("shop_api.3.x"), "shop_api.3");
+        // Global service (node id, not a slot): no suffix.
+        assert_eq!(task("shop_api.k2j3h4.x"), "shop_api");
+        assert_eq!(swarm_slot("a", Some("a.2.x")), Some(2));
+        assert_eq!(swarm_slot("a", Some("ab.2.x")), None);
+        assert_eq!(swarm_slot("a", None), None);
+    }
+
+    #[test]
+    fn migration_keeps_unique_sources_and_splits_merged_ones() {
+        let n = |name: &str, l: HashMap<String, String>| name_for(name, &l).unwrap();
+        let running = vec![
+            // `postgres` was merged across three projects.
+            n("/a", compose("rch-prod", "postgres", "1")),
+            n("/b", compose("rch-staging", "postgres", "1")),
+            n("/c", compose("outline", "postgres", "1")),
+            // `db` only ever had one container: it keeps the old source.
+            n("/d", compose("affine", "db", "1")),
+            // A plain container still called `redis` keeps it; the compose
+            // `redis` next to it splits off.
+            n("/redis", labels(&[])),
+            n("/e", compose("outline", "redis", "1")),
+            // Swarm app without a stack: same name as before, nothing to do.
+            n(
+                "/dokploy.1.x",
+                labels(&[(SWARM_SERVICE, "dokploy"), (SWARM_TASK, "dokploy.1.x")]),
+            ),
+            // Merged on purpose with `quiet.source`: an `api` in a project
+            // must not be aliased into it.
+            n("/f", labels(&[(QUIET_SOURCE, "api")])),
+            n("/g", compose("rch-prod", "api", "1")),
+            // Never stored before (a new project): nothing to migrate.
+            n("/h", compose("new", "web", "1")),
+        ];
+        let stored: HashSet<String> = ["postgres", "db", "redis", "dokploy", "api", "cli"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let m = plan_migration(&running, &stored);
+        assert_eq!(
+            m.aliases,
+            [("affine.db".to_string(), "db".to_string())].into()
+        );
+        assert_eq!(
+            m.split.get("postgres").unwrap(),
+            &vec![
+                "outline.postgres".to_string(),
+                "rch-prod.postgres".to_string(),
+                "rch-staging.postgres".to_string()
+            ]
+        );
+        assert_eq!(
+            m.split.get("redis").unwrap(),
+            &vec!["outline.redis".to_string()]
+        );
+        assert_eq!(
+            m.split.get("api").unwrap(),
+            &vec!["rch-prod.api".to_string()]
+        );
+        assert_eq!(m.split.len(), 3, "{m:?}");
+
+        // Resolving: the alias wins; everyone else gets their own key.
+        let ident = DockerIdentity {
+            migrated: true,
+            aliases: m.aliases.clone(),
+        };
+        assert_eq!(resolve(&running[3], &ident), "db");
+        assert_eq!(resolve(&running[0], &ident), "rch-prod.postgres");
+        // A plain container later named like an aliased source stays apart.
+        let late = n("/db", labels(&[]));
+        assert_eq!(resolve(&late, &ident), "db.container");
+        assert_eq!(resolve(&running[7], &ident), "api");
     }
 
     #[test]

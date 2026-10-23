@@ -66,6 +66,20 @@ pub struct SourceMeta {
     #[serde(skip)]
     #[ts(skip)]
     pub labels: HashMap<String, String>,
+    /// Friendly label parts (docker only): the service or container name,
+    /// and the Compose project / Swarm stack added when two sources would
+    /// show the same label. See [`Hub::list`].
+    #[serde(skip)]
+    #[ts(skip)]
+    pub label_base: Option<String>,
+    #[serde(skip)]
+    #[ts(skip)]
+    pub label_context: Option<String>,
+    /// The label worked out by [`Hub::list`]; `/api/sources` shows it as the
+    /// display name unless the source has its own.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub label: Option<String>,
     /// Its group under the current Settings → Source grouping (`null` when
     /// grouping is off). Filled in by [`Source::info`].
     pub group: Option<String>,
@@ -192,6 +206,9 @@ impl Hub {
             .collect()
     }
 
+    /// Every source, by name, each with its friendly [`SourceMeta::label`]:
+    /// the service name, or `<service> · <project>` when another source
+    /// shows the same service (two `api`s in different Compose projects).
     pub fn list(&self) -> Vec<SourceInfo> {
         let mut v: Vec<_> = self
             .sources
@@ -201,6 +218,7 @@ impl Hub {
             .map(|s| s.info())
             .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
+        label_sources(&mut v);
         v
     }
 
@@ -218,10 +236,81 @@ impl Hub {
     }
 }
 
+/// Fill [`SourceMeta::label`]: `base`, unless another source shows the
+/// same, then `base · context`. A label that would just repeat the name is
+/// left out.
+pub fn label_sources(sources: &mut [SourceInfo]) {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for s in sources.iter() {
+        if let Some(b) = &s.meta.label_base {
+            *seen.entry(b.clone()).or_default() += 1;
+        }
+    }
+    // Names shown outright by sources without a label (OTLP `api`, a stored
+    // source from before) count as taken too.
+    for s in sources.iter().filter(|s| s.meta.label_base.is_none()) {
+        if let Some(n) = seen.get_mut(&s.name) {
+            *n += 1;
+        }
+    }
+    for s in sources.iter_mut() {
+        let Some(base) = s.meta.label_base.clone() else {
+            continue;
+        };
+        let label = match (
+            &s.meta.label_context,
+            seen.get(&base).copied().unwrap_or(0) > 1,
+        ) {
+            (Some(ctx), true) => format!("{base} · {ctx}"),
+            _ => base,
+        };
+        s.meta.label = (label != s.name).then_some(label);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::normalize::normalize;
+
+    #[test]
+    fn labels_are_disambiguated_only_when_they_collide() {
+        let hub = Hub::new();
+        let docker = |name: &str, base: &str, ctx: Option<&str>| {
+            hub.ensure_source(name, SourceKind::Docker)
+                .update_meta(|m| {
+                    m.label_base = Some(base.into());
+                    m.label_context = ctx.map(String::from);
+                });
+        };
+        docker("rch-prod.api", "api", Some("rch-prod"));
+        docker("rch-staging.api", "api", Some("rch-staging"));
+        docker("affine.db", "db", Some("affine"));
+        docker("dokploy-postgres", "dokploy-postgres", None);
+        docker("shop_web.2", "web #2", Some("shop"));
+        hub.ensure_source("redis", SourceKind::Docker); // old merged source
+        docker("outline.redis", "redis", Some("outline"));
+        let label = |n: &str| {
+            hub.list()
+                .into_iter()
+                .find(|s| s.name == n)
+                .unwrap()
+                .meta
+                .label
+        };
+        assert_eq!(label("rch-prod.api").as_deref(), Some("api · rch-prod"));
+        assert_eq!(
+            label("rch-staging.api").as_deref(),
+            Some("api · rch-staging")
+        );
+        assert_eq!(label("affine.db").as_deref(), Some("db"));
+        assert_eq!(label("dokploy-postgres"), None, "same as the name");
+        assert_eq!(label("shop_web.2").as_deref(), Some("web #2"));
+        // An unlabelled source called `redis` still shows as `redis`, so
+        // the new one says which project it is.
+        assert_eq!(label("outline.redis").as_deref(), Some("redis · outline"));
+        assert_eq!(label("redis"), None);
+    }
 
     #[test]
     fn info_groups_from_container_labels() {

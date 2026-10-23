@@ -106,7 +106,7 @@ export function SourceDetailPage() {
       </nav>
       <header className="flex items-center gap-3">
         <StatusDot status={saved.paused ? 'warn' : live ? 'ok' : 'idle'} />
-        <h1 className="font-semibold text-2xl">{saved.display_name ?? name}</h1>
+        <h1 className="font-semibold text-2xl">{saved.display_name ?? info?.display_name ?? name}</h1>
         {info && (
           <span className="border px-1.5 py-0.5 font-mono text-muted-foreground text-xs">{kindLabel(info.kind)}</span>
         )}

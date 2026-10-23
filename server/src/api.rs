@@ -239,6 +239,10 @@ async fn sources(State(s): State<AppState>) -> Json<SourcesResponse> {
             src.hidden = st.hidden;
             src.paused = st.paused;
         }
+        // No name of its own: the friendly label (`api · rch-prod`).
+        if src.display_name.is_none() {
+            src.display_name = src.meta.label.clone();
+        }
     }
     apply_custom_groups(&mut sources, &custom);
     Json(SourcesResponse {
