@@ -389,3 +389,13 @@ curl -X POST https://quiet.example.com/ingest/ndjson -H 'Authorization: Bearer q
   -H 'X-Quiet-Source: cron-runner' --data-binary @app.log
 bun run start | quiet pipe --name legivent-api --token qi_…   # plain http only; echoes stdin
 ```
+
+## License
+
+quiet is licensed under the [Functional Source License, Version 1.1, MIT Future License](LICENSE.md) (`FSL-1.1-MIT`).
+
+- **Free to use, modify and self-host**, including inside your company for your own teams.
+- **Not allowed:** offering quiet, or a modified version of it, as a competing commercial product or service (for example, a hosted log viewer you sell).
+- **Becomes MIT:** each version turns into plain MIT two years after it is released.
+
+For commercial licensing, contact Kwaame Ofori-adjekum ([@qwamicodes](https://github.com/qwamicodes)).
