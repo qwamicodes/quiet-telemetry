@@ -100,7 +100,11 @@ export const health = z.object({
 export const groupKind = z.enum(['manual', 'compose', 'stack', 'custom', 'standalone', 'ingest'])
 
 /** A custom group made on the Sources page (Sources → New group). */
-export const customGroup = z.object({ id: z.string(), name: z.string(), order: z.number() }) satisfies z.ZodType<CustomGroup>
+export const customGroup = z.object({
+  id: z.string(),
+  name: z.string(),
+  order: z.number(),
+}) satisfies z.ZodType<CustomGroup>
 
 export const sourceInfo = z.object({
   name: z.string(),

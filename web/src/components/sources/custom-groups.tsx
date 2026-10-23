@@ -72,11 +72,7 @@ const label = (s: SourceInfo) => s.display_name ?? s.name
 /** The dashed hint under the table (06.9). */
 export function GroupRulesHint() {
   return (
-    <p
-      className="flex items-center gap-2 border border-dashed px-3 py-2.5 text-xs"
-      data-testid="group-rules-hint"
-      aria-label="How custom groups work"
-    >
+    <p className="flex items-center gap-2 border border-dashed px-3 py-2.5 text-xs" data-testid="group-rules-hint">
       <FolderIcon className="size-3.5 shrink-0 text-brand" />
       <span>A group you make wins over Compose / Stack.</span>
       <span className="truncate font-mono text-[11px] text-muted-foreground">
@@ -252,7 +248,7 @@ function NewGroupForm({
                 </button>
               )}
             </div>
-            <div className="max-h-72 overflow-y-auto" role="group" aria-label="Sources to pick">
+            <fieldset className="m-0 max-h-72 min-w-0 overflow-y-auto border-0 p-0" aria-label="Sources to pick">
               {sections.map((sec) =>
                 sec.rows.length === 0 ? null : (
                   <Fragment key={sec.key}>
@@ -297,7 +293,7 @@ function NewGroupForm({
                   {sources.length === 0 ? 'No sources yet.' : 'No source matches.'}
                 </p>
               )}
-            </div>
+            </fieldset>
           </div>
           <span className="text-muted-foreground text-xs">
             You can add more later from any source’s ⋯ menu → Move to group.
@@ -362,7 +358,9 @@ function RenameForm({ group, custom, onClose }: { group: CustomGroup; custom: Cu
       <form onSubmit={submit} className="flex flex-col gap-4">
         <DialogHeader>
           <DialogTitle>Rename {group.name}</DialogTitle>
-          <DialogDescription>Its sources stay in it; collapsed state and filters follow the new name.</DialogDescription>
+          <DialogDescription>
+            Its sources stay in it; collapsed state and filters follow the new name.
+          </DialogDescription>
         </DialogHeader>
         <NameField id="rename-group-name" value={name} onChange={setName} error={error} />
         <div className="flex justify-end gap-2">
@@ -525,9 +523,7 @@ export function SourceMenu({
         <DropdownMenuItem onClick={() => navigate({ to: '/search', search: { source: s.name, range: '24h' } })}>
           <SearchIcon /> Search · 24h
         </DropdownMenuItem>
-        <DropdownMenuItem
-          render={<Link to="/sources/$name" params={{ name: s.name }} search={{ tab: 'settings' }} />}
-        >
+        <DropdownMenuItem render={<Link to="/sources/$name" params={{ name: s.name }} search={{ tab: 'settings' }} />}>
           <PencilIcon /> Edit / rename…
         </DropdownMenuItem>
         {canMove && (

@@ -36,6 +36,7 @@ import { fmtClock, isRecent } from '@/lib/format'
 import { copyPrompt, stackNow } from '@/lib/guide'
 import { searchResponse } from '@/lib/schemas'
 import { groupSources, KIND_TAG } from '@/lib/source-groups'
+import { useCustomGroups } from '@/lib/source-groups-api'
 import { useTheme } from '@/lib/theme'
 import { useDebounced } from '@/lib/use-debounced'
 import { useRates } from '@/lib/use-rates'
@@ -83,7 +84,8 @@ export function CommandPalette({
   const onStream = typeof window !== 'undefined' && window.location.pathname === '/'
 
   // Sources under their group (board v0.1-03.9); a group opens Sources filtered, it never streams.
-  const grouped = groupSources(sources, sources)
+  const custom = useCustomGroups()
+  const grouped = groupSources(sources, sources, undefined, custom)
   const sourceItem = (s: SourceInfo) => {
     const rate = rates[s.name]
     const live = isRecent(s.last_ts)

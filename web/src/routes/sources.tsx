@@ -1,10 +1,13 @@
 import { useQueries } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
+  ArrowRightIcon,
   BoxIcon,
   ChevronsDownUpIcon,
   EllipsisIcon,
   FilterIcon,
+  FolderIcon,
+  FolderPlusIcon,
   InfoIcon,
   LoaderCircleIcon,
   PlusIcon,
@@ -12,8 +15,15 @@ import {
   TriangleAlertIcon,
   XIcon,
 } from 'lucide-react'
-import { Fragment, useRef, useState } from 'react'
+import { Fragment, type ReactNode, useRef, useState } from 'react'
 import { SourceGroupHeader } from '@/components/source-group-header'
+import {
+  CustomGroupMenu,
+  GroupRulesHint,
+  NewGroupDialog,
+  RenameGroupDialog,
+  SourceMenu,
+} from '@/components/sources/custom-groups'
 import { Sparkline } from '@/components/sparkline'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -35,8 +45,9 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { SourceInfo, StreamStats } from '@/gen'
+import type { CustomGroup, SourceInfo, StreamStats } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
+import { isOwner, useMe } from '@/lib/auth-api'
 import { kindLabel } from '@/lib/connect'
 import { fmtAgo, fmtBytes, fmtCount, fmtWindow, isRecent } from '@/lib/format'
 import { DEFAULT_SOURCE_SETTINGS, useIgnoreSources, useSettings } from '@/lib/settings-api'
@@ -48,9 +59,11 @@ import {
   groupSources,
   inGroupFilter,
   KIND_TAG,
+  movedNote,
   type SourceGroup,
   useCollapsedGroups,
 } from '@/lib/source-groups'
+import { useCustomGroups } from '@/lib/source-groups-api'
 import { streamStatsQuery, useSourceFields, useStreamStats } from '@/lib/stream-api'
 import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
@@ -105,12 +118,15 @@ function SourceRow({
   rate,
   nested = false,
   hidden = false,
+  menu,
 }: {
   s: SourceInfo
   rate: number | undefined
   /** Under a stack group header: indented. */
   nested?: boolean
   hidden?: boolean
+  /** The row's ⋯ menu (06.11). */
+  menu: ReactNode
 }) {
   const { stats, errors, erroring, idKey, stopped } = useSourceStats(s.name)
   const live = isRecent(s.last_ts)
@@ -163,17 +179,7 @@ function SourceRow({
       <td className={cn('font-mono text-xs tabular-nums', erroring ? 'text-status-err' : 'text-muted-foreground')}>
         {errors == null ? '—' : fmtPct(errors)}
       </td>
-      <td className="pr-3 text-right">
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={`Open ${s.name}`}
-          nativeButton={false}
-          render={<Link to="/sources/$name" params={{ name: s.name }} />}
-        >
-          <EllipsisIcon />
-        </Button>
-      </td>
+      <td className="pr-3 text-right">{menu}</td>
     </tr>
   )
 }
@@ -196,7 +202,13 @@ export function SourcesPage() {
     navigate({ search: (p) => ({ ...p, kind: k === 'all' ? undefined : k }), replace: true })
   const onlyGroup = search.group
   const { isCollapsed, toggle, set: setCollapsed, toggleAll, allCollapsed } = useCollapsedGroups()
-  const [ignoring, setIgnoring] = useState<SourceGroup | null>(null)
+  const [ignoring, setIgnoring] = useState<Ignoring | null>(null)
+  const custom = useCustomGroups()
+  const owner = isOwner(useMe())
+  const mode = useSettings().data?.grouping.mode ?? 'auto'
+  // New group: open, with these sources ticked (⋯ → Move to group → New group…).
+  const [creating, setCreating] = useState<string[] | null>(null)
+  const [renaming, setRenaming] = useState<CustomGroup | null>(null)
   const filterRef = useRef<HTMLInputElement>(null)
   useHotkeys({ '/': () => filterRef.current?.focus() })
   const all = (sources ?? []).filter((s) => s.lines > 0 || s.last_ts != null)
@@ -236,7 +248,12 @@ export function SourcesPage() {
   const erroring = all.filter((s) => flags[s.name]?.erroring).length
   const stoppedOne = all.find((s) => flags[s.name]?.stopped)
   const grouped = all.some((s) => groupOf(s))
-  const stackGroups = grouping === 'stack' && grouped ? groupSources(all, shown) : []
+  // A new custom group with nothing in it yet still shows, unless a filter narrows the list.
+  const keepEmpty =
+    filter === 'all' && (groupFilter === 'all' || groupFilter === 'custom') && !onlyGroup && !text.trim()
+  const stackGroups = grouping === 'stack' && grouped ? groupSources(all, shown, undefined, custom, keepEmpty) : []
+  const canEdit = owner && grouped
+  const modeLabel = mode === 'label' ? 'Label' : mode === 'off' ? 'Off' : 'Auto'
   const hidden = all.filter((s) => !shown.includes(s))
   type Group = { key: string; host?: ReturnType<typeof hostOf>; stack?: SourceGroup; rows: SourceInfo[] }
   const groups: Group[] =
@@ -257,13 +274,22 @@ export function SourcesPage() {
           <h1 className="font-semibold text-xl">Sources</h1>
           <p className="text-muted-foreground text-sm">
             {grouped && grouping === 'stack'
-              ? 'Grouped by Compose project or Swarm stack; HTTP, OTLP, Vector and Fluent Bit pushes sit under Ingest. Pick one to stream it.'
+              ? custom.length > 0
+                ? 'Your groups first, then Compose projects and Swarm stacks. Dokploy apps and Swarm services without a project sit in Standalone.'
+                : 'Grouped by Compose project or Swarm stack; HTTP, OTLP, Vector and Fluent Bit pushes sit under Ingest. Pick one to stream it.'
               : 'Everything that sends lines to quiet. Pick one for its settings, rejected requests and stream.'}
           </p>
         </div>
-        <Button variant="outline" nativeButton={false} render={<Link to="/connect" />}>
-          <PlusIcon /> Connect a source
-        </Button>
+        <div className="flex items-center gap-2">
+          {canEdit && (
+            <Button variant="outline" onClick={() => setCreating([])}>
+              <PlusIcon /> New group
+            </Button>
+          )}
+          <Button variant="outline" nativeButton={false} render={<Link to="/connect" />}>
+            <PlusIcon /> Connect a source
+          </Button>
+        </div>
       </header>
 
       <div className="flex gap-3">
@@ -315,6 +341,7 @@ export function SourcesPage() {
             {(
               [
                 ['all', 'All'],
+                ...(custom.length > 0 ? ([['custom', 'Custom']] as const) : []),
                 ['standalone', 'Standalone'],
                 ['stack', 'Compose / Stack'],
               ] as const
@@ -352,11 +379,13 @@ export function SourcesPage() {
           <Select value={grouping} onValueChange={(v) => v && setGrouping(v as typeof grouping)}>
             <SelectTrigger aria-label="Grouping" className="w-40">
               <SelectValue>
-                {(v: string) => (v === 'stack' ? 'Group by stack' : v === 'host' ? 'Group by host' : 'No grouping')}
+                {(v: string) =>
+                  v === 'stack' ? `Grouping · ${modeLabel}` : v === 'host' ? 'Group by host' : 'No grouping'
+                }
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="stack">Group by stack</SelectItem>
+              <SelectItem value="stack">Grouping · {modeLabel}</SelectItem>
               <SelectItem value="host">Group by host</SelectItem>
               <SelectItem value="none">No grouping</SelectItem>
             </SelectContent>
@@ -383,7 +412,9 @@ export function SourcesPage() {
               ? (stackGroups[0]?.name ?? onlyGroup.split(':').slice(1).join(':'))
               : groupFilter === 'stack'
                 ? 'Compose / Stack'
-                : 'Standalone'}
+                : groupFilter === 'custom'
+                  ? 'Custom'
+                  : 'Standalone'}
           </span>
           <span className="truncate">
             · {shown.length} of {all.length} sources · hiding {describeHidden(hidden)}. Groups with nothing left to show
@@ -397,6 +428,20 @@ export function SourcesPage() {
           >
             <XIcon className="size-3.5" /> Show all
           </button>
+        </div>
+      )}
+
+      {mode === 'off' && !grouped && custom.length > 0 && (
+        <div className="flex items-center gap-2 border border-dashed px-3 py-2 font-mono text-[11px] text-muted-foreground">
+          <FolderIcon className="size-3.5 text-brand" />
+          <span className="truncate">
+            Grouping is off, so sources show as one list. Your {custom.length} custom{' '}
+            {custom.length === 1 ? 'group is' : 'groups are'} kept and come back when grouping is on.
+          </span>
+          <span className="flex-1" />
+          <Link to="/settings" className="flex items-center gap-1 text-foreground hover:underline">
+            Source grouping <ArrowRightIcon className="size-3.5" />
+          </Link>
         </div>
       )}
 
@@ -468,14 +513,32 @@ export function SourcesPage() {
                           collapsed={collapsed}
                           onToggle={() => toggle(g.key)}
                           rate={groupRate(g.stack.rows, rates)}
+                          note={
+                            g.stack.kind === 'manual'
+                              ? owner
+                                ? 'assigned by you'
+                                : 'assigned by an owner'
+                              : movedNote(g.stack)
+                          }
                           actions={
-                            <GroupActions
-                              group={g.stack}
-                              collapsed={collapsed}
-                              onCollapse={() => setCollapsed(g.key, !collapsed)}
-                              onCollapseAll={() => toggleAll(stackGroups.map((x) => x.key))}
-                              onIgnore={() => setIgnoring(g.stack ?? null)}
-                            />
+                            g.stack.kind === 'manual' && owner ? (
+                              <GroupSearch group={g.stack}>
+                                <CustomGroupMenu
+                                  group={g.stack}
+                                  custom={custom}
+                                  members={all.filter((s) => s.group_kind === 'manual' && s.group_id === g.stack?.id)}
+                                  onRename={() => setRenaming(custom.find((c) => c.id === g.stack?.id) ?? null)}
+                                />
+                              </GroupSearch>
+                            ) : (
+                              <GroupActions
+                                group={g.stack}
+                                collapsed={collapsed}
+                                onCollapse={() => setCollapsed(g.key, !collapsed)}
+                                onCollapseAll={() => toggleAll(stackGroups.map((x) => x.key))}
+                                onIgnore={() => setIgnoring(g.stack ?? null)}
+                              />
+                            )
                           }
                         />
                       </td>
@@ -496,8 +559,34 @@ export function SourcesPage() {
                   )}
                   {/* Collapsed rows stay mounted (hidden) so their error / stopped flags still count. */}
                   {g.rows.map((s) => (
-                    <SourceRow key={s.name} s={s} rate={rates[s.name]} nested={Boolean(g.stack)} hidden={collapsed} />
+                    <SourceRow
+                      key={s.name}
+                      s={s}
+                      rate={rates[s.name]}
+                      nested={Boolean(g.stack)}
+                      hidden={collapsed}
+                      menu={
+                        <SourceMenu
+                          s={s}
+                          custom={custom}
+                          canMove={canEdit}
+                          onNewGroup={() => setCreating([s.name])}
+                          onIgnore={() => setIgnoring({ name: s.display_name ?? s.name, rows: [s] })}
+                        />
+                      }
+                    />
                   ))}
+                  {g.stack && !collapsed && g.stack.kind === 'manual' && g.stack.total === 0 && (
+                    <tr className="border-b">
+                      <td colSpan={8} className="py-2.5 pr-4 pl-10 text-muted-foreground text-xs">
+                        <span className="flex items-center gap-2">
+                          <FolderPlusIcon className="size-3.5" />
+                          Nothing in this group yet
+                          <span className="font-mono text-[11px]">· ⋯ on a source → Move to group</span>
+                        </span>
+                      </td>
+                    </tr>
+                  )}
                   {g.stack && !collapsed && g.stack.sending === 0 && g.stack.kind !== 'ingest' && (
                     <tr className="border-b">
                       <td colSpan={8} className="py-2.5 pr-4 pl-9">
@@ -537,7 +626,16 @@ export function SourcesPage() {
           </tbody>
         </table>
       )}
+      {grouping === 'stack' && grouped && all.length > 0 && <GroupRulesHint />}
       <IgnoreGroupDialog group={ignoring} onClose={() => setIgnoring(null)} />
+      <NewGroupDialog
+        open={creating != null}
+        preselect={creating ?? []}
+        onClose={() => setCreating(null)}
+        sources={all}
+        custom={custom}
+      />
+      <RenameGroupDialog group={renaming} custom={custom} onClose={() => setRenaming(null)} />
     </div>
   )
 }
@@ -553,6 +651,30 @@ function describeHidden(hidden: SourceInfo[]): string {
     ([g, names]) => `${g} (${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''})`,
   )
   return parts.length <= 2 ? parts.join(', ') : `${hidden.length} sources`
+}
+
+/** What the Ignore dialog acts on: a group's shown sources, or one source. */
+type Ignoring = { name: string; rows: SourceInfo[] }
+
+/** A custom group's header actions: Search this group · 24h, then its own ⋯ menu (06.12). */
+function GroupSearch({ group, children }: { group: SourceGroup; children: ReactNode }) {
+  const navigate = useNavigate()
+  const names = group.rows.map((s) => s.name)
+  return (
+    <span className="flex shrink-0 items-center gap-1 border-l pl-2">
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        aria-label={`Search ${group.name} · 24h`}
+        title={`Search ${group.name} · 24h`}
+        disabled={names.length === 0}
+        onClick={() => navigate({ to: '/search', search: { source: names.join(','), range: '24h' } })}
+      >
+        <SearchIcon />
+      </Button>
+      {children}
+    </span>
+  )
 }
 
 /** Search this group · 24h, and the ⋯ menu (board v0.1-06.8). */
@@ -622,7 +744,7 @@ function GroupActions({
 }
 
 /** Ignore = pause ingest + hide, for every source in the group (each reversible in its settings). */
-function IgnoreGroupDialog({ group, onClose }: { group: SourceGroup | null; onClose: () => void }) {
+function IgnoreGroupDialog({ group, onClose }: { group: Ignoring | null; onClose: () => void }) {
   const settings = useSettings().data
   const ignore = useIgnoreSources()
   const n = group?.rows.length ?? 0

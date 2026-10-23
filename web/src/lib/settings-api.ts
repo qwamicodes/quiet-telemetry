@@ -33,7 +33,7 @@ import type {
 } from '@/gen'
 import { fetchJson, sendJson } from '@/lib/api'
 import { AUTH_KEY } from '@/lib/auth-api'
-import { BUILTIN_ID_KEYS, dockerStatus, groupKind as sharedGroupKind, idKey, ingestToken, level } from '@/lib/schemas'
+import { BUILTIN_ID_KEYS, dockerStatus, idKey, ingestToken, level, groupKind as sharedGroupKind } from '@/lib/schemas'
 
 // ---- schemas (each satisfies its generated type) ----------------------------
 
