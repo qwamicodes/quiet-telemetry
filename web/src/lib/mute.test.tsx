@@ -3,8 +3,25 @@ import { fireEvent, render, renderHook, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MutedNote } from '@/components/muted-note'
-import type { LogLine, MuteRule } from '@/gen'
-import { isMuted, matchesMute, parseMute, useMuted, useSearchMuted } from '@/lib/mute'
+import type { LogLine, MuteRule, SettingsResponse } from '@/gen'
+import {
+  defaultOption,
+  draftRule,
+  effectiveRules,
+  isMuted,
+  matchesMute,
+  methodOf,
+  muteOptions,
+  parseMute,
+  pickRoute,
+  routePath,
+  ruleTarget,
+  ruleText,
+  sameRule,
+  storedAs,
+  useMuted,
+  useSearchMuted,
+} from '@/lib/mute'
 import { DEFAULT_SOURCE_SETTINGS, SETTINGS_KEY } from '@/lib/settings-api'
 
 const line = (id: number, source: string, fields: Record<string, unknown> | null, raw?: string): LogLine => ({
@@ -25,30 +42,109 @@ const healthz = line(2, 'api', { msg: 'GET', path: '/api/v1/healthz', http: { ua
 const order = line(3, 'api', { msg: 'POST', path: '/api/v1/orders', status: 201 })
 const text = line(4, 'web', null, 'GET /metrics 200 Prometheus/2.5')
 
-describe('muted-lines rules (06.3)', () => {
-  it('parses field:value and plain text', () => {
-    expect(parseMute(' path:/api/v1/health ')).toEqual({ field: 'path', value: '/api/v1/health' })
-    expect(parseMute('http.ua:kube-probe*')).toEqual({ field: 'http.ua', value: 'kube-probe*' })
-    expect(parseMute('kube-probe')).toEqual({ field: null, value: 'kube-probe' })
-    expect(parseMute('"GET /metrics"')).toEqual({ field: null, value: 'GET /metrics' })
+const legacy = (field: string | null, value: string): MuteRule => ({
+  ...draftRule(field ? (field === 'msg' ? 'message' : 'field') : 'text', value, { field }),
+  id: `mr_${field}_${value}`,
+})
+
+describe('muted-lines rules: shapes (06.14–06.17, 03.19)', () => {
+  it('parses field:value and plain text (old editor input)', () => {
+    expect(parseMute(' path:/api/v1/health ')).toMatchObject({ shape: 'field', field: 'path', value: '/api/v1/health' })
+    expect(parseMute('http.ua:kube-probe*')).toMatchObject({ field: 'http.ua', value: 'kube-probe*' })
+    expect(parseMute('kube-probe')).toMatchObject({ shape: 'text', field: null, value: 'kube-probe' })
+    expect(parseMute('"GET /metrics"')).toMatchObject({ shape: 'text', value: 'GET /metrics' })
+    expect(parseMute('msg:"heartbeat ok"')).toMatchObject({ shape: 'message', value: 'heartbeat ok' })
     // A URL is text, not a field called `https`.
-    expect(parseMute('https://x.io/a')).toEqual({ field: null, value: 'https://x.io/a' })
+    expect(parseMute('https://x.io/a')).toMatchObject({ shape: 'text', value: 'https://x.io/a' })
     expect(parseMute('  ')).toBeNull()
   })
 
-  it('matches a field exactly or with * wildcards, dot paths, and text anywhere in the raw line', () => {
-    const exact: MuteRule = { field: 'path', value: '/api/v1/health' }
+  it('legacy field and text rules match exactly as before', () => {
+    const exact = legacy('path', '/api/v1/health')
     expect(matchesMute(health, exact)).toBe(true)
     expect(matchesMute(healthz, exact)).toBe(false)
-    expect(matchesMute(healthz, { field: 'path', value: '/api/v1/health*' })).toBe(true)
-    expect(matchesMute(healthz, { field: 'http.ua', value: 'KUBE-PROBE*' })).toBe(true)
-    expect(matchesMute(order, { field: 'status', value: '201' })).toBe(true)
-    expect(matchesMute(order, { field: 'path', value: '/api/v1/(orders)' })).toBe(false)
-    expect(matchesMute(text, { field: null, value: 'prometheus' })).toBe(true)
-    expect(matchesMute(text, { field: 'path', value: '*' })).toBe(false)
-    expect(matchesMute(text, { field: 'source', value: 'web' })).toBe(true)
-    expect(isMuted(order, [exact, { field: null, value: 'kube' }])).toBe(false)
-    expect(isMuted(healthz, [exact, { field: null, value: 'kube' }])).toBe(true)
+    expect(matchesMute(healthz, legacy('path', '/api/v1/health*'))).toBe(true)
+    expect(matchesMute(healthz, legacy('http.ua', 'KUBE-PROBE*'))).toBe(true)
+    expect(matchesMute(order, legacy('status', '201'))).toBe(true)
+    expect(matchesMute(order, legacy('path', '/api/v1/(orders)'))).toBe(false)
+    expect(matchesMute(text, legacy(null, 'prometheus'))).toBe(true)
+    expect(matchesMute(text, legacy('path', '*'))).toBe(false)
+    expect(matchesMute(text, legacy('source', 'web'))).toBe(true)
+    expect(isMuted(order, [exact, legacy(null, 'kube')])).toBe(false)
+    expect(isMuted(healthz, [exact, legacy(null, 'kube')])).toBe(true)
+  })
+
+  it('route rules: pick order, query/host dropped, any route field, * within a segment', () => {
+    const probe = line(9, 'api', { msg: 'request completed', method: 'get', path: '/api/v1/health?probe=1' })
+    expect(pickRoute(probe)).toEqual({ key: 'path', raw: '/api/v1/health?probe=1', path: '/api/v1/health' })
+    expect(methodOf(probe)).toBe('GET')
+    const pino = line(10, 'api', { req: { url: 'https://x.io/api/v1/health#a', method: 'HEAD' } })
+    expect(pickRoute(pino)?.key).toBe('req.url')
+    const both = line(11, 'api', { route: '/orders/:id', path: '/orders/7' })
+    expect(pickRoute(both)?.path).toBe('/orders/:id')
+    const r = draftRule('route', '/api/v1/health')
+    expect(matchesMute(probe, r)).toBe(true)
+    expect(matchesMute(pino, r)).toBe(true)
+    expect(matchesMute(healthz, r)).toBe(false)
+    expect(matchesMute(both, draftRule('route', '/orders/7'))).toBe(true)
+    const seg = draftRule('route', '/api/v1/orders/*')
+    expect(matchesMute(line(12, 'api', { path: '/api/v1/orders/42' }), seg)).toBe(true)
+    expect(matchesMute(line(13, 'api', { path: '/api/v1/orders/42/items' }), seg)).toBe(false)
+    expect(routePath('https://x.io')).toBe('/')
+    expect(matchesMute(text, r)).toBe(false)
+  })
+
+  it('method + route and exact message', () => {
+    const get = line(20, 'api', { msg: 'request completed', method: 'GET', path: '/api/v1/ping' })
+    const head = line(21, 'api', { msg: 'request completed', method: 'HEAD', path: '/api/v1/ping' })
+    const mr = draftRule('method_route', '/api/v1/ping', { method: 'GET' })
+    expect(matchesMute(get, mr)).toBe(true)
+    expect(matchesMute(head, mr)).toBe(false)
+    const msg = draftRule('message', 'Request completed')
+    expect(matchesMute(get, msg) && matchesMute(head, msg)).toBe(true)
+    expect(matchesMute(line(22, 'api', { msg: 'request completed slowly' }), msg)).toBe(false)
+    expect(ruleText(mr)).toBe('GET /api/v1/ping')
+    expect(storedAs(mr)).toBe('path:/api/v1/ping method:GET')
+    expect(ruleText(msg)).toBe('msg:"Request completed"')
+    expect(ruleTarget(draftRule('route', '/x', { field: 'path' }))).toBe('/x')
+  })
+
+  it('row options: route any method (default), method + route, message; no route falls back to the message', () => {
+    const probe = line(9, 'api', { msg: 'request completed', method: 'GET', path: '/api/v1/health?probe=1' })
+    const opts = muteOptions(probe)
+    expect(opts.map((o) => o.label)).toEqual([
+      'Mute route · any method',
+      'Mute GET /api/v1/health only',
+      'Mute this exact message',
+    ])
+    expect(defaultOption(opts).rule).toMatchObject({
+      shape: 'route',
+      value: '/api/v1/health',
+      field: 'path',
+      origin: 'hover',
+    })
+    const beat = muteOptions(line(30, 'worker', null, 'heartbeat ok'))
+    expect(beat[0].disabled).toBe('no route field on this line')
+    expect(defaultOption(beat).rule).toMatchObject({ shape: 'message', value: 'heartbeat ok' })
+    expect(muteOptions(probe, 'global')[0].rule.scope).toBe('global')
+  })
+
+  it('effective rules: global ∪ source, paused rules and "Don\'t apply here" left out', () => {
+    const g = { ...draftRule('route', '/metrics', { scope: 'global' }), id: 'g1' }
+    const g2 = { ...draftRule('route', '/off', { scope: 'global' }), id: 'g2', enabled: false }
+    const own = { ...draftRule('message', 'x'), id: 's1' }
+    const paused = { ...draftRule('message', 'y'), id: 's2', enabled: false }
+    const data = {
+      muted_global: [g, g2],
+      sources: {
+        api: { ...DEFAULT_SOURCE_SETTINGS, muted: [own, paused] },
+        web: { ...DEFAULT_SOURCE_SETTINGS, muted_global_off: [{ id: 'g1', by: 'esi', at: 1 }] },
+      },
+    } as unknown as SettingsResponse
+    expect(effectiveRules(data, 'api').map((r) => r.id)).toEqual(['g1', 's1'])
+    expect(effectiveRules(data, 'web')).toEqual([])
+    expect(effectiveRules(data, 'new-source').map((r) => r.id)).toEqual(['g1'])
+    expect(sameRule(draftRule('route', '/METRICS'), g)).toBe(true)
   })
 })
 
@@ -62,7 +158,7 @@ describe('useMuted', () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } } })
     client.setQueryData(SETTINGS_KEY, {
       sources: {
-        api: { ...DEFAULT_SOURCE_SETTINGS, muted: [{ field: 'path', value: '/api/v1/health*' }] },
+        api: { ...DEFAULT_SOURCE_SETTINGS, muted: [legacy('path', '/api/v1/health*')] },
         web: { ...DEFAULT_SOURCE_SETTINGS, muted: [] },
       },
     } as never)

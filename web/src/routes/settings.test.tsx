@@ -9,9 +9,9 @@ import type {
   MuteRule,
   MuteStats,
   SettingsResponse,
-  SourceSettings,
   SourceActivity,
   SourceInfo,
+  SourceSettings,
   StorageReport,
   SystemStatus,
   User,
@@ -255,11 +255,19 @@ beforeEach(() => {
           })),
         )
       if (url === '/api/mute/rules' && method === 'POST') {
-        const rule = { ...body.rule, id: body.rule.id || `mr_new${calls.length}`, created_by: 'Kwaame', created_at: NOW }
+        const rule = {
+          ...body.rule,
+          id: body.rule.id || `mr_new${calls.length}`,
+          created_by: 'Kwaame',
+          created_at: NOW,
+        }
         if (rule.scope === 'global') settings.muted_global.push(rule)
         else {
           const name = body.source as string
-          settings.sources[name] = { ...(settings.sources[name] ?? blankSource()), muted: [...(settings.sources[name]?.muted ?? []), rule] }
+          settings.sources[name] = {
+            ...(settings.sources[name] ?? blankSource()),
+            muted: [...(settings.sources[name]?.muted ?? []), rule],
+          }
         }
         return json({ rule, removed: [] }, 201)
       }
@@ -292,7 +300,11 @@ beforeEach(() => {
         return json(settings.sources[name])
       }
       if (url === '/api/mute/search') {
-        settings.muted_search = { include: body.include ?? false, origin: body.include == null ? 'default' : 'setting', flag: false }
+        settings.muted_search = {
+          include: body.include ?? false,
+          origin: body.include == null ? 'default' : 'setting',
+          flag: false,
+        }
         settings.general.search_include_muted = body.include
         return json(settings.muted_search)
       }
@@ -802,8 +814,10 @@ describe('Settings → Muted lines (07.12–07.20)', () => {
     expect(post?.body.source).toBeUndefined()
   })
 
-  it('rule detail shows hits by source and Don\'t apply here; delete always confirms', async () => {
-    settings.muted_global = [rule({ id: 'mr_g', scope: 'global', shape: 'field', field: 'user_agent', value: 'kube-probe/*' })]
+  it("rule detail shows hits by source and Don't apply here; delete always confirms", async () => {
+    settings.muted_global = [
+      rule({ id: 'mr_g', scope: 'global', shape: 'field', field: 'user_agent', value: 'kube-probe/*' }),
+    ]
     settings.sources.traefik = { ...blankSource(), muted_global_off: [{ id: 'mr_g', by: 'esi', at: NOW }] }
     muteStats.rules.mr_g = { per_source: { 'legivent-api': 640, traefik: 310 } }
     const user = userEvent.setup()
@@ -824,7 +838,9 @@ describe('Settings → Muted lines (07.12–07.20)', () => {
     const user = userEvent.setup()
     renderAt('/settings/muted-lines')
     await user.click(await screen.findByRole('switch', { name: 'Include muted lines in search' }))
-    await waitFor(() => expect(calls).toContainEqual({ url: '/api/mute/search', method: 'PUT', body: { include: true } }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({ url: '/api/mute/search', method: 'PUT', body: { include: true } }),
+    )
   })
 
   it('members: no Add, switches locked', async () => {
@@ -837,7 +853,7 @@ describe('Settings → Muted lines (07.12–07.20)', () => {
 })
 
 describe('Sources → edit → Muted lines (06.13–06.25)', () => {
-  it('shows this source and the global rules; Don\'t apply here asks first; a small rule deletes with Undo', async () => {
+  it("shows this source and the global rules; Don't apply here asks first; a small rule deletes with Undo", async () => {
     settings.muted_global = [rule({ id: 'mr_g', scope: 'global', value: '/metrics' })]
     settings.sources['legivent-api'] = {
       ...blankSource(),
@@ -846,7 +862,11 @@ describe('Sources → edit → Muted lines (06.13–06.25)', () => {
         rule({ id: 'mr_b', shape: 'message', field: null, value: 'cache warm', enabled: false, origin: 'manual' }),
       ],
     }
-    muteStats.rules = { mr_a: { per_source: { 'legivent-api': 312 } }, mr_b: { per_source: { 'legivent-api': 41 } }, mr_g: { per_source: { 'legivent-api': 1020, dokploy: 900 } } }
+    muteStats.rules = {
+      mr_a: { per_source: { 'legivent-api': 312 } },
+      mr_b: { per_source: { 'legivent-api': 41 } },
+      mr_g: { per_source: { 'legivent-api': 1020, dokploy: 900 } },
+    }
     const user = userEvent.setup()
     renderAt('/sources/legivent-api?edit=muted')
     const sheet = await screen.findByRole('dialog', { name: 'Edit source legivent-api' })
@@ -872,7 +892,10 @@ describe('Sources → edit → Muted lines (06.13–06.25)', () => {
   })
 
   it('a rule hiding 1,000+ lines a day asks before it goes', async () => {
-    settings.sources['legivent-api'] = { ...blankSource(), muted: [rule({ id: 'mr_big', shape: 'field', field: 'user_agent', value: 'ELB-HealthChecker/*' })] }
+    settings.sources['legivent-api'] = {
+      ...blankSource(),
+      muted: [rule({ id: 'mr_big', shape: 'field', field: 'user_agent', value: 'ELB-HealthChecker/*' })],
+    }
     muteStats.rules = { mr_big: { per_source: { 'legivent-api': 1052 } } }
     const user = userEvent.setup()
     renderAt('/sources/legivent-api?edit=muted')
@@ -922,7 +945,9 @@ describe('stream row hover → Mute (03.15–03.23)', () => {
       if (!r) throw new Error('no row')
       return r as HTMLElement
     })
-    const mute = within(row).getByRole('button', { name: 'Mute /api/v1/health on legivent-api · any method · from path' })
+    const mute = within(row).getByRole('button', {
+      name: 'Mute /api/v1/health on legivent-api · any method · from path',
+    })
     await user.click(mute)
     await waitFor(() => expect(calls.some((c) => c.url === '/api/mute/rules')).toBe(true), { timeout: 3000 })
     expect(calls.find((c) => c.url === '/api/mute/rules')?.body).toMatchObject({
@@ -943,7 +968,10 @@ describe('stream row hover → Mute (03.15–03.23)', () => {
     expect(btn).toHaveTextContent('Mute message')
     await user.click(btn)
     await waitFor(() => expect(calls.some((c) => c.url === '/api/mute/rules')).toBe(true), { timeout: 3000 })
-    expect(calls.find((c) => c.url === '/api/mute/rules')?.body.rule).toMatchObject({ shape: 'message', value: 'heartbeat ok' })
+    expect(calls.find((c) => c.url === '/api/mute/rules')?.body.rule).toMatchObject({
+      shape: 'message',
+      value: 'heartbeat ok',
+    })
   })
 
   it('⇧M opens the menu: pick 2 (method + route), Tab to All sources, ↵ mutes everywhere', async () => {
@@ -955,7 +983,10 @@ describe('stream row hover → Mute (03.15–03.23)', () => {
     await user.keyboard('{Shift>}M{/Shift}')
     const menu = await screen.findByTestId('mute-menu')
     expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(3)
-    expect(within(menu).getByRole('menuitemradio', { name: /Mute route · any method/ })).toHaveAttribute('aria-checked', 'true')
+    expect(within(menu).getByRole('menuitemradio', { name: /Mute route · any method/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
     await user.keyboard('2')
     expect(within(menu).getByRole('menuitemradio', { name: /Mute GET \/api\/v1\/health only/ })).toHaveAttribute(
       'aria-checked',
@@ -1001,7 +1032,11 @@ describe('stream row hover → Mute (03.15–03.23)', () => {
     await user.click(within(row).getByRole('button', { name: 'Mute options' }))
     await user.click(await screen.findByRole('menuitem', { name: /Show on legivent-api only/ }))
     await waitFor(() =>
-      expect(calls).toContainEqual({ url: '/api/mute/sources/legivent-api/global/mr_g', method: 'PUT', body: { apply: false } }),
+      expect(calls).toContainEqual({
+        url: '/api/mute/sources/legivent-api/global/mr_g',
+        method: 'PUT',
+        body: { apply: false },
+      }),
     )
   })
 })
