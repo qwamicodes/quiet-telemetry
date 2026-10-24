@@ -112,6 +112,7 @@ fn glob_segments(pattern: &str, path: &str) -> bool {
 
 /// The line's route as its first field in [`ROUTE_KEYS`] has it, reduced to
 /// the path (`?query`, `#hash`, scheme and host dropped), and that key.
+#[cfg(test)]
 pub fn pick_route(line: &LogLine) -> Option<(&'static str, String)> {
     ROUTE_KEYS.iter().find_map(|k| {
         field_text(line, k)

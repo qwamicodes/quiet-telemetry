@@ -340,6 +340,7 @@ impl Default for MuteRule {
 
 impl MuteRule {
     /// A rule as written before rule shapes: `field = value`, or text.
+    #[cfg(test)]
     pub fn legacy(field: Option<&str>, value: &str) -> Self {
         let mut r = MuteRule {
             field: field.map(String::from),

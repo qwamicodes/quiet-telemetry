@@ -414,7 +414,7 @@ pub async fn compute_preview(
             }
             // Newest first across sources.
             p.samples.append(&mut samples[i]);
-            p.samples.sort_by(|a, b| b.ts.cmp(&a.ts));
+            p.samples.sort_by_key(|a| std::cmp::Reverse(a.ts));
             p.samples.truncate(SAMPLES);
         }
     }
