@@ -240,23 +240,327 @@ pub struct SourceSettings {
     /// counted and searchable. Matching happens in the browser.
     pub muted: Vec<MuteRule>,
     /// Include this source's muted lines in search results; `null` = as
-    /// Settings → General says. The stream always hides them.
+    /// Settings → Muted lines says. The stream always hides them.
     #[ts(type = "boolean | null")]
     pub search_include_muted: Option<bool>,
+    /// Global rules this source switched off for itself ("Don't apply here").
+    pub muted_global_off: Vec<GlobalOff>,
 }
 
-/// One muted-lines rule. With `field`, the field's value (dot path, compared
-/// as text) equals `value`, where `*` matches any run of characters
-/// (`/api/v1/health*`). Without, `value` appears anywhere in the raw line
-/// (case-insensitive).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// What a muted-lines rule compares (boards 03.16, 06.14–06.17).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MuteShape {
+    /// The line's route, any method: the first of `route`, `path`,
+    /// `http.route`, `req.url`, `url` that matches, with scheme, host,
+    /// `?query` and `#hash` dropped. `*` matches within one path segment.
+    Route,
+    /// [`MuteShape::Route`] plus the request method (`method:GET`).
+    MethodRoute,
+    /// The message (`msg` / `message`, else the row summary) equals `value`.
+    Message,
+    /// `field` = `value`, where `*` matches any run of characters.
+    #[default]
+    Field,
+    /// `value` appears anywhere in the raw line (rules from before v0.1's
+    /// rule shapes that named no field).
+    Text,
+}
+
+/// Where a rule applies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MuteScope {
+    /// One source (Sources → edit → Muted lines).
+    #[default]
+    Source,
+    /// Every source, including new ones (Settings → Muted lines).
+    Global,
+}
+
+/// How a rule was added.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MuteOrigin {
+    /// From the rule editor.
+    #[default]
+    Manual,
+    /// From a stream row's Mute button (03.15).
+    Hover,
+}
+
+/// One muted-lines rule (boards 03.16, 06.13, 07.12). Lines matching any
+/// enabled rule that applies to their source are hidden from the stream and
+/// search; they are still stored and searchable.
+///
+/// Rules saved before rule shapes (`{ field, value }`) read as
+/// [`MuteShape::Field`] (or [`MuteShape::Text`] without a field, or
+/// [`MuteShape::Message`] for `msg`) and get an id when loaded; they match
+/// exactly as before.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
 pub struct MuteRule {
+    /// `mr_` + 12 hex; stable across edits (undo, "Don't apply here").
+    pub id: String,
+    pub scope: MuteScope,
+    /// Off = paused: kept (and still counted) but hides nothing.
+    pub enabled: bool,
+    pub shape: MuteShape,
+    /// Field rules: the field's dot path. Route rules: the field the route
+    /// was read from (shown as `path:`), informational only.
     pub field: Option<String>,
+    /// The route, message, field value or text.
     pub value: String,
+    /// Method + route rules: `GET`, `POST`, ….
+    pub method: Option<String>,
+    /// Who added it (account name).
+    pub created_by: Option<String>,
+    /// Unix ms.
+    #[ts(type = "number | null")]
+    pub created_at: Option<i64>,
+    pub origin: MuteOrigin,
+}
+
+impl Default for MuteRule {
+    fn default() -> Self {
+        MuteRule {
+            id: String::new(),
+            scope: MuteScope::Source,
+            enabled: true,
+            shape: MuteShape::Field,
+            field: None,
+            value: String::new(),
+            method: None,
+            created_by: None,
+            created_at: None,
+            origin: MuteOrigin::Manual,
+        }
+    }
+}
+
+impl MuteRule {
+    /// A rule as written before rule shapes: `field = value`, or text.
+    #[cfg(test)]
+    pub fn legacy(field: Option<&str>, value: &str) -> Self {
+        let mut r = MuteRule {
+            field: field.map(String::from),
+            value: value.into(),
+            ..Default::default()
+        };
+        r.upgrade();
+        r
+    }
+
+    /// Give a rule saved before rule shapes its shape (same matching as
+    /// before). Returns whether anything changed. Ids are left to callers.
+    fn upgrade(&mut self) -> bool {
+        if !self.id.is_empty() || self.shape != MuteShape::Field {
+            return false;
+        }
+        match self.field.as_deref() {
+            None => self.shape = MuteShape::Text,
+            Some("msg") | Some("message") => self.shape = MuteShape::Message,
+            Some(_) => {}
+        }
+        true
+    }
+
+    /// Same rule, whatever its id, switch or history.
+    pub fn same_as(&self, o: &MuteRule) -> bool {
+        self.shape == o.shape
+            && self.value.eq_ignore_ascii_case(&o.value)
+            && self.method.as_deref().map(str::to_ascii_uppercase)
+                == o.method.as_deref().map(str::to_ascii_uppercase)
+            && (matches!(
+                self.shape,
+                MuteShape::Route | MuteShape::MethodRoute | MuteShape::Message
+            ) || self.field == o.field)
+    }
+}
+
+/// A new id for a muted-lines rule.
+pub fn new_rule_id() -> String {
+    let b: [u8; 6] = rand::random();
+    format!(
+        "mr_{}",
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    )
+}
+
+/// A global rule one source switched off for itself ("Don't apply here").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+pub struct GlobalOff {
+    /// The global rule's id.
+    pub id: String,
+    pub by: Option<String>,
+    #[ts(type = "number | null")]
+    pub at: Option<i64>,
 }
 
 /// At most this many muted-lines rules per source.
 pub const MAX_MUTE_RULES: usize = 32;
+/// At most this many global muted-lines rules.
+pub const MAX_GLOBAL_MUTE_RULES: usize = 64;
+
+/// `POST /api/mute/rules`: a new rule, or a deleted one put back (Undo).
+#[derive(Debug, Clone, Default, Deserialize, TS)]
+#[serde(default)]
+pub struct AddMuteRule {
+    /// `scope` says where; `id` / `created_*` only when restoring.
+    pub rule: MuteRule,
+    /// Scope source: which one.
+    #[ts(optional)]
+    pub source: Option<String>,
+    /// Scope global: delete the same rule from sources that have it (07.14).
+    #[ts(optional, as = "Option<bool>")]
+    pub remove_source_rules: bool,
+    /// Restoring a global rule: the sources that had it switched off.
+    #[ts(optional, as = "Option<Vec<SourceOff>>")]
+    pub off_on: Vec<SourceOff>,
+}
+
+/// A global rule switched off on one source.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+pub struct SourceOff {
+    pub source: String,
+    pub by: Option<String>,
+    #[ts(type = "number | null")]
+    pub at: Option<i64>,
+}
+
+/// A source rule a new global rule replaced (07.14).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct RemovedMuteRule {
+    pub source: String,
+    pub rule: MuteRule,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct AddedMuteRule {
+    pub rule: MuteRule,
+    pub removed: Vec<RemovedMuteRule>,
+}
+
+/// `PATCH /api/mute/rules/:id`: only what is sent changes.
+#[derive(Debug, Clone, Default, Deserialize, TS)]
+pub struct UpdateMuteRule {
+    #[ts(optional)]
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[ts(optional)]
+    #[serde(default)]
+    pub shape: Option<MuteShape>,
+    #[ts(optional, type = "string | null")]
+    #[serde(default, deserialize_with = "nullable")]
+    pub field: Option<Option<String>>,
+    #[ts(optional)]
+    #[serde(default)]
+    pub value: Option<String>,
+    #[ts(optional, type = "string | null")]
+    #[serde(default, deserialize_with = "nullable")]
+    pub method: Option<Option<String>>,
+}
+
+/// `DELETE /api/mute/rules/:id`: what went, for Undo.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct DeletedMuteRule {
+    pub rule: MuteRule,
+    /// The source it belonged to; `null` for a global rule.
+    pub source: Option<String>,
+    /// A global rule's "Don't apply here" switches that went with it.
+    pub off_on: Vec<SourceOff>,
+}
+
+/// Drop `scheme://host`, `?query` and `#hash` from a route or URL: the path
+/// as written (`https://x.io/a/b?c=1` → `/a/b`).
+pub fn route_path(v: &str) -> String {
+    let v = v.trim();
+    let v = match v.find("://") {
+        Some(i)
+            if v[..i]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '.' || c == '-') =>
+        {
+            let rest = &v[i + 3..];
+            match rest.find('/') {
+                Some(j) => &rest[j..],
+                None => "/",
+            }
+        }
+        _ => v,
+    };
+    let end = v.find(['?', '#']).unwrap_or(v.len());
+    v[..end].to_string()
+}
+
+/// A rule from the API, checked and cleaned: trimmed, route values reduced
+/// to their path, methods uppercased, sizes bounded.
+pub fn clean_rule(mut r: MuteRule) -> Result<MuteRule, SettingsError> {
+    r.field = r
+        .field
+        .as_deref()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(String::from);
+    r.value = r.value.trim().to_string();
+    if matches!(r.shape, MuteShape::Route | MuteShape::MethodRoute) {
+        r.value = route_path(&r.value);
+    }
+    if r.shape == MuteShape::Message {
+        // `msg:"…"` typed whole.
+        let v = r.value.strip_prefix("msg:").unwrap_or(&r.value).trim();
+        r.value = v
+            .strip_prefix('"')
+            .and_then(|x| x.strip_suffix('"'))
+            .unwrap_or(v)
+            .to_string();
+    }
+    r.method = match r.shape {
+        MuteShape::MethodRoute => r
+            .method
+            .as_deref()
+            .map(|m| m.trim().to_ascii_uppercase())
+            .filter(|m| !m.is_empty()),
+        _ => None,
+    };
+    if r.value.is_empty() {
+        return invalid("muted: the rule needs a value");
+    }
+    if r.shape == MuteShape::MethodRoute && r.method.is_none() {
+        return invalid("muted: method + route needs a method");
+    }
+    if r.shape == MuteShape::Field && r.field.is_none() {
+        // A fieldless rule has always been a text match.
+        r.shape = MuteShape::Text;
+    }
+    if r.value.chars().count() > 256
+        || r.value.chars().any(char::is_control)
+        || r.field.as_ref().is_some_and(|f| {
+            f.chars().count() > 128 || f.chars().any(|c| c.is_control() || c.is_whitespace())
+        })
+        || r.method.as_ref().is_some_and(|m| {
+            m.len() > 16
+                || !m
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        })
+        || r.created_by
+            .as_ref()
+            .is_some_and(|b| b.chars().count() > 128)
+    {
+        return invalid(
+            "muted: field up to 128 characters (no spaces), value up to 256, method up to 16",
+        );
+    }
+    if r.id.is_empty() {
+        r.id = new_rule_id();
+    } else if r.id.len() > 32 || !r.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return invalid("muted: bad rule id");
+    }
+    Ok(r)
+}
 
 /// Whether search includes muted lines, instance-wide, as in effect now
 /// (sources can still say otherwise). Saved in Settings → General wins over
@@ -278,6 +582,8 @@ pub struct SettingsResponse {
     pub grouping: GroupingSettings,
     pub flow_ids: FlowIdSettings,
     pub sources: BTreeMap<String, SourceSettings>,
+    /// Global muted-lines rules (Settings → Muted lines), every source.
+    pub muted_global: Vec<MuteRule>,
 }
 
 // ---- store ---------------------------------------------------------------------------
@@ -354,12 +660,15 @@ struct State {
     flow_ids: FlowIdSettings,
     sources: BTreeMap<String, SourceSettings>,
     docker_identity: DockerIdentity,
+    muted_global: Vec<MuteRule>,
 }
 
 /// A settings write failed: bad input (400) or storage (503).
 #[derive(Debug)]
 pub enum SettingsError {
     Invalid(String),
+    /// The thing to change is not there (404).
+    NotFound(String),
     Store(anyhow::Error),
 }
 
@@ -436,6 +745,7 @@ impl Settings {
                     "docker_identity" => {
                         serde_json::from_str(&v).map(|x| state.docker_identity = x)
                     }
+                    "muted_global" => serde_json::from_str(&v).map(|x| state.muted_global = x),
                     k => match k.strip_prefix("source:") {
                         Some(name) => serde_json::from_str(&v).map(|x| {
                             state.sources.insert(name.to_string(), x);
@@ -448,6 +758,7 @@ impl Settings {
                 }
             }
         }
+        let upgraded = upgrade_mute_rules(&mut state);
         let me = Settings {
             db: Mutex::new(db),
             defaults: RwLock::new(defaults),
@@ -455,6 +766,17 @@ impl Settings {
             publish,
             changed: Notify::new(),
         };
+        // Rules saved before rule shapes keep matching as they did; they get
+        // ids (and shapes) once, saved so the ids stay stable.
+        for name in upgraded {
+            let s = me.source(&name);
+            if let Err(e) = serde_json::to_string(&s)
+                .map_err(SettingsError::from)
+                .and_then(|v| me.save(&format!("source:{name}"), Some(v), None))
+            {
+                tracing::warn!(source = name, error = ?e, "could not save upgraded muted-lines rules");
+            }
+        }
         me.install_policy();
         Ok(me)
     }
@@ -562,15 +884,28 @@ impl Settings {
         own.unwrap_or_else(|| self.muted_search().include)
     }
 
-    /// `source`'s muted-lines rules.
+    /// The muted-lines rules hiding `source`'s lines now: its own enabled
+    /// rules plus every enabled global rule it did not switch off (union).
     pub fn mute_rules(&self, source: &str) -> Vec<MuteRule> {
-        self.state
-            .read()
-            .unwrap()
-            .sources
-            .get(source)
-            .map(|s| s.muted.clone())
-            .unwrap_or_default()
+        let st = self.state.read().unwrap();
+        let own = st.sources.get(source);
+        let off = |id: &str| own.is_some_and(|s| s.muted_global_off.iter().any(|o| o.id == id));
+        st.muted_global
+            .iter()
+            .filter(|r| r.enabled && !off(&r.id))
+            .chain(
+                own.map(|s| s.muted.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|r| r.enabled),
+            )
+            .cloned()
+            .collect()
+    }
+
+    /// Global muted-lines rules (Settings → Muted lines).
+    pub fn muted_global(&self) -> Vec<MuteRule> {
+        self.state.read().unwrap().muted_global.clone()
     }
 
     /// The searchable window now, ms.
@@ -626,6 +961,7 @@ impl Settings {
             grouping: self.grouping(),
             flow_ids: self.flow_ids(),
             sources: self.sources(),
+            muted_global: self.muted_global(),
         }
     }
 
@@ -658,7 +994,12 @@ impl Settings {
                 continue;
             }
             for k in keys.iter().filter(|k| !current.contains_key(*k)) {
-                self.put_source(k, inherited.clone(), None)?;
+                // Each copy of a muted-lines rule is its own rule (own id).
+                let mut copy = inherited.clone();
+                for r in copy.muted.iter_mut() {
+                    r.id = new_rule_id();
+                }
+                self.put_source(k, copy, None)?;
             }
         }
         let groups = self.custom_groups();
@@ -1043,35 +1384,32 @@ impl Settings {
         }
         s.mask_fields = fields;
         let mut muted: Vec<MuteRule> = Vec::new();
-        for r in &s.muted {
-            let field = r
-                .field
-                .as_deref()
-                .map(str::trim)
-                .filter(|f| !f.is_empty())
-                .map(String::from);
-            let value = r.value.trim().to_string();
-            if value.is_empty() {
+        for r in std::mem::take(&mut s.muted) {
+            let mut r = r;
+            r.upgrade();
+            r.scope = MuteScope::Source;
+            if r.value.trim().is_empty() {
                 continue;
             }
-            if value.chars().count() > 256
-                || value.chars().any(char::is_control)
-                || field.as_ref().is_some_and(|f| {
-                    f.chars().count() > 128
-                        || f.chars().any(|c| c.is_control() || c.is_whitespace())
-                })
-            {
-                return invalid("muted: field up to 128 characters (no spaces), value up to 256");
-            }
-            let rule = MuteRule { field, value };
-            if !muted.contains(&rule) {
-                muted.push(rule);
+            let r = clean_rule(r)?;
+            if !muted.iter().any(|x| x.same_as(&r) || x.id == r.id) {
+                muted.push(r);
             }
         }
         if muted.len() > MAX_MUTE_RULES {
             return invalid(format!("muted: at most {MAX_MUTE_RULES} rules"));
         }
         s.muted = muted;
+        {
+            let global = self.state.read().unwrap().muted_global.clone();
+            let mut off: Vec<GlobalOff> = Vec::new();
+            for o in std::mem::take(&mut s.muted_global_off) {
+                if global.iter().any(|g| g.id == o.id) && !off.iter().any(|x| x.id == o.id) {
+                    off.push(o);
+                }
+            }
+            s.muted_global_off = off;
+        }
         s.unmasked.sort_by_key(|k| *k as u8);
         s.unmasked.dedup();
 
@@ -1099,6 +1437,318 @@ impl Settings {
             .map(|_| ())
     }
 
+    // ---- muted lines (03.15–03.23, 06.13–06.25, 07.12–07.20) ----
+    //
+    // Each write holds the state lock across its SQLite write so two edits
+    // never interleave (rules are edited one at a time from the UI).
+
+    fn persist_source(
+        &self,
+        st: &mut State,
+        name: &str,
+        s: SourceSettings,
+        by: Option<i64>,
+    ) -> Result<(), SettingsError> {
+        let key = format!("source:{name}");
+        if s == SourceSettings::default() {
+            self.save(&key, None, by)?;
+            st.sources.remove(name);
+        } else {
+            self.save(&key, Some(serde_json::to_string(&s)?), by)?;
+            st.sources.insert(name.to_string(), s);
+        }
+        Ok(())
+    }
+
+    fn persist_global(
+        &self,
+        st: &mut State,
+        rules: Vec<MuteRule>,
+        by: Option<i64>,
+    ) -> Result<(), SettingsError> {
+        let v = (!rules.is_empty())
+            .then(|| serde_json::to_string(&rules))
+            .transpose()?;
+        self.save("muted_global", v, by)?;
+        st.muted_global = rules;
+        Ok(())
+    }
+
+    /// Add a rule to `source` (scope source) or to every source (scope
+    /// global). A rule carrying an id is a restore (Undo after a delete): it
+    /// keeps its id and history, and `off_on` gets its "Don't apply here"
+    /// back. `remove_source_rules` (global only) deletes the same rule from
+    /// the sources that already had it (07.14).
+    pub fn add_mute_rule(
+        &self,
+        add: AddMuteRule,
+        by: Option<i64>,
+    ) -> Result<AddedMuteRule, SettingsError> {
+        let mut rule = clean_rule(add.rule)?;
+        let mut st = self.state.write().unwrap();
+        let exists = st.muted_global.iter().any(|r| r.id == rule.id)
+            || st
+                .sources
+                .values()
+                .any(|s| s.muted.iter().any(|r| r.id == rule.id));
+        if exists {
+            return invalid("muted: a rule with this id already exists");
+        }
+        let mut removed = Vec::new();
+        match rule.scope {
+            MuteScope::Global => {
+                if st.muted_global.iter().any(|r| r.same_as(&rule)) {
+                    return invalid("muted: there is already a global rule like this");
+                }
+                if st.muted_global.len() >= MAX_GLOBAL_MUTE_RULES {
+                    return invalid(format!(
+                        "muted: at most {MAX_GLOBAL_MUTE_RULES} global rules"
+                    ));
+                }
+                rule.scope = MuteScope::Global;
+                let mut global = st.muted_global.clone();
+                global.push(rule.clone());
+                self.persist_global(&mut st, global, by)?;
+                let names: Vec<String> = st.sources.keys().cloned().collect();
+                for name in names {
+                    let mut s = st.sources[&name].clone();
+                    let mut changed = false;
+                    if add.remove_source_rules {
+                        let before = s.muted.len();
+                        s.muted.retain(|r| {
+                            if r.same_as(&rule) {
+                                removed.push(RemovedMuteRule {
+                                    source: name.clone(),
+                                    rule: r.clone(),
+                                });
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        changed |= s.muted.len() != before;
+                    }
+                    if let Some(o) = add.off_on.iter().find(|o| o.source == name) {
+                        s.muted_global_off.push(GlobalOff {
+                            id: rule.id.clone(),
+                            by: o.by.clone(),
+                            at: o.at,
+                        });
+                        changed = true;
+                    }
+                    if changed {
+                        self.persist_source(&mut st, &name, s, by)?;
+                    }
+                }
+                let missing: Vec<&SourceOff> = add
+                    .off_on
+                    .iter()
+                    .filter(|o| !st.sources.contains_key(&o.source))
+                    .collect();
+                for o in missing {
+                    let s = SourceSettings {
+                        muted_global_off: vec![GlobalOff {
+                            id: rule.id.clone(),
+                            by: o.by.clone(),
+                            at: o.at,
+                        }],
+                        ..Default::default()
+                    };
+                    self.persist_source(&mut st, &o.source, s, by)?;
+                }
+            }
+            MuteScope::Source => {
+                let Some(name) = add
+                    .source
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                else {
+                    return invalid("muted: which source?");
+                };
+                let mut s = st.sources.get(name).cloned().unwrap_or_default();
+                if s.muted.iter().any(|r| r.same_as(&rule)) {
+                    return invalid("muted: this source already has a rule like this");
+                }
+                if s.muted.len() >= MAX_MUTE_RULES {
+                    return invalid(format!("muted: at most {MAX_MUTE_RULES} rules"));
+                }
+                s.muted.push(rule.clone());
+                self.persist_source(&mut st, name, s, by)?;
+            }
+        }
+        drop(st);
+        self.changed.notify_one();
+        Ok(AddedMuteRule { rule, removed })
+    }
+
+    /// Switch a rule on or off, or change what it matches (06.18, 07.16).
+    pub fn update_mute_rule(
+        &self,
+        id: &str,
+        u: UpdateMuteRule,
+        by: Option<i64>,
+    ) -> Result<MuteRule, SettingsError> {
+        let mut st = self.state.write().unwrap();
+        let apply = |r: &MuteRule| -> Result<MuteRule, SettingsError> {
+            let mut r = r.clone();
+            if let Some(e) = u.enabled {
+                r.enabled = e;
+            }
+            if let Some(sh) = u.shape {
+                r.shape = sh;
+            }
+            if let Some(f) = &u.field {
+                r.field = f.clone();
+            }
+            if let Some(v) = &u.value {
+                r.value = v.clone();
+            }
+            if let Some(m) = &u.method {
+                r.method = m.clone();
+            }
+            clean_rule(r)
+        };
+        if let Some(i) = st.muted_global.iter().position(|r| r.id == id) {
+            let r = apply(&st.muted_global[i])?;
+            if st.muted_global.iter().any(|x| x.id != id && x.same_as(&r)) {
+                return invalid("muted: there is already a global rule like this");
+            }
+            let mut global = st.muted_global.clone();
+            global[i] = r.clone();
+            self.persist_global(&mut st, global, by)?;
+            drop(st);
+            self.changed.notify_one();
+            return Ok(r);
+        }
+        let found = st.sources.iter().find_map(|(name, s)| {
+            s.muted
+                .iter()
+                .position(|r| r.id == id)
+                .map(|i| (name.clone(), i))
+        });
+        let Some((name, i)) = found else {
+            return Err(SettingsError::NotFound(
+                "no muted-lines rule with this id".into(),
+            ));
+        };
+        let mut s = st.sources[&name].clone();
+        let r = apply(&s.muted[i])?;
+        if s.muted.iter().any(|x| x.id != id && x.same_as(&r)) {
+            return invalid("muted: this source already has a rule like this");
+        }
+        s.muted[i] = r.clone();
+        self.persist_source(&mut st, &name, s, by)?;
+        drop(st);
+        self.changed.notify_one();
+        Ok(r)
+    }
+
+    /// Delete a rule. A global rule goes from every source, with its
+    /// "Don't apply here" switches (returned, so Undo can put them back).
+    pub fn delete_mute_rule(
+        &self,
+        id: &str,
+        by: Option<i64>,
+    ) -> Result<DeletedMuteRule, SettingsError> {
+        let mut st = self.state.write().unwrap();
+        if let Some(i) = st.muted_global.iter().position(|r| r.id == id) {
+            let mut global = st.muted_global.clone();
+            let rule = global.remove(i);
+            self.persist_global(&mut st, global, by)?;
+            let mut off_on = Vec::new();
+            let names: Vec<String> = st.sources.keys().cloned().collect();
+            for name in names {
+                let mut s = st.sources[&name].clone();
+                if let Some(o) = s.muted_global_off.iter().find(|o| o.id == id).cloned() {
+                    s.muted_global_off.retain(|o| o.id != id);
+                    off_on.push(SourceOff {
+                        source: name.clone(),
+                        by: o.by,
+                        at: o.at,
+                    });
+                    self.persist_source(&mut st, &name, s, by)?;
+                }
+            }
+            drop(st);
+            self.changed.notify_one();
+            return Ok(DeletedMuteRule {
+                rule,
+                source: None,
+                off_on,
+            });
+        }
+        let found = st.sources.iter().find_map(|(name, s)| {
+            s.muted
+                .iter()
+                .position(|r| r.id == id)
+                .map(|i| (name.clone(), i))
+        });
+        let Some((name, i)) = found else {
+            return Err(SettingsError::NotFound(
+                "no muted-lines rule with this id".into(),
+            ));
+        };
+        let mut s = st.sources[&name].clone();
+        let rule = s.muted.remove(i);
+        self.persist_source(&mut st, &name, s, by)?;
+        drop(st);
+        self.changed.notify_one();
+        Ok(DeletedMuteRule {
+            rule,
+            source: Some(name),
+            off_on: Vec::new(),
+        })
+    }
+
+    /// Switch a global rule off for one source ("Don't apply here", 06.19)
+    /// or back on.
+    pub fn set_global_apply(
+        &self,
+        source: &str,
+        id: &str,
+        apply: bool,
+        who: Option<String>,
+        by: Option<i64>,
+    ) -> Result<SourceSettings, SettingsError> {
+        let mut st = self.state.write().unwrap();
+        if !st.muted_global.iter().any(|r| r.id == id) {
+            return Err(SettingsError::NotFound(
+                "no global rule with this id".into(),
+            ));
+        }
+        let mut s = st.sources.get(source).cloned().unwrap_or_default();
+        s.muted_global_off.retain(|o| o.id != id);
+        if !apply {
+            s.muted_global_off.push(GlobalOff {
+                id: id.to_string(),
+                by: who,
+                at: Some(chrono::Utc::now().timestamp_millis()),
+            });
+        }
+        self.persist_source(&mut st, source, s.clone(), by)?;
+        drop(st);
+        self.changed.notify_one();
+        Ok(s)
+    }
+
+    /// Settings → Muted lines → Include muted lines in search (the instance
+    /// default, kept in `general.search_include_muted`; `null` = the flag).
+    pub fn put_muted_search(
+        &self,
+        include: Option<bool>,
+        by: Option<i64>,
+    ) -> Result<MutedSearch, SettingsError> {
+        {
+            let mut st = self.state.write().unwrap();
+            let mut g = st.general.clone();
+            g.search_include_muted = include;
+            self.save("general", Some(serde_json::to_string(&g)?), by)?;
+            st.general = g;
+        }
+        Ok(self.muted_search())
+    }
+
     /// Whether `key` (a field key, compared lowercase with `-` as `_`) is
     /// masked for `source` on export.
     pub fn masker(&self, source: &str) -> Masker {
@@ -1120,6 +1770,31 @@ pub struct Masker {
     /// Extra keys, full dotted paths or last segments, normalised.
     pub extra: Vec<String>,
     pub unmasked: Vec<PiiKind>,
+}
+
+/// Give rules saved before rule shapes a shape and an id. Returns the
+/// sources whose rules changed (to save once).
+fn upgrade_mute_rules(state: &mut State) -> Vec<String> {
+    let mut changed = Vec::new();
+    for (name, s) in state.sources.iter_mut() {
+        let mut any = false;
+        for r in s.muted.iter_mut().filter(|r| r.id.is_empty()) {
+            r.upgrade();
+            r.id = new_rule_id();
+            r.scope = MuteScope::Source;
+            any = true;
+        }
+        if any {
+            changed.push(name.clone());
+        }
+    }
+    for r in state.muted_global.iter_mut() {
+        r.scope = MuteScope::Global;
+        if r.id.is_empty() {
+            r.id = new_rule_id();
+        }
+    }
+    changed
 }
 
 /// Source names sent to the custom-group writes: at least `min`, at most
@@ -1257,10 +1932,7 @@ mod tests {
             "postgres",
             SourceSettings {
                 display_name: Some("Postgres".into()),
-                muted: vec![MuteRule {
-                    field: None,
-                    value: "checkpoint".into(),
-                }],
+                muted: vec![MuteRule::legacy(None, "checkpoint")],
                 ..Default::default()
             },
             Some(1),
@@ -1564,10 +2236,7 @@ mod tests {
     #[test]
     fn muted_rules_are_trimmed_deduped_and_bounded() {
         let s = Settings::memory();
-        let rule = |f: Option<&str>, v: &str| MuteRule {
-            field: f.map(String::from),
-            value: v.into(),
-        };
+        let rule = |f: Option<&str>, v: &str| MuteRule::legacy(f, v);
         let saved = s
             .put_source(
                 "api",
@@ -1583,13 +2252,26 @@ mod tests {
                 None,
             )
             .unwrap();
+        let got: Vec<_> = saved
+            .muted
+            .iter()
+            .map(|r| (r.shape, r.field.clone(), r.value.clone()))
+            .collect();
         assert_eq!(
-            saved.muted,
+            got,
             vec![
-                rule(Some("path"), "/api/v1/health"),
-                rule(None, "kube-probe")
+                (
+                    MuteShape::Field,
+                    Some("path".into()),
+                    "/api/v1/health".into()
+                ),
+                (MuteShape::Text, None, "kube-probe".into())
             ]
         );
+        assert!(saved
+            .muted
+            .iter()
+            .all(|r| r.id.starts_with("mr_") && r.enabled));
         assert_eq!(s.source("api").muted.len(), 2);
         let bad = |r: MuteRule| {
             s.put_source(
@@ -1763,5 +2445,242 @@ mod tests {
         f.order = vec![IdKey::TraceId, IdKey::RequestId];
         assert_eq!(s.put_flow_ids(f, None).unwrap().match_by, MatchBy::Key);
         assert_eq!(s.flow_ids().order[0], IdKey::TraceId);
+    }
+
+    #[test]
+    fn legacy_rules_get_ids_and_shapes_once_and_keep_matching() {
+        let path = tmp();
+        {
+            let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+            // As saved by the previous version: `{ field, value }` only.
+            s.save(
+                "source:api",
+                Some(
+                    r#"{"muted":[{"field":"path","value":"/api/v1/health*"},{"field":null,"value":"kube-probe"},{"field":"msg","value":"heartbeat ok"}],"search_include_muted":true}"#
+                        .into(),
+                ),
+                None,
+            )
+            .unwrap();
+        }
+        let s = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        let api = s.source("api");
+        let shapes: Vec<_> = api.muted.iter().map(|r| r.shape).collect();
+        assert_eq!(
+            shapes,
+            vec![MuteShape::Field, MuteShape::Text, MuteShape::Message]
+        );
+        assert!(api
+            .muted
+            .iter()
+            .all(|r| r.id.starts_with("mr_") && r.enabled));
+        assert_eq!(api.search_include_muted, Some(true));
+        let ids: Vec<_> = api.muted.iter().map(|r| r.id.clone()).collect();
+        // Saved: the same ids after another restart.
+        let again = Settings::open(Some(&path), Defaults::default(), false).unwrap();
+        let ids2: Vec<_> = again
+            .source("api")
+            .muted
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        assert_eq!(ids, ids2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn draft(shape: MuteShape, value: &str, scope: MuteScope) -> MuteRule {
+        MuteRule {
+            shape,
+            value: value.into(),
+            scope,
+            method: (shape == MuteShape::MethodRoute).then(|| "get".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn global_rules_union_with_source_rules_and_can_be_switched_off_per_source() {
+        let s = Settings::memory();
+        let add = |r: MuteRule, source: Option<&str>| {
+            s.add_mute_rule(
+                AddMuteRule {
+                    rule: r,
+                    source: source.map(String::from),
+                    ..Default::default()
+                },
+                None,
+            )
+        };
+        let own = add(
+            draft(
+                MuteShape::MethodRoute,
+                "/api/v1/ping?x=1",
+                MuteScope::Source,
+            ),
+            Some("api"),
+        )
+        .unwrap()
+        .rule;
+        assert_eq!(own.value, "/api/v1/ping", "query dropped");
+        assert_eq!(own.method.as_deref(), Some("GET"));
+        assert!(
+            add(
+                draft(MuteShape::MethodRoute, "/api/v1/ping", MuteScope::Source),
+                Some("api")
+            )
+            .is_err(),
+            "duplicate"
+        );
+        assert!(
+            add(draft(MuteShape::Route, "/x", MuteScope::Source), None).is_err(),
+            "no source"
+        );
+        let g = add(draft(MuteShape::Route, "/metrics", MuteScope::Global), None)
+            .unwrap()
+            .rule;
+        assert_eq!(g.scope, MuteScope::Global);
+        assert_eq!(s.muted_global().len(), 1);
+        // api: its own rule + the global one; worker (no settings): global only.
+        let ids = |src: &str| {
+            s.mute_rules(src)
+                .into_iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("api"), vec![g.id.clone(), own.id.clone()]);
+        assert_eq!(ids("worker"), vec![g.id.clone()]);
+        // Don't apply here.
+        s.set_global_apply("worker", &g.id, false, Some("esi".into()), None)
+            .unwrap();
+        assert!(ids("worker").is_empty());
+        let off = &s.source("worker").muted_global_off[0];
+        assert_eq!(
+            (off.id.as_str(), off.by.as_deref()),
+            (g.id.as_str(), Some("esi"))
+        );
+        // Paused rules hide nothing.
+        s.update_mute_rule(
+            &own.id,
+            UpdateMuteRule {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(ids("api"), vec![g.id.clone()]);
+        // Edit keeps the id.
+        let edited = s
+            .update_mute_rule(
+                &own.id,
+                UpdateMuteRule {
+                    value: Some("/api/v1/pong".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            (edited.id.as_str(), edited.value.as_str(), edited.enabled),
+            (own.id.as_str(), "/api/v1/pong", false)
+        );
+        assert!(matches!(
+            s.update_mute_rule("mr_nope", UpdateMuteRule::default(), None),
+            Err(SettingsError::NotFound(_))
+        ));
+        // Deleting a global rule takes its switches with it; restoring brings them back.
+        let gone = s.delete_mute_rule(&g.id, None).unwrap();
+        assert_eq!(gone.source, None);
+        assert_eq!(gone.off_on.len(), 1);
+        assert!(s.muted_global().is_empty() && s.source("worker").muted_global_off.is_empty());
+        let back = s
+            .add_mute_rule(
+                AddMuteRule {
+                    rule: gone.rule.clone(),
+                    off_on: gone.off_on.clone(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(back.rule, gone.rule);
+        assert_eq!(
+            s.source("worker").muted_global_off[0].by.as_deref(),
+            Some("esi")
+        );
+        assert!(ids("worker").is_empty());
+        // Source rule delete → restore.
+        let d = s.delete_mute_rule(&own.id, None).unwrap();
+        assert_eq!(d.source.as_deref(), Some("api"));
+        s.add_mute_rule(
+            AddMuteRule {
+                rule: d.rule.clone(),
+                source: d.source.clone(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.source("api").muted[0], d.rule);
+        // A switch for an unknown rule is dropped on save.
+        let mut w = s.source("worker");
+        w.muted_global_off.push(GlobalOff {
+            id: "mr_gone".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            s.put_source("worker", w, None)
+                .unwrap()
+                .muted_global_off
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_new_global_rule_can_replace_the_same_source_rules() {
+        let s = Settings::memory();
+        for src in ["api", "worker"] {
+            s.add_mute_rule(
+                AddMuteRule {
+                    rule: draft(MuteShape::Route, "/metrics", MuteScope::Source),
+                    source: Some(src.into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        }
+        let added = s
+            .add_mute_rule(
+                AddMuteRule {
+                    rule: draft(MuteShape::Route, "/METRICS", MuteScope::Global),
+                    remove_source_rules: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(added.removed.len(), 2);
+        assert!(s.source("api").muted.is_empty() && s.source("worker").muted.is_empty());
+        assert!(s
+            .add_mute_rule(
+                AddMuteRule {
+                    rule: draft(MuteShape::Route, "/metrics", MuteScope::Global),
+                    ..Default::default()
+                },
+                None,
+            )
+            .is_err());
+        // The instance include-in-search default moved to Muted lines.
+        assert!(s.put_muted_search(Some(true), None).unwrap().include);
+        assert_eq!(s.general().search_include_muted, Some(true));
+        assert_eq!(
+            s.put_muted_search(None, None).unwrap().origin,
+            Origin::Default
+        );
+        assert_eq!(route_path("https://x.io/a/b?c=1#d"), "/a/b");
+        assert_eq!(route_path("/a?b"), "/a");
+        assert_eq!(route_path("https://x.io"), "/");
     }
 }

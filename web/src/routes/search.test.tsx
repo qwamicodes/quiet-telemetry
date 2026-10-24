@@ -381,10 +381,25 @@ describe('muted lines in search (06.3)', () => {
         default_level: null,
         mask_fields: [],
         unmasked: [],
-        muted: [{ field: 'msg', value: 'GET /health*' }],
+        muted: [
+          {
+            id: 'mr_1',
+            scope: 'source',
+            enabled: true,
+            shape: 'message',
+            field: 'msg',
+            value: 'GET /health*',
+            method: null,
+            created_by: null,
+            created_at: null,
+            origin: 'manual',
+          },
+        ],
+        muted_global_off: [],
         search_include_muted: apiInclude,
       },
     },
+    muted_global: [],
   })
   const downloadHref = async (user: ReturnType<typeof userEvent.setup>) => {
     await user.click(screen.getByRole('button', { name: 'Export' }))

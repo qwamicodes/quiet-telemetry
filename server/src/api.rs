@@ -147,6 +147,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::flow_api::routes())
         .merge(crate::tokens_api::routes())
         .merge(crate::settings_api::routes())
+        .merge(crate::mute_api::routes())
         .merge(crate::source_groups_api::routes())
         .merge(crate::auth_api::session_routes())
         .route_layer(middleware::from_fn_with_state(

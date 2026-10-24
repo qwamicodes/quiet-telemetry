@@ -51,13 +51,14 @@ pub fn routes() -> Router<AppState> {
         .route("/api/system", get(system_status))
 }
 
-fn bad(status: StatusCode, code: &str, msg: &str) -> Response {
+pub(crate) fn bad(status: StatusCode, code: &str, msg: &str) -> Response {
     (status, Json(json!({ "error": msg, "code": code }))).into_response()
 }
 
-fn failed(e: SettingsError) -> Response {
+pub(crate) fn failed(e: SettingsError) -> Response {
     match e {
         SettingsError::Invalid(m) => bad(StatusCode::BAD_REQUEST, "invalid", &m),
+        SettingsError::NotFound(m) => bad(StatusCode::NOT_FOUND, "not_found", &m),
         SettingsError::Store(e) => {
             tracing::error!(error = %e, "settings write failed");
             bad(
@@ -81,7 +82,7 @@ fn unavailable(e: anyhow::Error) -> Response {
 /// Run a settings write off the async runtime (it is a SQLite write).
 /// The error is the finished response, returned as is.
 #[allow(clippy::result_large_err)]
-async fn write<T: Send + 'static>(
+pub(crate) async fn write<T: Send + 'static>(
     s: &AppState,
     f: impl FnOnce(&crate::settings::Settings) -> Result<T, SettingsError> + Send + 'static,
 ) -> Result<T, Response> {
