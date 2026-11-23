@@ -206,6 +206,8 @@ const issue = z.object({
     'store_errors',
     'ingest_rejected',
     'history_unavailable',
+    'history_at_capacity',
+    'history_cleanup_blocked',
   ]),
   severity: z.enum(['warn', 'error']),
   title: z.string(),

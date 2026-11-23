@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RetainedHistory } from '@/components/settings/retained-history'
-import type { Destination, HistoryStatus, VerifyResult } from '@/gen'
+import type { Destination, HistoryJob, HistoryPreview, HistoryStatus, VerifyResult } from '@/gen'
 import { makeQueryClient, Providers } from '@/providers'
 import { member, owner, seedAuth } from '@/test/auth'
 
@@ -38,8 +38,45 @@ const garage = (over: Partial<Destination> = {}): Destination => ({
   error: null,
   next_retry: null,
   created_at: NOW - 14 * 24 * H,
+  capacity_bytes: null,
+  capacity_source: null,
+  at_capacity: false,
+  removing: false,
+  cleanup_error: null,
+  cleanup_retry_at: null,
+  cleanup_blocked_hours: 0,
   ...over,
 })
+
+const job = (over: Partial<HistoryJob> = {}): HistoryJob => ({
+  id: 7,
+  kind: 'copy',
+  state: 'running',
+  destination_id: 2,
+  destination: 'r2-prod',
+  source_id: 1,
+  source: 'garage-local',
+  total: 312,
+  done: 78,
+  bytes: 6e8,
+  error: null,
+  next_retry: null,
+  created_at: Date.now() - 60_000,
+  updated_at: Date.now(),
+  ...over,
+})
+
+const PREVIEW: HistoryPreview = {
+  retention_days: 30,
+  before: Date.UTC(2026, 9, 24),
+  hours: 214,
+  lines: 900_000,
+  bytes: 38e9,
+  destinations: [
+    { id: 3, name: 'production-r2', hours: 200, bytes: 35e9 },
+    { id: 1, name: 'garage-local', hours: 14, bytes: 3e9 },
+  ],
+}
 
 let status: HistoryStatus
 let calls: { url: string; method: string; body: unknown }[]
@@ -57,7 +94,14 @@ beforeEach(() => {
     gaps: [],
     gap_hours: 0,
     waiting_hours: 0,
+    policy: { retention_days: null, at_capacity: 'evict' },
+    retained_from: null,
+    expired_hours: 0,
+    expired_bytes: 0,
+    backfill_hours: 0,
+    jobs: [],
   }
+  localStorage.clear()
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -66,6 +110,31 @@ beforeEach(() => {
       const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s })
       if (method !== 'GET') calls.push({ url, method, body })
       if (url === '/api/storage/history') return json(status)
+      if (url === '/api/settings/history' && method === 'PUT') {
+        if (body.retention_days != null && body.confirm !== true)
+          return json({ error: 'this deletes 214 archived hours', code: 'confirm_required', preview: PREVIEW }, 409)
+        status.policy = { retention_days: body.retention_days, at_capacity: body.at_capacity }
+        return json(status.policy)
+      }
+      if (url === '/api/storage/history/backfill') {
+        const j = job({ id: 9, kind: 'backfill', total: status.backfill_hours, done: 0, source: null, source_id: null })
+        status.jobs = [j, ...status.jobs]
+        return json(j, 202)
+      }
+      if (url === '/api/storage/history/off') {
+        for (const x of status.destinations) {
+          x.active = false
+          x.state = 'read_only'
+        }
+        status.active = null
+        return new Response(null, { status: 204 })
+      }
+      const jm = url.match(/^\/api\/storage\/jobs\/(\d+)\/(cancel|retry)$/)
+      if (jm) {
+        const j = status.jobs.find((x) => x.id === Number(jm[1])) as HistoryJob
+        j.state = jm[2] === 'cancel' ? 'cancelled' : 'running'
+        return json(j)
+      }
       if (url === '/api/storage/destinations' && method === 'POST') {
         const d = garage({
           id: 2,
@@ -83,7 +152,7 @@ beforeEach(() => {
         status.destinations.push(d)
         return json({ destination: d, verify: verifyNext }, 201)
       }
-      const m = url.match(/^\/api\/storage\/destinations\/(\d+)(\/\w+)?$/)
+      const m = url.match(/^\/api\/storage\/destinations\/(\d+)(\/[\w-]+)?$/)
       if (m) {
         const d = status.destinations.find((x) => x.id === Number(m[1]))
         if (!d) return json({ error: 'no such destination', code: 'not_found' }, 404)
@@ -97,6 +166,16 @@ beforeEach(() => {
           return json(d)
         }
         if (m[2] === '/verify') return json(verifyNext)
+        if (m[2] === '/capacity') {
+          d.capacity_bytes = body.capacity_bytes
+          d.capacity_source = body.capacity_bytes == null ? null : 'owner'
+          return json(d)
+        }
+        if (m[2] === '/retry-cleanup') return json(d)
+        if (method === 'DELETE' && body?.delete_history) {
+          d.removing = true
+          return json({ job: job({ id: 11, kind: 'delete', destination_id: d.id, destination: d.name }) }, 202)
+        }
         if (method === 'DELETE') {
           status.destinations = status.destinations.filter((x) => x.id !== d.id)
           return new Response(null, { status: 204 })
@@ -247,5 +326,219 @@ describe('Settings → Storage → Retained history (5a)', () => {
         body: { delete_history: false },
       }),
     )
+  })
+
+  it('a shorter history window shows what it deletes and asks before deleting', async () => {
+    status = { ...status, enabled: true, active: 1, destinations: [garage()] }
+    const user = userEvent.setup()
+    show()
+    const group = await screen.findByRole('group', { name: 'Keep history for' })
+    expect(screen.getByText('kept indefinitely · default')).toBeInTheDocument()
+    await user.click(within(group).getByRole('button', { name: '30d' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Keep history 30 days?')).toBeInTheDocument()
+    expect(
+      within(dialog).getByText(/This deletes 214 hours · 38\.0 GB from production-r2 and garage-local/),
+    ).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Delete 214 hours' }))
+    await waitFor(() =>
+      expect(calls.at(-1)).toMatchObject({
+        url: '/api/settings/history',
+        method: 'PUT',
+        body: { retention_days: 30, at_capacity: 'evict', confirm: true },
+      }),
+    )
+    // When full: stop archiving.
+    await user.click(
+      within(screen.getByRole('group', { name: 'When a destination is full' })).getByRole('button', {
+        name: 'Stop archiving',
+      }),
+    )
+    await waitFor(() => expect(calls.at(-1)).toMatchObject({ body: { retention_days: 30, at_capacity: 'stop' } }))
+  })
+
+  it('members see the policy but cannot change it', async () => {
+    status = {
+      ...status,
+      enabled: true,
+      active: 1,
+      destinations: [garage()],
+      policy: { retention_days: 90, at_capacity: 'evict' },
+    }
+    show(member)
+    const group = await screen.findByRole('group', { name: 'Keep history for' })
+    expect(within(group).getByRole('button', { name: '90d' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Capacity' })).not.toBeInTheDocument()
+  })
+
+  it('capacity, full, and cleanup blocked with Retry', async () => {
+    status = {
+      ...status,
+      enabled: true,
+      active: 1,
+      destinations: [
+        garage({
+          capacity_bytes: 2.4e9,
+          capacity_source: 'garage',
+          at_capacity: true,
+          cleanup_blocked_hours: 12,
+          cleanup_error: 'AccessDenied: object lock',
+          cleanup_retry_at: Date.now() + 5 * 60_000,
+        }),
+      ],
+    }
+    const user = userEvent.setup()
+    show()
+    const list = await screen.findByRole('list', { name: 'Destinations' })
+    expect(within(list).getByText('full')).toBeInTheDocument()
+    expect(within(list).getByText('2.4 GB of 2.4 GB · Garage quota')).toBeInTheDocument()
+    expect(
+      within(list).getByText(
+        /Cleanup blocked: 12 hours can't be deleted here \(AccessDenied: object lock\) · trying again in 5 min/,
+      ),
+    ).toBeInTheDocument()
+    await user.click(within(list).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(calls.at(-1)?.url).toBe('/api/storage/destinations/1/retry-cleanup'))
+    await user.click(within(list).getByRole('button', { name: 'Capacity' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByLabelText('Capacity in GB'), '50')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(calls.at(-1)).toMatchObject({
+        url: '/api/storage/destinations/1/capacity',
+        method: 'PUT',
+        body: { capacity_bytes: 50e9 },
+      }),
+    )
+  })
+
+  it('switching the active destination offers to copy its history', async () => {
+    status = {
+      ...status,
+      enabled: true,
+      active: 1,
+      destinations: [
+        garage(),
+        garage({
+          id: 2,
+          name: 'r2-prod',
+          kind: 'r2',
+          active: false,
+          state: 'read_only',
+          hours: 0,
+          lines: 0,
+          bytes_stored: 0,
+          first: null,
+          last: null,
+        }),
+      ],
+    }
+    const user = userEvent.setup()
+    show()
+    const list = await screen.findByRole('list', { name: 'Destinations' })
+    const rows = within(list).getAllByRole('listitem')
+    await user.click(within(rows[1]).getByRole('button', { name: 'Make active' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/Copy garage-local's history here \(312 h · 2\.4 GB\)/)).toBeInTheDocument()
+    expect(within(dialog).getByRole('checkbox')).toBeChecked()
+    await user.click(within(dialog).getByRole('button', { name: 'Make active' }))
+    await waitFor(() =>
+      expect(calls.at(-1)).toMatchObject({
+        url: '/api/storage/destinations/2/activate',
+        body: { copy_history: true },
+      }),
+    )
+  })
+
+  it('jobs list progress and cancel', async () => {
+    status = { ...status, enabled: true, active: 2, destinations: [garage({ id: 2, name: 'r2-prod' })], jobs: [job()] }
+    const user = userEvent.setup()
+    show()
+    const jobs = await screen.findByRole('list', { name: 'History jobs' })
+    expect(within(jobs).getByText('Copying history from garage-local to r2-prod')).toBeInTheDocument()
+    expect(within(jobs).getByText(/78 \/ 312 h · 600 MB · running/)).toBeInTheDocument()
+    expect(within(jobs).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '25')
+    await user.click(within(jobs).getByRole('button', { name: 'Cancel job 7' }))
+    await waitFor(() => expect(calls.at(-1)?.url).toBe('/api/storage/jobs/7/cancel'))
+  })
+
+  it('a blocked delete job offers Retry', async () => {
+    status = {
+      ...status,
+      enabled: true,
+      active: 2,
+      destinations: [garage({ id: 2, name: 'r2-prod' })],
+      jobs: [
+        job({
+          id: 11,
+          kind: 'delete',
+          state: 'blocked',
+          destination: 'garage-local',
+          error: 'AccessDenied',
+          total: 4,
+          done: 1,
+        }),
+      ],
+    }
+    const user = userEvent.setup()
+    show()
+    const jobs = await screen.findByRole('list', { name: 'History jobs' })
+    expect(within(jobs).getByText("Deleting garage-local's history")).toBeInTheDocument()
+    expect(within(jobs).getByText(/cleanup blocked/)).toBeInTheDocument()
+    await user.click(within(jobs).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(calls.at(-1)?.url).toBe('/api/storage/jobs/11/retry'))
+  })
+
+  it('removing a destination can delete its history', async () => {
+    status = {
+      ...status,
+      enabled: true,
+      active: 1,
+      destinations: [
+        garage(),
+        garage({ id: 3, name: 'r2-old', kind: 'r2', active: false, state: 'read_only', hours: 24, bytes_stored: 3e6 }),
+      ],
+    }
+    const user = userEvent.setup()
+    show()
+    const list = await screen.findByRole('list', { name: 'Destinations' })
+    const rows = within(list).getAllByRole('listitem')
+    await user.click(within(rows[1]).getByRole('button', { name: 'Remove' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('radio', { name: /Delete its history/ }))
+    expect(within(dialog).getByText(/Deletes 24 hours \(3 MB\) in the background/)).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Delete its history and remove' }))
+    await waitFor(() =>
+      expect(calls.at(-1)).toMatchObject({
+        url: '/api/storage/destinations/3',
+        method: 'DELETE',
+        body: { delete_history: true },
+      }),
+    )
+  })
+
+  it('offers to archive the local window right after history is on, and remembers Not now', async () => {
+    status = { ...status, enabled: true, active: 1, destinations: [garage()], backfill_hours: 23 }
+    const user = userEvent.setup()
+    show()
+    expect(await screen.findByText("23 hours in the local window aren't archived yet")).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Archive now' }))
+    await waitFor(() => expect(calls.at(-1)?.url).toBe('/api/storage/history/backfill'))
+    // Its job now shows; the offer is gone.
+    expect(await screen.findByText('Archiving the local window to r2-prod')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Archive now' })).not.toBeInTheDocument()
+  })
+
+  it('Not now hides the backfill offer; Turn off asks first', async () => {
+    status = { ...status, enabled: true, active: 1, destinations: [garage()], backfill_hours: 5 }
+    const user = userEvent.setup()
+    show()
+    await user.click(await screen.findByRole('button', { name: 'Not now' }))
+    expect(screen.queryByRole('button', { name: 'Archive now' })).not.toBeInTheDocument()
+    expect(localStorage.getItem('quiet.history.backfill.dismissed')).toBe('e02fb9d36cd13960')
+    await user.click(screen.getByRole('button', { name: 'Turn off' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Turn off' }))
+    await waitFor(() => expect(calls.at(-1)?.url).toBe('/api/storage/history/off'))
   })
 })
