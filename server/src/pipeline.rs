@@ -209,14 +209,15 @@ mod tests {
         let hub = Hub::new();
         let p = Pipeline::new(Arc::new(MemoryStore::new(10)), hub.clone());
         let mut rx = hub.ensure_source("api", SourceKind::Http).subscribe();
-        let raw = r#"{"flow":"login","request":{"headers":{"authorization":"Bearer abcdefghijklmnop"}},"password":"hunter2","user":{"email":"kofi@example.com"}}"#;
+        let raw = r#"{"flow":"login","request":{"headers":{"authorization":"BEARER"}},"password":"hunter2","user":{"email":"kofi@example.com"}}"#;
+        let raw = crate::redact::fixtures::fill(raw);
         p.ingest(SourceKind::Http, [RawLine::new(raw, "api", 1)])
             .await
             .unwrap();
         let stored = p.store().tail("api", 1).await.unwrap();
         let live = rx.recv().await.unwrap();
         for l in [&stored[0], &live] {
-            assert!(!l.raw.contains("hunter2") && !l.raw.contains("abcdefghijklmnop"));
+            assert!(!l.raw.contains("hunter2") && !l.raw.contains(&"q".repeat(16)));
             let f = l.fields.as_ref().unwrap();
             assert_eq!(f["password"], crate::redact::REDACTED);
             // Email stays visible unless the source hides it.

@@ -791,10 +791,16 @@ mod tests {
             r#"{"time":1,"level":"info","service":"api","user":{"email":"ama@example.com","msisdn":"+233205550118"},"request":{"headers":{"authorization":"[REDACTED]","cookie":"***"}}}"#,
         ]));
         assert_eq!(get(&clean, "secrets").status, LintStatus::Review);
-        let leaky = lint(&lines(&[
-            r#"{"time":1,"level":"info","service":"api","request":{"headers":{"authorization":"Bearer abcdefghijklmnop"}},"password":"hunter2"}"#,
-            r#"{"time":2,"level":"info","service":"api","note":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"}"#,
-        ]));
+        let fill = crate::redact::fixtures::fill;
+        let leaky_raw = [
+            fill(
+                r#"{"time":1,"level":"info","service":"api","request":{"headers":{"authorization":"BEARER"}},"password":"hunter2"}"#,
+            ),
+            fill(r#"{"time":2,"level":"info","service":"api","note":"JWT"}"#),
+        ];
+        let leaky = lint(&lines(
+            &leaky_raw.iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
         let s = get(&leaky, "secrets");
         assert_eq!(s.status, LintStatus::Fail);
         assert_eq!(s.share, Some(0.0));
@@ -832,7 +838,7 @@ mod tests {
 
     #[test]
     fn heuristics() {
-        assert!(looks_like_secret("Bearer abcdefghijklmnop"));
+        assert!(looks_like_secret(&crate::redact::fixtures::bearer()));
         assert!(!looks_like_secret("Bearer x"));
         assert!(!looks_like_secret("ama@example.com"));
         assert!(masked("[REDACTED]") && masked("****") && !masked("hunter2"));
