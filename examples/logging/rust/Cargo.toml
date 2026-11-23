@@ -1,0 +1,20 @@
+[package]
+name = "quiet-wide-event-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+axum = "=0.8.9"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+http-body = "1"
+rand = "0.8"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "signal"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

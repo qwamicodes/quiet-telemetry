@@ -1,6 +1,16 @@
-import { CheckIcon, EllipsisIcon, KeyRoundIcon, PlusIcon, RotateCcwIcon, Trash2Icon, XIcon } from 'lucide-react'
+import {
+  CheckIcon,
+  CopyIcon,
+  EllipsisIcon,
+  KeyRoundIcon,
+  PlusIcon,
+  RotateCcwIcon,
+  Trash2Icon,
+  XIcon,
+} from 'lucide-react'
 import { type FormEvent, useState } from 'react'
 import { CopyButton } from '@/components/copy-button'
+import { PageHeader } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -31,6 +41,7 @@ import {
   useRevokeInvite,
   useSetRole,
 } from '@/lib/auth-api'
+import { copy } from '@/lib/copy'
 import { fmtAgo, fmtDay } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
@@ -110,14 +121,14 @@ function InviteForm({ onCreated }: { onCreated: (c: CreatedInvite) => void }) {
         onChange={(e) => setEmail(e.target.value)}
       />
       <RoleSelect value={role} onChange={setRole} label="Invite role" />
-      <Button type="submit" variant="secondary" disabled={create.isPending}>
+      <Button type="submit" disabled={create.isPending}>
         <PlusIcon /> Create invite link
       </Button>
     </form>
   )
 }
 
-function CreatedBanner({ created, onClose }: { created: CreatedInvite; onClose: () => void }) {
+function CreatedBanner({ created }: { created: CreatedInvite }) {
   const link = absolute(created.path)
   return (
     <div role="status" className="flex flex-col gap-2.5 border border-status-ok/50 bg-status-ok/5 p-3.5">
@@ -125,16 +136,8 @@ function CreatedBanner({ created, onClose }: { created: CreatedInvite; onClose: 
         <CheckIcon className="size-3.5 text-status-ok" />
         <span className="font-medium">Invite link{created.invite.email ? ` for ${created.invite.email}` : ''}</span>
         <span className="font-mono text-[11px] text-muted-foreground">
-          · send it however you like · works once · expires in 7 days · shown once
+          · send it however you like · works once · expires in 7 days
         </span>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Dismiss"
-          className="ml-auto text-muted-foreground hover:text-foreground"
-        >
-          <XIcon className="size-3.5" />
-        </button>
       </div>
       <div className="flex items-center gap-2 border bg-background py-1 pr-1 pl-3">
         <code className="min-w-0 flex-1 truncate font-mono text-xs" data-testid="invite-link">
@@ -234,21 +237,18 @@ function MemberRow({
     <li className="flex items-center gap-3 border-b px-4 py-2.5 last:border-b-0" aria-label={m.name}>
       <Initial text={(m.name[0] ?? '?').toUpperCase()} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-[13px]">
-          {m.name}
-          {me && <span className="ml-1.5 text-muted-foreground">(you)</span>}
-        </span>
+        <span className="truncate text-[13px]">{m.name}</span>
         <span className="truncate font-mono text-[11px] text-muted-foreground">{m.email}</span>
       </div>
       <span className="w-28 text-right font-mono text-[11px] text-muted-foreground">{lastSeen(m.last_seen)}</span>
-      {manage ? (
+      {manage && !me ? (
         <RoleSelect value={m.role} onChange={change} label={`Role of ${m.name}`} disabled={setRole.isPending} />
       ) : (
         <span className="w-28 text-right">
           <span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{m.role}</span>
         </span>
       )}
-      {manage ? (
+      {manage && !me ? (
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`More for ${m.name}`} />}>
             <EllipsisIcon />
@@ -257,14 +257,10 @@ function MemberRow({
             <DropdownMenuItem onClick={() => onReset(m)}>
               <KeyRoundIcon /> Password reset link
             </DropdownMenuItem>
-            {!me && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onClick={() => onRemove(m)}>
-                  <Trash2Icon /> Remove
-                </DropdownMenuItem>
-              </>
-            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onClick={() => onRemove(m)}>
+              <Trash2Icon /> Remove
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       ) : (
@@ -274,7 +270,9 @@ function MemberRow({
   )
 }
 
-function InviteRow({ inv, onNew }: { inv: Invite; onNew: (inv: Invite) => void }) {
+const invited = (ts: number) => (Date.now() - ts < 86_400_000 ? fmtAgo(ts) : fmtDay(ts))
+
+function InviteRow({ inv, onNew }: { inv: Invite; onNew: (inv: Invite, copy: boolean) => void }) {
   const revoke = useRevokeInvite()
   const expired = inv.expires <= Date.now()
   const who = inv.email ?? 'anyone with the link'
@@ -282,10 +280,10 @@ function InviteRow({ inv, onNew }: { inv: Invite; onNew: (inv: Invite) => void }
     <li className="flex items-center gap-3 border-b px-4 py-2.5 last:border-b-0" aria-label={`Invite ${who}`}>
       <Initial text="–" dashed />
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate font-mono text-[13px]">{who}</span>
+        <span className="truncate text-[13px]">{who}</span>
         <span className="truncate font-mono text-[11px] text-muted-foreground">
-          invited {fmtAgo(inv.created)} by {inv.created_by} · {expired ? 'expired' : 'expires'} {fmtDay(inv.expires)} ·{' '}
-          {inv.role}
+          invited {invited(inv.created)} · {expired ? 'expired' : 'expires'} {fmtDay(inv.expires)}
+          {inv.role === 'owner' ? ' · owner' : ''}
         </span>
       </div>
       <span
@@ -293,23 +291,39 @@ function InviteRow({ inv, onNew }: { inv: Invite; onNew: (inv: Invite) => void }
       >
         {expired ? 'expired' : 'pending'}
       </span>
-      <Button variant="outline" size="sm" className="w-28" onClick={() => onNew(inv)}>
-        <RotateCcwIcon /> New link
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        aria-label={`Revoke invite for ${who}`}
-        disabled={revoke.isPending}
-        onClick={() =>
-          revoke.mutate(inv.id, {
-            onSuccess: () => toast.success('Invite revoked', { description: 'The link no longer works.' }),
-            onError: (e) => toast.error('Could not revoke', { description: err(e) }),
-          })
-        }
-      >
-        <XIcon />
-      </Button>
+      {expired ? (
+        <Button variant="outline" size="sm" onClick={() => onNew(inv, false)}>
+          <RotateCcwIcon /> New link
+        </Button>
+      ) : (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onNew(inv, true)}
+          title="Only a hash of the link is kept, so this copies a fresh link and retires the old one."
+        >
+          <CopyIcon /> Copy invite link
+        </Button>
+      )}
+      <DropdownMenu>
+        <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`More for invite ${who}`} />}>
+          <EllipsisIcon />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            variant="destructive"
+            disabled={revoke.isPending}
+            onClick={() =>
+              revoke.mutate(inv.id, {
+                onSuccess: () => toast.success('Invite revoked', { description: 'The link no longer works.' }),
+                onError: (e) => toast.error('Could not revoke', { description: err(e) }),
+              })
+            }
+          >
+            <XIcon /> Revoke invite
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </li>
   )
 }
@@ -327,13 +341,14 @@ export function Members() {
   const [removing, setRemoving] = useState<Member | null>(null)
 
   // Only the hash of a link is kept, so "copy again" is a fresh link.
-  const newLink = (inv: Invite) =>
+  const newLink = (inv: Invite, andCopy: boolean) =>
     createInvite.mutate(
       { email: inv.email ?? undefined, role: inv.role },
       {
         onSuccess: (c) => {
           revokeInvite.mutate(inv.id)
           setCreated(c)
+          if (andCopy) void copy(absolute(c.path), 'invite link')
         },
         onError: (e) => toast.error('Could not create the invite', { description: err(e) }),
       },
@@ -346,15 +361,13 @@ export function Members() {
 
   return (
     <section className="flex max-w-190 flex-col gap-5" aria-label="Members">
-      <header className="flex flex-col gap-1">
-        <h2 className="font-semibold text-xl">Members</h2>
-        <p className="text-muted-foreground text-sm">
-          People who can open this quiet instance. Invites are links you copy; email invites come in v0.2.
-        </p>
-      </header>
+      <PageHeader
+        title="Members"
+        sub="People who can open this quiet instance. Invites are links you copy; email invites come in v0.3."
+      />
 
       {owner && <InviteForm onCreated={setCreated} />}
-      {created && <CreatedBanner created={created} onClose={() => setCreated(null)} />}
+      {created && <CreatedBanner created={created} />}
 
       {error && <p className="text-level-error text-sm">{err(error)}</p>}
       {isPending && <p className="text-muted-foreground text-sm">Loading…</p>}
@@ -370,22 +383,22 @@ export function Members() {
       )}
 
       <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1.5 border p-3.5">
+        <div className="flex flex-col gap-1.5 border bg-card p-3.5">
           <span className="flex items-center gap-2">
             <span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">owner</span>
             <span className="font-mono text-[11px] text-muted-foreground">at least 1</span>
           </span>
           <p className="text-muted-foreground text-xs">
-            Everything a member can do, plus members, invites, reset links, ingest tokens and exports with PII unmasked.
+            Everything a member can do, plus members, invites, ingest tokens, storage and unmasking PII fields.
           </p>
         </div>
-        <div className="flex flex-col gap-1.5 border p-3.5">
+        <div className="flex flex-col gap-1.5 border bg-card p-3.5">
           <span className="flex items-center gap-2">
             <span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">member</span>
             <span className="font-mono text-[11px] text-muted-foreground">read-only</span>
           </span>
           <p className="text-muted-foreground text-xs">
-            Reads every source, flow and search. Exports with PII masked. Can't change members, tokens or settings.
+            Reads every source, flow and search. Sees PII fields masked. Can’t change settings.
           </p>
         </div>
       </div>

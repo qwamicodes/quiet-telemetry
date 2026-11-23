@@ -94,7 +94,17 @@ export function CrashPage({ error }: { error: unknown }) {
   }
 
   return (
-    <AuthFrame footer={`error id ${id}`}>
+    <AuthFrame
+      footer={`error id ${id} · ${at.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+        timeZoneName: 'short',
+      })}`}
+    >
       <section className="w-full max-w-[640px]">
         <span className="mb-6 flex size-9 items-center justify-center border border-status-err/40 bg-status-err/10 text-status-err [&_svg]:size-4">
           <TriangleAlertIcon />

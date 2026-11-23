@@ -22,6 +22,8 @@ export function useHotkeys(keys: Hotkeys) {
   ref.current = keys
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // A menu or field that already handled the key (Enter in the mute menu) owns it.
+      if (e.defaultPrevented) return
       const mod = e.metaKey || e.ctrlKey
       const key = e.key === ' ' ? 'space' : e.key.toLowerCase()
       const combo = mod ? `mod+${key}` : key

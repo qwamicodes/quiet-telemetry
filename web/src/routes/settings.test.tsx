@@ -68,6 +68,8 @@ const blankSource = (): SourceSettings => ({
   default_level: null,
   mask_fields: [],
   unmasked: [],
+  redact_fields: [],
+  redact_pii: [],
   muted: [],
   search_include_muted: null,
   muted_global_off: [],
@@ -404,7 +406,7 @@ describe('Settings → Storage', () => {
     const user = userEvent.setup()
     renderAt('/settings/storage')
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('Disk is at 96% of the 5.00 GB cap')
+    expect(alert).toHaveTextContent('Disk is at 96% of the 5 GB cap')
     expect(alert).toHaveTextContent('traefik is 37% of the volume')
 
     await user.click(screen.getByRole('button', { name: /Purge now/ }))
@@ -427,19 +429,14 @@ describe('Settings → Storage', () => {
 })
 
 describe('Settings → General', () => {
-  it('saves instance name, timezone and stream direction; bad zones cannot be saved', async () => {
+  it('saves instance name, timezone, timestamps and the include-muted default (07.10)', async () => {
     const user = userEvent.setup()
     renderAt('/settings')
     const name = await screen.findByLabelText('Instance name')
     await user.clear(name)
     await user.type(name, 'legivent')
-    const tz = screen.getByLabelText('Timezone')
-    await user.clear(tz)
-    await user.type(tz, 'Mars/Olympus')
-    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
-    await user.clear(tz)
-    await user.type(tz, 'Africa/Accra')
-    await user.click(screen.getByRole('button', { name: 'Newest at top' }))
+    await user.click(screen.getByRole('combobox', { name: 'Timezone' }))
+    await user.click(await screen.findByRole('option', { name: /^Africa\/Accra/ }))
     const url = screen.getByLabelText('Public URL')
     await user.type(url, 'quiet.legivent.com')
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
@@ -447,31 +444,38 @@ describe('Settings → General', () => {
     await user.type(url, 'https://quiet.legivent.com/')
     await user.click(screen.getByRole('button', { name: 'relative' }))
     await user.click(screen.getByLabelText('Keep non-JSON lines'))
+    await user.click(screen.getByRole('switch', { name: 'Include muted lines in search' }))
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(calls).toContainEqual({ url: '/api/mute/search', method: 'PUT', body: { include: true } }),
+    )
     await waitFor(() =>
       expect(calls).toContainEqual({
         url: '/api/settings/general',
         method: 'PUT',
-        body: {
+        // The mock keeps the PUT body as its state, so the later muted-search save shows through it.
+        body: expect.objectContaining({
           instance_name: 'legivent',
-          stream_direction: 'top',
+          stream_direction: 'bottom',
           timezone: 'Africa/Accra',
           public_url: 'https://quiet.legivent.com/',
           timestamps: 'relative',
           max_line_bytes: 65536,
           keep_non_json: false,
           check_updates: false,
-          search_include_muted: null,
-        },
+        }),
       }),
     )
-  })
+  }, 15_000)
 
-  it('Include muted lines in search moved to Settings → Muted lines (General keeps a link)', async () => {
+  it('source grouping: a compact select here, full options one click away (07.10 → 07.11)', async () => {
     const user = userEvent.setup()
     const { router } = renderAt('/settings')
-    await user.click(await screen.findByRole('link', { name: /Muted lines/, description: undefined }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/settings/muted-lines'))
+    expect(await screen.findByRole('combobox', { name: 'Source grouping' })).toHaveTextContent('Auto')
+    await user.click(screen.getByRole('link', { name: 'Source grouping' }))
+    await waitFor(() => expect(router.state.location.hash).toBe('grouping'))
+    expect(await screen.findByRole('region', { name: 'Source grouping' })).toBeInTheDocument()
+    expect(screen.getByText(/· Source grouping$/)).toBeInTheDocument()
   })
 
   it('is read-only for members', async () => {
@@ -482,31 +486,34 @@ describe('Settings → General', () => {
 })
 
 describe('source settings', () => {
-  it('reorders ids, masks a field, pauses ingest and saves', async () => {
+  it('reorders ids, masks a field, ignores the source and saves from the header (v0.1.1-06.3)', async () => {
     const user = userEvent.setup()
     renderAt('/sources/legivent-api?tab=settings')
     const form = await screen.findByRole('form', { name: 'Settings for legivent-api' })
     await user.type(within(form).getByLabelText('Display name'), 'API')
+    expect(within(form).getByLabelText('Matched by')).toHaveValue('container name = legivent-api')
     await user.click(within(form).getByRole('button', { name: 'Move job_id up' }))
-    await user.click(within(form).getByRole('button', { name: 'Stop counting correlation_id' }))
     await user.type(within(form).getByRole('textbox', { name: 'Mask another field' }), 'customer.address')
     await user.click(within(form).getByRole('button', { name: 'Add' }))
     await user.click(within(form).getByRole('switch', { name: 'Mask user_agent' }))
-    await user.click(within(form).getByRole('switch', { name: 'Pause ingest' }))
-    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
+    await user.click(within(form).getByRole('switch', { name: 'Ignore this source' }))
+    // Discard / Save changes sit in the page header on this tab.
+    await user.click(screen.getByRole('button', { name: /^Save changes/ }))
     await waitFor(() => expect(calls).toHaveLength(1))
     expect(calls[0]).toEqual({
       url: '/api/settings/sources/legivent-api',
       method: 'PUT',
       body: {
         display_name: 'API',
-        hidden: false,
+        hidden: true,
         paused: true,
         retention_ms: null,
-        id_keys: ['job_id', 'request_id', 'trace_id'],
+        id_keys: ['job_id', 'request_id', 'trace_id', 'correlation_id'],
         default_level: null,
         mask_fields: ['customer.address'],
         unmasked: ['user_agent'],
+        redact_fields: [],
+        redact_pii: [],
         muted: [],
         search_include_muted: null,
         muted_global_off: [],
@@ -572,6 +579,8 @@ describe('stream defaults from settings', () => {
       default_level: 'warn',
       mask_fields: [],
       unmasked: [],
+      redact_fields: [],
+      redact_pii: [],
       muted: [],
       search_include_muted: null,
       muted_global_off: [],
@@ -677,7 +686,7 @@ describe('Settings → About (07.6)', () => {
 describe('Settings → General → Source grouping (07.11)', () => {
   it('custom label shows the found hint and a live preview, and saves', async () => {
     const user = userEvent.setup()
-    renderAt('/settings')
+    renderAt('/settings#grouping')
     const section = await screen.findByRole('region', { name: 'Source grouping' })
     await user.click(within(section).getByRole('radio', { name: 'Custom label' }))
     const input = within(section).getByLabelText('Docker label key')
@@ -699,7 +708,7 @@ describe('Settings → General → Source grouping (07.11)', () => {
 
   it('is locked when the server environment sets it', async () => {
     settings.grouping = { mode: 'off', label: 'quiet.group', origin: 'flag', locked: true }
-    renderAt('/settings')
+    renderAt('/settings#grouping')
     const section = await screen.findByRole('region', { name: 'Source grouping' })
     expect(within(section).getByText('set by env')).toBeInTheDocument()
     expect(within(section).getByRole('radio', { name: 'Off' })).toBeChecked()
@@ -829,7 +838,9 @@ describe('Settings → Muted lines (07.12–07.20)', () => {
     expect(within(hits).getByText('would hide 310')).toBeInTheDocument()
     expect(within(hits).getByText('off here')).toBeInTheDocument()
     await user.click(within(sheet).getByRole('button', { name: /Delete rule/ }))
-    const confirm = await screen.findByRole('dialog', { name: 'Delete for all sources?' })
+    const confirm = await screen.findByRole('dialog', { name: 'Delete global rule?' })
+    expect(confirm).toHaveTextContent('About 640 lines a day come back on 1 source (legivent-api 640)')
+    expect(confirm).toHaveTextContent('No source has its own kube-probe/* rule')
     await user.click(within(confirm).getByRole('button', { name: /Delete for all sources/ }))
     await waitFor(() => expect(calls).toContainEqual({ url: '/api/mute/rules/mr_g', method: 'DELETE', body: null }))
   })
@@ -843,10 +854,14 @@ describe('Settings → Muted lines (07.12–07.20)', () => {
     )
   })
 
-  it('members: no Add, switches locked', async () => {
+  it('members: read-only callout, a locked Add rule, plain on/paused text (07.18)', async () => {
     settings.muted_global = [rule({ id: 'mr_g', scope: 'global', value: '/metrics' })]
     renderAt('/settings/muted-lines', member)
-    expect(await screen.findByRole('switch', { name: 'Pause path:/metrics' })).toHaveAttribute('data-disabled')
+    expect(await screen.findByText('Only owners can edit muted lines')).toBeInTheDocument()
+    expect(screen.queryByText('How rules combine')).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Pause path:/metrics' })).not.toBeInTheDocument()
+    expect(within(await screen.findByRole('table', { name: 'Global rules' })).getByText('on')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Add rule/ })).toBeDisabled()
     expect(screen.queryByRole('button', { name: /Add global rule/ })).not.toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Include muted lines in search' })).toHaveAttribute('data-disabled')
   })
@@ -911,7 +926,7 @@ describe('Sources → edit → Muted lines (06.13–06.25)', () => {
   it('adds a method + route rule on this source', async () => {
     const user = userEvent.setup()
     renderAt('/sources/legivent-api?edit=muted')
-    expect(await screen.findByText('No rules for legivent-api yet')).toBeInTheDocument()
+    expect(await screen.findByText('No rules on legivent-api yet')).toBeInTheDocument()
     await user.click(screen.getAllByRole('button', { name: /Add rule/ })[0])
     const dialog = await screen.findByRole('form', { name: 'Add rule' })
     await user.click(within(dialog).getByRole('radio', { name: 'Method + route' }))
@@ -928,12 +943,13 @@ describe('Sources → edit → Muted lines (06.13–06.25)', () => {
   it('is read-only for members', async () => {
     settings.sources['legivent-api'] = { ...blankSource(), muted: [rule({})] }
     renderAt('/sources/legivent-api?edit=muted', member)
-    expect(await screen.findByText('read-only')).toBeInTheDocument()
-    const sw = await screen.findByRole('switch', { name: 'Pause path:/api/v1/health' })
-    expect(screen.queryByRole('button', { name: /Add rule/ })).not.toBeInTheDocument()
+    // 06.23: a banner, a locked Add rule, on / paused as text, no delete.
+    expect(await screen.findByText('Only owners can edit muted lines')).toBeInTheDocument()
+    expect(screen.getByText('member · read-only')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Add rule/ })).toBeDisabled()
+    expect(screen.queryByRole('switch', { name: 'Pause path:/api/v1/health' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete path:/api/v1/health' })).not.toBeInTheDocument()
-    expect(sw).toHaveAttribute('data-disabled')
-    expect(await screen.findByRole('switch', { name: 'Pause path:/api/v1/health' })).toHaveAttribute('data-disabled')
+    expect(screen.getAllByRole('button', { name: 'Close' }).length).toBeGreaterThan(0)
   })
 })
 

@@ -9,6 +9,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   InfoIcon,
+  KeyRoundIcon,
   LoaderCircleIcon,
   PlusIcon,
   SearchIcon,
@@ -45,12 +46,12 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { CustomGroup, SourceInfo, StreamStats } from '@/gen'
+import type { CustomGroup, Rejection, SourceInfo, StreamStats } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { kindLabel } from '@/lib/connect'
-import { fmtAgo, fmtBytes, fmtCount, fmtWindow, isRecent } from '@/lib/format'
-import { DEFAULT_SOURCE_SETTINGS, useIgnoreSources, useSettings } from '@/lib/settings-api'
+import { fmtAgo, fmtBytes, fmtClock, fmtCount, fmtWindow, isRecent } from '@/lib/format'
+import { DEFAULT_SOURCE_SETTINGS, useIgnoreSources, useSettings, useSystem } from '@/lib/settings-api'
 import {
   type GroupFilter,
   groupKey,
@@ -70,8 +71,8 @@ import { useHotkeys } from '@/lib/use-hotkeys'
 import { useRates } from '@/lib/use-rates'
 import { cn } from '@/lib/utils'
 
-/** Errors at or above this share of a source's lines count as erroring. */
-const ERRORING = 0.05
+/** A log error share at or above this is drawn red in the LOG ERRORS column. */
+const HIGH_ERRORS = 0.05
 
 /** Where a source's lines come in: the group header of the "host" grouping. */
 export function hostOf(s: SourceInfo): { key: string; title: string; via: string } {
@@ -80,22 +81,44 @@ export function hostOf(s: SourceInfo): { key: string; title: string; via: string
   return { key: 'http', title: 'HTTP ingest', via: '/ingest' }
 }
 
-/** Error share (null until counted), erroring and "stopped" from one source's 24h stats. */
-export function statsFlags(stats: StreamStats | undefined) {
+/**
+ * Log error share (null until counted) and "stopped" from one source's 24h
+ * stats. Erroring (v0.1.1-06.1) is an ingest failure, not a high log error
+ * share: a source that stopped sending, or whose requests are being refused.
+ */
+export function statsFlags(stats: StreamStats | undefined, rejected = false) {
   const errors = stats && stats.total > 0 ? stats.levels.error / stats.total : null
   // "Stopped": it sent lines earlier in the hour but nothing in the last 2 minutes.
   const h = stats?.histogram ?? []
   const stopped = h.length > 5 && h.slice(0, -3).some((b) => b.count > 0) && h.slice(-3).every((b) => b.count === 0)
-  return { errors, erroring: errors != null && errors >= ERRORING, stopped }
+  return { errors, highErrors: errors != null && errors >= HIGH_ERRORS, erroring: stopped || rejected, stopped }
+}
+
+/** Refused ingest requests for one source in the last 15 minutes, newest first. */
+export function recentRejections(all: Rejection[] | undefined, source: string, now = Date.now()): Rejection[] {
+  return (all ?? []).filter((r) => r.source === source && now - r.minute < 15 * 60_000)
+}
+
+const ENDPOINT: Record<string, string> = {
+  ndjson: 'HTTP',
+  vector: 'Vector',
+  fluentbit: 'Fluent Bit',
+  'otlp-logs': 'OTLP',
+  'otlp-traces': 'OTLP',
+}
+
+/** `OTLP ingest rejected: 401 · token revoked`. */
+export function rejectionLine(r: Rejection): string {
+  return `${ENDPOINT[r.endpoint] ?? r.endpoint} ingest rejected: ${r.status} · ${r.reason}`
 }
 
 /** The 24h error share and last-hour volume of one source, read once per row. */
-function useSourceStats(name: string) {
+function useSourceStats(name: string, rejected: boolean) {
   const stats = useStreamStats(name, undefined).data
   const fields = useSourceFields(name).data
   const top = fields?.ids.slice().sort((a, b) => b.coverage - a.coverage)[0]
   const idKey = fields ? (top && top.coverage > 0 ? top.key : null) : undefined
-  return { stats, idKey, ...statsFlags(stats) }
+  return { stats, idKey, ...statsFlags(stats, rejected) }
 }
 
 const fmtRate = (r: number | undefined) =>
@@ -105,7 +128,7 @@ function Stat({ label, value, sub }: { label: string; value: string; sub: string
   return (
     <div className="flex flex-1 flex-col gap-1 border bg-card px-4 py-3.5">
       <span className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">{label}</span>
-      <span className="font-mono text-2xl">{value}</span>
+      <span className="font-mono text-2xl max-md:text-lg">{value}</span>
       <span className="font-mono text-[11px] text-muted-foreground">{sub}</span>
     </div>
   )
@@ -118,22 +141,25 @@ function SourceRow({
   rate,
   nested = false,
   hidden = false,
+  rejected = false,
   menu,
 }: {
   s: SourceInfo
   rate: number | undefined
+  /** Ingest requests for it were refused in the last 15 minutes. */
+  rejected?: boolean
   /** Under a stack group header: indented. */
   nested?: boolean
   hidden?: boolean
   /** The row's ⋯ menu (06.11). */
   menu: ReactNode
 }) {
-  const { stats, errors, erroring, idKey, stopped } = useSourceStats(s.name)
+  const { stats, errors, highErrors, erroring, idKey, stopped } = useSourceStats(s.name, rejected)
   const live = isRecent(s.last_ts)
   return (
     <tr
       className={cn(
-        'border-b last:border-b-0 hover:bg-row-hover',
+        'border-b last:border-b-0 hover:bg-row-hover has-[[aria-expanded=true]]:bg-row-selected',
         nested ? 'h-9' : 'h-11',
         nested && !live && !stopped && 'text-muted-foreground [&_a]:text-muted-foreground',
       )}
@@ -152,10 +178,10 @@ function SourceRow({
           {s.hidden && <span className="font-mono text-[11px] text-muted-foreground">hidden</span>}
         </Link>
       </td>
-      <td>
+      <td className="max-md:hidden">
         <span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{kindLabel(s.kind)}</span>
       </td>
-      <td>
+      <td className="max-md:hidden">
         <span className="flex items-center gap-2 font-mono text-xs tabular-nums">
           {stats ? <Sparkline buckets={stats.histogram} /> : <span className="h-4 w-24 animate-pulse bg-muted/40" />}
           <span className={cn(stopped && 'text-status-err', !live && !stopped && 'text-muted-foreground')}>
@@ -166,8 +192,8 @@ function SourceRow({
       <td className={cn('font-mono text-xs', stopped ? 'text-status-warn' : 'text-muted-foreground')}>
         {s.last_ts ? fmtAgo(s.last_ts) : 'never'}
       </td>
-      <td className="font-mono text-xs tabular-nums">{fmtCount(stats?.total ?? s.lines)}</td>
-      <td>
+      <td className="font-mono text-xs tabular-nums max-md:hidden">{fmtCount(stats?.total ?? s.lines)}</td>
+      <td className="max-md:hidden">
         {idKey === undefined ? (
           <span className="font-mono text-[11px] text-muted-foreground">…</span>
         ) : idKey ? (
@@ -176,7 +202,7 @@ function SourceRow({
           <span className="font-mono text-muted-foreground text-xs">none found</span>
         )}
       </td>
-      <td className={cn('font-mono text-xs tabular-nums', erroring ? 'text-status-err' : 'text-muted-foreground')}>
+      <td className={cn('font-mono text-xs tabular-nums', highErrors ? 'text-status-err' : 'text-muted-foreground')}>
         {errors == null ? '—' : fmtPct(errors)}
       </td>
       <td className="pr-3 text-right">{menu}</td>
@@ -191,6 +217,7 @@ export function SourcesPage() {
   const sourcesQ = useSources()
   const sources = sourcesQ.data
   const health = useHealth().data
+  const rejections = useSystem().data?.ingest.recent
   const rates = useRates(sources)
   const [filter, setFilter] = useState<Filter>('all')
   const [text, setText] = useState('')
@@ -222,8 +249,9 @@ export function SourcesPage() {
   })
   const flags: Record<string, ReturnType<typeof statsFlags>> = {}
   all.forEach((s, i) => {
-    if (statsList[i]) flags[s.name] = statsFlags(statsList[i])
+    if (statsList[i]) flags[s.name] = statsFlags(statsList[i], recentRejections(rejections, s.name).length > 0)
   })
+  const peak = peakRate(statsList)
   // The Erroring tab is a filter on counts still loading: until every source
   // is counted, an empty result is "checking", not "no sources match".
   const flagsSettled = all.every((s) => flags[s.name])
@@ -246,7 +274,8 @@ export function SourcesPage() {
     .filter((s) => !text.trim() || s.name.toLowerCase().includes(text.trim().toLowerCase()))
   const total = Object.values(rates).reduce((a, b) => a + b, 0)
   const erroring = all.filter((s) => flags[s.name]?.erroring).length
-  const stoppedOne = all.find((s) => flags[s.name]?.stopped)
+  const failing = all.find((s) => flags[s.name]?.erroring)
+  const failingWhy = failing ? recentRejections(rejections, failing.name)[0] : undefined
   const grouped = all.some((s) => groupOf(s))
   // A new custom group with nothing in it yet still shows, unless a filter narrows the list.
   const keepEmpty =
@@ -268,16 +297,12 @@ export function SourcesPage() {
         : [{ key: 'all', rows: shown }]
 
   return (
-    <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-8 py-6">
-      <header className="flex items-start justify-between">
+    <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-8 py-6 max-md:px-4">
+      <header className="flex items-start justify-between max-md:flex-col max-md:gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="font-semibold text-xl">Sources</h1>
           <p className="text-muted-foreground text-sm">
-            {grouped && grouping === 'stack'
-              ? custom.length > 0
-                ? 'Your groups first, then Compose projects and Swarm stacks. Dokploy apps and Swarm services without a project sit in Standalone.'
-                : 'Grouped by Compose project or Swarm stack; HTTP, OTLP, Vector and Fluent Bit pushes sit under Ingest. Pick one to stream it.'
-              : 'Everything that sends lines to quiet. Pick one for its settings, rejected requests and stream.'}
+            Request events, job attempts and application logs. Select a source to inspect.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -292,13 +317,17 @@ export function SourcesPage() {
         </div>
       </header>
 
-      <div className="flex gap-3">
+      <div className="flex gap-3 max-md:grid max-md:grid-cols-2">
         <Stat
           label="Live sources"
           value={`${live.length} / ${all.length}`}
           sub={`${erroring} erroring · ${all.length - live.length} idle`}
         />
-        <Stat label="Ingest" value={`${fmtRate(total)}`.replace('/s', ' lines/s')} sub="across every source, now" />
+        <Stat
+          label="Ingest"
+          value={`${fmtRate(total)}`.replace('/s', ' events/s')}
+          sub={peak ? `peak ${fmtRate(peak.rate)} at ${fmtClock(peak.at)}` : 'across every source, now'}
+        />
         <Stat
           label="Stored"
           value={health ? `${fmtCount(health.stored_lines)} lines` : '…'}
@@ -311,7 +340,7 @@ export function SourcesPage() {
         />
       </div>
 
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-3 max-md:flex-wrap">
         <div className="flex border" role="tablist" aria-label="Filter sources">
           {(
             [
@@ -377,15 +406,13 @@ export function SourcesPage() {
             <kbd className="absolute top-1.5 right-1.5 border px-1 font-mono text-[10px] text-muted-foreground">/</kbd>
           </div>
           <Select value={grouping} onValueChange={(v) => v && setGrouping(v as typeof grouping)}>
-            <SelectTrigger aria-label="Grouping" className="w-40">
+            <SelectTrigger aria-label="Grouping" className="w-40" title={`Grouping mode: ${modeLabel}`}>
               <SelectValue>
-                {(v: string) =>
-                  v === 'stack' ? `Grouping · ${modeLabel}` : v === 'host' ? 'Group by host' : 'No grouping'
-                }
+                {(v: string) => (v === 'stack' ? 'Group by stack' : v === 'host' ? 'Group by host' : 'No grouping')}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="stack">Grouping · {modeLabel}</SelectItem>
+              <SelectItem value="stack">Group by stack</SelectItem>
               <SelectItem value="host">Group by host</SelectItem>
               <SelectItem value="none">No grouping</SelectItem>
             </SelectContent>
@@ -445,30 +472,7 @@ export function SourcesPage() {
         </div>
       )}
 
-      {stoppedOne && (
-        <div
-          role="alert"
-          className="flex items-center gap-3 border border-status-err/40 bg-status-err/10 px-4 py-2.5 text-[13px]"
-        >
-          <TriangleAlertIcon className="size-4 text-status-err" />
-          <span className="font-medium">
-            {stoppedOne.display_name ?? stoppedOne.name} stopped sending
-            {stoppedOne.last_ts ? ` ${fmtAgo(stoppedOne.last_ts)}` : ''}
-          </span>
-          <span className="font-mono text-muted-foreground text-xs">
-            · it sent lines earlier this hour; check the sender or its token
-          </span>
-          <span className="flex-1" />
-          <Button
-            size="sm"
-            variant="outline"
-            nativeButton={false}
-            render={<Link to="/sources/$name" params={{ name: stoppedOne.name }} search={{ tab: 'rejected' }} />}
-          >
-            Check rejected
-          </Button>
-        </div>
-      )}
+      {failing && <IngestFailureBanner source={failing} why={failingWhy} />}
 
       {sourcesQ.isPending ? (
         <div className="flex flex-col gap-2" data-testid="sources-loading">
@@ -489,12 +493,12 @@ export function SourcesPage() {
           <thead className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
             <tr className="h-9 border-b">
               <th className="px-4 font-normal">Source</th>
-              <th className="font-normal">Type</th>
-              <th className="font-normal">Rate · 1h</th>
+              <th className="font-normal max-md:hidden">Type</th>
+              <th className="font-normal max-md:hidden">Rate · 1h</th>
               <th className="font-normal">Last line</th>
-              <th className="font-normal">Lines {fmtWindow(health?.retention_ms ?? 86_400_000)}</th>
-              <th className="font-normal">Flow id</th>
-              <th className="font-normal">Errors</th>
+              <th className="font-normal max-md:hidden">Lines {fmtWindow(health?.retention_ms ?? 86_400_000)}</th>
+              <th className="font-normal max-md:hidden">Correlation</th>
+              <th className="font-normal">Log errors</th>
               <th className="w-10 font-normal">
                 <span className="sr-only">Actions</span>
               </th>
@@ -565,6 +569,7 @@ export function SourcesPage() {
                       rate={rates[s.name]}
                       nested={Boolean(g.stack)}
                       hidden={collapsed}
+                      rejected={recentRejections(rejections, s.name).length > 0}
                       menu={
                         <SourceMenu
                           s={s}
@@ -636,6 +641,47 @@ export function SourcesPage() {
         custom={custom}
       />
       <RenameGroupDialog group={renaming} custom={custom} onClose={() => setRenaming(null)} />
+    </div>
+  )
+}
+
+/** The busiest minute of the last hour across every source, in lines/s. */
+function peakRate(stats: (StreamStats | undefined)[]): { rate: number; at: number } | null {
+  const byMinute = new Map<number, number>()
+  for (const s of stats)
+    for (const b of s?.histogram ?? []) byMinute.set(b.start, (byMinute.get(b.start) ?? 0) + b.count)
+  let best: { rate: number; at: number } | null = null
+  for (const [at, n] of byMinute) if (n > 0 && (!best || n / 60 > best.rate)) best = { rate: n / 60, at }
+  return best
+}
+
+/**
+ * v0.1.1-06.1: a source that stopped sending or is being refused —
+ * `payments-svc stopped sending 3 min ago · OTLP ingest rejected: 401 · token revoked`.
+ */
+export function IngestFailureBanner({ source, why }: { source: SourceInfo; why?: Rejection }) {
+  const name = source.display_name ?? source.name
+  return (
+    <div
+      role="alert"
+      className="flex items-center gap-3 border border-status-err/40 bg-status-err/10 px-4 py-2.5 text-[13px]"
+    >
+      <TriangleAlertIcon className="size-4 shrink-0 text-status-err" />
+      <span className="font-medium">
+        {name} {source.last_ts ? `stopped sending ${fmtAgo(source.last_ts)}` : 'is being refused'}
+      </span>
+      <span className="truncate font-mono text-muted-foreground text-xs">
+        · {why ? rejectionLine(why) : 'it sent lines earlier this hour; check the sender or its token'}
+      </span>
+      <span className="flex-1" />
+      <Button
+        size="sm"
+        variant="outline"
+        nativeButton={false}
+        render={<Link to="/sources/$name" params={{ name: source.name }} search={{ tab: 'rejected' }} />}
+      >
+        <KeyRoundIcon /> Review connection
+      </Button>
     </div>
   )
 }
@@ -734,9 +780,8 @@ function GroupActions({
               </DropdownMenuItem>
             </>
           )}
-          <DropdownMenuItem variant="destructive" onClick={onIgnore}>
-            Ignore {n === 1 ? 'this source' : `all ${n} sources`}
-          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={onIgnore}>Ignore {n === 1 ? 'this source' : `all ${n} sources`}</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </span>

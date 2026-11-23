@@ -4,7 +4,7 @@ import {
   ArrowUpIcon,
   CheckIcon,
   EllipsisIcon,
-  EyeOffIcon,
+  EyeIcon,
   FolderIcon,
   PencilIcon,
   PlusIcon,
@@ -75,7 +75,7 @@ export function GroupRulesHint() {
     <p className="flex items-center gap-2 border border-dashed px-3 py-2.5 text-xs" data-testid="group-rules-hint">
       <FolderIcon className="size-3.5 shrink-0 text-brand" />
       <span>A group you make wins over Compose / Stack.</span>
-      <span className="truncate font-mono text-[11px] text-muted-foreground">
+      <span className="truncate font-mono text-[11px] text-muted-foreground max-md:hidden">
         · ⋯ on a source → Move to group · Automatic puts it back · owners can edit groups
       </span>
     </p>
@@ -101,7 +101,6 @@ function NameField({
       <div className="relative w-full min-w-0">
         <Input
           id={id}
-          // biome-ignore lint/a11y/noAutofocus: the dialog opens to type a name
           autoFocus
           value={value}
           maxLength={MAX_GROUP_NAME}
@@ -216,7 +215,8 @@ function NewGroupForm({
 
   return (
     <DialogContent
-      className="max-h-[calc(100dvh-2rem)] w-full gap-4 overflow-y-auto sm:max-w-130"
+      showCloseButton={false}
+      className="top-24 max-h-[calc(100dvh-7rem)] w-full translate-y-0 gap-4 overflow-y-auto sm:max-w-130"
       aria-label="New group"
       data-testid="new-group-dialog"
     >
@@ -599,8 +599,9 @@ export function SourceMenu({
             </DropdownMenuSubContent>
           </DropdownMenuSub>
         )}
+        <DropdownMenuSeparator />
         <DropdownMenuItem onClick={onIgnore}>
-          <EyeOffIcon /> Ignore source
+          <EyeIcon /> Ignore source
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -88,14 +88,14 @@
   --card-foreground: #0b0c0e;
   --popover: #ffffff;
   --popover-foreground: #0b0c0e;
-  --primary: #0b0c0e;
-  --primary-foreground: #ffffff;
+  --primary: #111215;
+  --primary-foreground: #fafafa;
   --secondary: #f4f4f5;
-  --secondary-foreground: #0b0c0e;
+  --secondary-foreground: #111215;
   --muted: #f4f4f5;
   --muted-foreground: #6b7079;
   --accent: #f1f1f3;
-  --accent-foreground: #0b0c0e;
+  --accent-foreground: #111215;
   --destructive: #d93036;
   --border: #e6e7ea;
   --input: #dcdde1;
@@ -104,13 +104,13 @@
   --chart-2: #d93036;
   --chart-3: #c98a12;
   --chart-4: #1f9d63;
-  --chart-5: #a1a5ad;
+  --chart-5: #c4c6cc;
   --sidebar: #fafafb;
   --sidebar-foreground: #3a3d44;
   --sidebar-primary: #4f55e0;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #f0f0f2;
-  --sidebar-accent-foreground: #0b0c0e;
+  --sidebar-accent-foreground: #111215;
   --sidebar-border: #ecedef;
   --sidebar-ring: #4f55e0;
 
@@ -133,7 +133,7 @@
   --row-selected: rgb(79 85 224 / 7%);
   --row-error: rgb(217 48 54 / 5%);
   --syntax-key: #4f55e0;
-  --syntax-string: #0b0c0e;
+  --syntax-string: #111215;
   --syntax-number: #a86f05;
   --syntax-literal: #1f9d63;
 }
@@ -209,21 +209,6 @@
   }
 }
 
-/* Toasts (sileo): quiet's status colours, a hairline edge, Geist. sileo injects
-   its own :root defaults at runtime, so these sit on the viewport to win. */
-[data-sileo-viewport] {
-  --sileo-state-success: var(--status-ok);
-  --sileo-state-error: var(--status-err);
-  --sileo-state-warning: var(--status-warn);
-  --sileo-state-info: var(--brand);
-  --sileo-state-action: var(--brand);
-  --sileo-state-loading: var(--status-idle);
-  font-family: var(--font-sans);
-}
-[data-sileo-viewport] [data-sileo-svg] {
-  filter: drop-shadow(0 0 0.5px var(--border)) drop-shadow(0 8px 24px rgb(0 0 0 / 35%));
-}
-
 /* Sidebar resize (boards 03.10–03.14). The shell sets --sidebar-w (200–420);
    the main column keeps ≥ 720px, so on a narrow window the sidebar shrinks
    first, never below 200. Below 768px it stays 248 with no handle. */
@@ -250,4 +235,15 @@ html[data-sidebar-resizing] main {
 }
 [data-slot="app-sidebar"][data-snap] > [role="separator"] > * {
   opacity: 0;
+}
+
+/* Stream row height from Settings → Appearance → Row density (07.9). */
+:root {
+  --row-h: 28px;
+}
+:root[data-density="comfortable"] {
+  --row-h: 32px;
+}
+:root[data-density="compact"] {
+  --row-h: 24px;
 }

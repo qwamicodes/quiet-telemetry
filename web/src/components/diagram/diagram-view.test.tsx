@@ -244,7 +244,7 @@ describe('Diagram tab', () => {
     }
     render(<Owner l={{ ...line, raw: JSON.stringify(big), fields: big }} initial="wide" />)
     await screen.findByTestId('diagram-canvas', undefined, { timeout: 5000 })
-    expect(screen.getByText(/Large line · \d+ keys/)).toBeInTheDocument()
+    expect(screen.getByText(/Large event · \d+ keys/)).toBeInTheDocument()
     const calls = screen.getByRole('region', { name: 'calls' })
     expect(within(calls).getByText('+ 9 more')).toBeInTheDocument()
     expect(within(calls).getByText('· showing 5 of 14')).toBeInTheDocument()

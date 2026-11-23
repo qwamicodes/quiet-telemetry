@@ -146,6 +146,20 @@ impl Pipeline {
         if lines.is_empty() {
             return Ok(Vec::new());
         }
+        // Redaction before storage: nothing below (raw retention, the index,
+        // subscribers, exports) ever sees a credential. One rule set per
+        // source per batch.
+        let mut redactors: Vec<(String, crate::redact::Redactor)> = Vec::new();
+        for l in lines.iter_mut() {
+            let i = match redactors.iter().position(|(s, _)| *s == l.source) {
+                Some(i) => i,
+                None => {
+                    redactors.push((l.source.clone(), self.settings.redactor(&l.source)));
+                    redactors.len() - 1
+                }
+            };
+            redactors[i].1.line(l);
+        }
         let mut next = self.next_id.lock().await;
         let lines: Vec<Line> = lines
             .drain(..)
@@ -188,6 +202,27 @@ mod tests {
         assert_eq!(tail.iter().map(|l| l.id).collect::<Vec<_>>(), vec![3, 4, 5]);
         assert_eq!(hub.source("api").unwrap().meta().lines, 5);
         assert_eq!(rx.recv().await.unwrap().id, 1);
+    }
+
+    #[tokio::test]
+    async fn credentials_never_reach_the_store_or_subscribers() {
+        let hub = Hub::new();
+        let p = Pipeline::new(Arc::new(MemoryStore::new(10)), hub.clone());
+        let mut rx = hub.ensure_source("api", SourceKind::Http).subscribe();
+        let raw = r#"{"flow":"login","request":{"headers":{"authorization":"BEARER"}},"password":"hunter2","user":{"email":"kofi@example.com"}}"#;
+        let raw = crate::redact::fixtures::fill(raw);
+        p.ingest(SourceKind::Http, [RawLine::new(raw, "api", 1)])
+            .await
+            .unwrap();
+        let stored = p.store().tail("api", 1).await.unwrap();
+        let live = rx.recv().await.unwrap();
+        for l in [&stored[0], &live] {
+            assert!(!l.raw.contains("hunter2") && !l.raw.contains(&"q".repeat(16)));
+            let f = l.fields.as_ref().unwrap();
+            assert_eq!(f["password"], crate::redact::REDACTED);
+            // Email stays visible unless the source hides it.
+            assert_eq!(f["user"]["email"], "kofi@example.com");
+        }
     }
 
     #[tokio::test]

@@ -1,15 +1,19 @@
 import { Link } from '@tanstack/react-router'
-import { CheckIcon, ExternalLinkIcon, GlobeIcon, LockIcon, PlusIcon, Trash2Icon, XIcon } from 'lucide-react'
+import {
+  ArrowRightIcon,
+  CheckIcon,
+  ExternalLinkIcon,
+  EyeIcon,
+  EyeOffIcon,
+  GlobeIcon,
+  InfoIcon,
+  LockIcon,
+  PlusIcon,
+  Trash2Icon,
+  XIcon,
+} from 'lucide-react'
 import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
@@ -60,22 +64,32 @@ export function SourceMutedLines({ name, owner }: { name: string; owner: boolean
   const ownHidden = own.muted.filter((r) => r.enabled).reduce((n, r) => n + hitsHere(r), 0)
   const globalHidden = applying.reduce((n, r) => n + hitsHere(r), 0)
   const est = stats?.sources[name]?.estimated ? '~' : ''
+  const paused = own.muted.filter((r) => !r.enabled).length
 
   return (
     <div className="flex flex-col gap-4" data-testid="source-muted-lines">
+      {!owner && (
+        <div role="note" className="flex items-start gap-2.5 border border-brand/50 bg-brand/10 px-3 py-2.5">
+          <InfoIcon className="mt-0.5 size-3.5 shrink-0 text-brand" aria-hidden />
+          <span className="flex flex-col gap-0.5">
+            <span className="font-medium text-sm">{OWNERS_ONLY}</span>
+            <span className="text-muted-foreground text-xs">Ask an owner to change a rule.</span>
+          </span>
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <span className="font-medium">Muted lines</span>
         <span className="border px-1.5 py-px font-mono text-[11px] text-muted-foreground">{name}</span>
         <span className="flex-1" />
-        {owner ? (
+        {!owner ? (
+          <Button variant="outline" size="sm" disabled>
+            <LockIcon /> Add rule
+          </Button>
+        ) : own.muted.length > 0 ? (
           <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
             <PlusIcon /> Add rule
           </Button>
-        ) : (
-          <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-            <LockIcon className="size-3" /> read-only
-          </span>
-        )}
+        ) : null}
       </div>
       <p className="-mt-2 text-muted-foreground text-xs">
         Hidden from stream and search. Still stored; Show muted brings them back.
@@ -96,24 +110,30 @@ export function SourceMutedLines({ name, owner }: { name: string; owner: boolean
         <div className="flex items-center justify-between pb-1 font-mono text-[11px] text-muted-foreground">
           <span className="uppercase tracking-[0.06em]">This source</span>
           <span>
-            {own.muted.length} {own.muted.length === 1 ? 'rule' : 'rules'} · {est}
-            {fmtN(ownHidden)} hidden · 24h
+            {own.muted.length} {own.muted.length === 1 ? 'rule' : 'rules'}
+            {paused > 0 && ` · ${paused} paused`}
+            {own.muted.length > 0 && ` · ${est}${fmtN(ownHidden)} hidden · 24h`}
           </span>
         </div>
         {own.muted.length === 0 ? (
-          <div className="flex flex-col items-start gap-2 border border-dashed px-4 py-4">
-            <span className="text-sm">No rules for {name} yet</span>
-            <span className="text-muted-foreground text-xs">
-              {applying.length > 0
-                ? `${applying.length} global ${applying.length === 1 ? 'rule hides' : 'rules hide'} lines here already. `
-                : ''}
-              Add one here, or hover a line in the stream and press M.
+          <div className="flex flex-col items-center gap-2 border border-dashed px-4 py-6 text-center">
+            <span className="flex size-7 items-center justify-center border text-muted-foreground">
+              <EyeOffIcon className="size-3.5" aria-hidden />
             </span>
-            {owner && (
-              <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
-                <PlusIcon /> Add rule
+            <span className="font-medium text-sm">No rules on {name} yet</span>
+            <span className="max-w-80 text-muted-foreground text-xs">
+              Hover a line in the stream and press M, or add a rule here. Global rules below still apply.
+            </span>
+            <span className="flex items-center gap-2 pt-1">
+              {owner && (
+                <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+                  <PlusIcon /> Add rule
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" nativeButton={false} render={<Link to="/" search={{ source: name }} />}>
+                Open stream <ArrowRightIcon />
               </Button>
-            )}
+            </span>
           </div>
         ) : (
           <ul className="flex flex-col divide-y border-y">
@@ -181,6 +201,7 @@ function SourceRuleRow({
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(rule.value)
   const [confirm, setConfirm] = useState(false)
+  const trash = useRef<HTMLButtonElement>(null)
 
   const toggle = (on: boolean) =>
     update.mutate(
@@ -198,10 +219,29 @@ function SourceRuleRow({
     try {
       const d = await del.mutateAsync(rule.id)
       setConfirm(false)
-      toast.success(`Deleted rule ${ruleText(rule)}`, {
-        description: `${fmtN(hits)} lines on ${source} show again.`,
+      // 06.25: Undo (or ⌘Z) for 8s, with a countdown.
+      let done = false
+      const undo = () => {
+        if (done) return
+        done = true
+        stop()
+        add.mutate(restoreOf(d))
+      }
+      const onKey = (e: KeyboardEvent) => {
+        if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+          e.preventDefault()
+          undo()
+          toast.dismiss(id)
+        }
+      }
+      const stop = () => window.removeEventListener('keydown', onKey)
+      window.addEventListener('keydown', onKey)
+      setTimeout(stop, 8000)
+      const id = toast.success(`Rule deleted on ${source}`, {
+        icon: <EyeIcon />,
+        description: `${ruleText(rule)} · ${fmtN(hits)} lines show again`,
         duration: 8000,
-        button: { title: 'Undo', onClick: () => add.mutate(restoreOf(d)) },
+        button: { title: 'Undo ⌘Z', onClick: undo },
       })
     } catch (e) {
       toast.error('Could not delete the rule', { description: (e as Error).message })
@@ -219,7 +259,10 @@ function SourceRuleRow({
   }
 
   return (
-    <li className={cn('flex items-start gap-3 py-2.5', !rule.enabled && 'opacity-80')} data-rule={rule.id}>
+    <li
+      className={cn('flex items-start gap-3 py-2.5', !rule.enabled && 'opacity-80', confirm && 'bg-status-err/10')}
+      data-rule={rule.id}
+    >
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-2">
           <ShapeChip shape={rule.shape} />
@@ -275,7 +318,7 @@ function SourceRuleRow({
         </div>
         {editing && value.trim().endsWith('*') && (
           <span className="font-mono text-[11px] text-status-warn">
-            * also catches {routePath(value).replace(/\*$/, '')}z and anything else that starts the same way
+            The * also catches {routePath(value).replace(/\*$/, '')}z. Drop it to keep the rule exact.
           </span>
         )}
         <Meta>
@@ -284,48 +327,63 @@ function SourceRuleRow({
           ) : (
             <Tooltip>
               <TooltipTrigger render={<span className="cursor-help text-status-warn">paused</span>} />
-              <TooltipContent>Paused rules keep their history and hide nothing until switched on.</TooltipContent>
+              <TooltipContent className="flex max-w-72 flex-col gap-0.5">
+                <span className="font-medium">Paused: these lines show again</span>
+                <span>
+                  {fmtN(hits)} lines in 24h match {ruleText(rule)}. Turn the switch on to hide them; the rule and its
+                  history stay.
+                </span>
+              </TooltipContent>
             </Tooltip>
           )}
           {rule.enabled ? <span>24h</span> : <span className="text-status-warn">would hide {fmtN(hits)}</span>}
           <WhoWhen rule={rule} />
         </Meta>
       </div>
-      <Switch
-        aria-label={`${rule.enabled ? 'Pause' : 'Resume'} ${ruleText(rule)}`}
-        checked={rule.enabled}
-        disabled={!owner || update.isPending}
-        onCheckedChange={(v) => toggle(Boolean(v))}
-      />
-      {owner && (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={`Delete ${ruleText(rule)}`}
-          onClick={() => (hits >= DELETE_CONFIRM_AT ? setConfirm(true) : remove())}
+      {owner ? (
+        <>
+          <Switch
+            aria-label={`${rule.enabled ? 'Pause' : 'Resume'} ${ruleText(rule)}`}
+            checked={rule.enabled}
+            disabled={update.isPending}
+            onCheckedChange={(v) => toggle(Boolean(v))}
+          />
+          <Button
+            ref={trash}
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Delete ${ruleText(rule)}`}
+            onClick={() => (hits >= DELETE_CONFIRM_AT ? setConfirm(true) : remove())}
+          >
+            <Trash2Icon />
+          </Button>
+          {/* 06.24: a popover on the row, not a modal. */}
+          <Popover open={confirm} onOpenChange={setConfirm}>
+            <PopoverContent anchor={trash} align="end" className="w-80" aria-label="Delete this rule?">
+              <span className="font-medium text-sm">Delete this rule?</span>
+              <span className="truncate font-mono text-brand text-xs">{ruleText(rule)}</span>
+              <span className="text-muted-foreground text-xs">
+                {fmtN(hits)} lines a day show again on {source}. Lines are not deleted. Rules hiding under{' '}
+                {fmtN(DELETE_CONFIRM_AT)} lines a day delete straight away with Undo.
+              </span>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
+                  Cancel
+                </Button>
+                <Button size="sm" variant="destructive" onClick={remove} disabled={del.isPending}>
+                  Delete rule
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
+        </>
+      ) : (
+        <span
+          className={cn('pt-0.5 font-mono text-[11px]', rule.enabled ? 'text-muted-foreground' : 'text-status-warn')}
         >
-          <Trash2Icon />
-        </Button>
+          {rule.enabled ? 'on' : 'paused'}
+        </span>
       )}
-      <Dialog open={confirm} onOpenChange={setConfirm}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete this rule?</DialogTitle>
-            <DialogDescription>
-              <span className="font-mono">{ruleText(rule)}</span> hides {fmtN(hits)} lines a day on {source}. They show
-              again in the stream and search. You can Undo from the toast.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirm(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={remove} disabled={del.isPending}>
-              <Trash2Icon /> Delete rule
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </li>
   )
 }
@@ -412,12 +470,12 @@ function GlobalRuleRow({
           </span>
           <Popover open={ask} onOpenChange={setAsk}>
             <PopoverContent anchor={anchor} align="end" className="w-80">
-              <span className="font-medium text-sm">Don't apply here?</span>
+              <span className="font-medium text-sm">Don't apply this global rule here?</span>
+              <span className="truncate font-mono text-brand text-xs">{ruleText(rule)}</span>
               <span className="text-muted-foreground text-xs">
-                <span className="font-mono">{ruleText(rule)}</span> stops hiding lines on {source} ({fmtN(hitsHere)} in
-                24h). It stays on{' '}
-                {others > 0 ? `${others} other ${others === 1 ? 'source' : 'sources'}` : 'every other source'} and on
-                new sources.
+                About {fmtN(hitsHere)} lines a day come back on {source}.{' '}
+                {others > 0 ? 'Other sources keep it.' : 'New sources still get it.'} You can switch it back on any
+                time.
               </span>
               <div className="flex justify-end gap-2">
                 <Button size="sm" variant="ghost" onClick={() => setAsk(false)}>
@@ -462,10 +520,11 @@ function IncludeInSearch({ name, owner }: { name: string; owner: boolean }) {
           Inherit follows Settings → Muted lines ({instance ? 'on' : 'off'} now; off by default).
         </span>
       </div>
-      <div className="w-56">
+      <div>
         <Segmented
           label="Include muted lines in search"
           size="sm"
+          pack
           value={value}
           onChange={(v) => owner && change(v)}
           options={[

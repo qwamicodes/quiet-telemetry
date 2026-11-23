@@ -12,7 +12,7 @@
 //! Session (any role):
 //!   POST   /api/auth/logout
 //!   GET    /api/account · PATCH /api/account { name, email, password? }
-//!   POST   /api/account/password     { current, password } → other sessions signed out
+//!   POST   /api/account/password     { current, password } → { user }; other sessions stay signed in
 //!   GET    /api/account/sessions · DELETE /api/account/sessions/:id
 //!   POST   /api/account/sessions/sign-out-others
 //!   GET    /api/members              members (+ pending invites for owners)
@@ -185,11 +185,11 @@ pub struct ChangePassword {
     pub password: String,
 }
 
+/// The password changed; every session stays signed in (board v0.1-07.1).
+/// Sign the others out with `POST /api/account/sessions/sign-out-others`.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct PasswordChanged {
     pub user: User,
-    /// Other sessions that were signed out.
-    pub signed_out: u32,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -793,7 +793,7 @@ async fn change_password(
     if let Err(e) = check_password(&req.password) {
         return fail(e);
     }
-    let (uid, keep) = (v.user.id, v.session_id);
+    let uid = v.user.id;
     let t = now();
     let r = blocking(&s.accounts, move |a| {
         let phc = a.password_hash(uid)?;
@@ -802,18 +802,13 @@ async fn change_password(
         }
         let new = accounts::hash_password(&req.password)?;
         a.set_password(uid, &new, t)?;
-        let n = a.delete_sessions_except(uid, keep)?;
-        Ok((a.user(uid)?.ok_or(AccountError::NotFound)?, n))
+        a.user(uid)?.ok_or(AccountError::NotFound)
     })
     .await;
     match r {
-        Ok((user, n)) => {
-            tracing::info!(user = uid, signed_out = n, "password changed");
-            Json(PasswordChanged {
-                user,
-                signed_out: n as u32,
-            })
-            .into_response()
+        Ok(user) => {
+            tracing::info!(user = uid, "password changed");
+            Json(PasswordChanged { user }).into_response()
         }
         Err(e) => fail(e),
     }
@@ -1771,7 +1766,7 @@ mod tests {
         assert_eq!(r.status, StatusCode::OK);
         let member = T::who(&r);
 
-        // Changing a password keeps this session, signs out the others.
+        // Changing a password keeps every session signed in (07.1).
         let other = T::who(
             &t.post(
                 "/api/auth/login",
@@ -1796,12 +1791,9 @@ mod tests {
             )
             .await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.text);
-        assert_eq!(r.body["signed_out"], 1);
+        assert!(r.body.get("signed_out").is_none());
         assert_eq!(t.get("/api/account", &member).await.status, StatusCode::OK);
-        assert_eq!(
-            t.get("/api/account", &other).await.status,
-            StatusCode::UNAUTHORIZED
-        );
+        assert_eq!(t.get("/api/account", &other).await.status, StatusCode::OK);
 
         // Sessions list + sign out others.
         let third = T::who(
@@ -1814,16 +1806,18 @@ mod tests {
         );
         let s = t.get("/api/account/sessions", &member).await;
         let list = s.body["sessions"].as_array().unwrap();
-        assert_eq!(list.len(), 2);
+        assert_eq!(list.len(), 3);
         assert_eq!(list.iter().filter(|x| x["current"] == true).count(), 1);
         let r = t
             .post("/api/account/sessions/sign-out-others", json!({}), &member)
             .await;
-        assert_eq!(r.body["signed_out"], 1);
-        assert_eq!(
-            t.get("/api/account", &third).await.status,
-            StatusCode::UNAUTHORIZED
-        );
+        assert_eq!(r.body["signed_out"], 2);
+        for gone in [&other, &third] {
+            assert_eq!(
+                t.get("/api/account", gone).await.status,
+                StatusCode::UNAUTHORIZED
+            );
+        }
 
         // Email changes need the password.
         let r = t

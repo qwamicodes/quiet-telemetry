@@ -10,7 +10,10 @@ const toggleVariants = cva(
     variants: {
       variant: {
         default: 'bg-transparent',
-        outline: 'border border-input bg-transparent hover:bg-muted',
+        // Segmented (07.3, 05.1): a filled track (ToggleGroup) with the selected
+        // item raised: background + border + foreground; the rest muted.
+        outline:
+          'border border-transparent bg-transparent text-muted-foreground hover:bg-transparent hover:text-foreground aria-pressed:border-border aria-pressed:bg-background aria-pressed:text-foreground data-[pressed]:border-border data-[pressed]:bg-background data-[pressed]:text-foreground',
       },
       size: {
         default: 'h-8 min-w-8 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2',

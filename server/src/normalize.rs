@@ -429,13 +429,24 @@ fn summarize(map: &Map<String, Value>) -> Option<String> {
     let method = get(&["method", "http_method"]);
     let path = get(&["path", "route", "url"]);
     let status = get(&["status", "status_code", "statusCode"]);
-    match (method, path) {
-        (Some(m), Some(p)) => Some(match status {
+    if let (Some(m), Some(p)) = (method, path) {
+        return Some(match status {
             Some(s) => format!("{m} {p} {s}"),
             None => format!("{m} {p}"),
-        }),
-        _ => None,
+        });
     }
+    // A v0.1.1 job attempt without a message: "settle_dealer_payout · attempt 2
+    // → upstream_timeout", never the raw JSON.
+    let flow = get(&["flow", "operation", "job_name"])?;
+    let mut out = flow;
+    if let Some(a) = get(&["attempt", "retry_attempt"]) {
+        out.push_str(&format!(" · attempt {a}"));
+    }
+    let err = map.get("error").and_then(Value::as_object);
+    if let Some(r) = err.and_then(|e| e.get("reason").or_else(|| e.get("code"))) {
+        out.push_str(&format!(" → {}", scalar(r)));
+    }
+    Some(out)
 }
 
 fn scalar(v: &Value) -> String {
@@ -541,6 +552,27 @@ mod tests {
         assert!(l.fields.is_none());
         assert_eq!(l.msg, "server listening on :3000");
         assert_eq!(l.ts, NOW);
+    }
+
+    #[test]
+    fn v011_events_without_msg_get_a_readable_summary() {
+        let job = normalize(
+            r#"{"timestamp":"2026-11-23T14:07:35.402Z","level":"error","flow":"settle_dealer_payout","queue":"payouts","job_id":"payout-88-1300","attempt":2,"duration_ms":640,"error":{"code":"X","reason":"upstream_timeout"}}"#,
+            "worker",
+            None,
+            NOW,
+        );
+        assert_eq!(
+            job.msg,
+            "settle_dealer_payout · attempt 2 → upstream_timeout"
+        );
+        let req = normalize(
+            r#"{"flow":"create_order","method":"POST","path":"/orders","status_code":201}"#,
+            "api",
+            None,
+            NOW,
+        );
+        assert_eq!(req.msg, "POST /orders 201");
     }
 
     #[test]

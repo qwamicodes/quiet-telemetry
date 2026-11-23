@@ -4,7 +4,7 @@ import type { Span } from '@/lib/histogram-jump'
 import { isOn, type LevelChip } from '@/lib/levels'
 import { cn } from '@/lib/utils'
 
-const H = 48
+const H = 32 // bars; the box is 48px with its padding (03.x)
 
 /**
  * Volume over the last hour, one bar a minute, stacked info / warn / error
@@ -48,9 +48,9 @@ export function StreamHistogram({
   return (
     <figure
       aria-label="Lines over the last hour"
-      className={cn('flex shrink-0 flex-col gap-1 px-6 pb-3', dim && 'opacity-60')}
+      className={cn('flex shrink-0 flex-col gap-1 px-5 pt-3 pb-3', dim && 'opacity-60')}
     >
-      <div className="flex items-end gap-px border bg-card/40 px-2 pt-2" style={{ height: H + 10 }}>
+      <div className="flex items-end gap-px border bg-card px-2.5 pt-2 pb-2" style={{ height: H + 16 }}>
         {loading
           ? Array.from({ length: 60 }, (_, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: placeholder bars

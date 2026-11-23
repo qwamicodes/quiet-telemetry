@@ -1,4 +1,4 @@
-import { FileDownIcon, PauseIcon, PlayIcon } from 'lucide-react'
+import { FileDownIcon, PlayIcon } from 'lucide-react'
 import { SidebarToggle } from '@/components/sidebar-resize'
 import { StatusDot } from '@/components/status-dot'
 import { SourcePicker } from '@/components/stream/source-picker'
@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { SourceInfo } from '@/gen'
+import { fmtTime } from '@/lib/format'
 import type { ConnState } from '@/lib/use-stream'
 import { cn } from '@/lib/utils'
 
@@ -17,37 +18,51 @@ export function liveState(conn: ConnState, paused: boolean, everConnected = true
   return paused ? 'paused' : 'live'
 }
 
+/** Pause as two plain bars (03.2), not lucide's rounded ones. */
+function PauseBars() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className="size-3.5 fill-current">
+      <rect x="4" y="3" width="2.5" height="10" />
+      <rect x="9.5" y="3" width="2.5" height="10" />
+    </svg>
+  )
+}
+
 const fmtRate = (r: number) => (r < 10 ? r.toFixed(1).replace(/\.0$/, '') : String(Math.round(r)))
 
-/** Live · 42 lines/s, Paused · buffering 38, Offline · reconnecting, Connecting (design 03.x, 08.4, 08.7). */
+/** Live · 42 events/s, Paused · buffering 38, Offline · reconnecting, Connecting (design 03.x, 08.4, 08.7). */
 export function LiveIndicator({
   state,
   rate,
   matchRate,
   buffered,
+  heldAt,
   offlineReason = 'reconnecting',
 }: {
   state: LiveState
   rate: number | null
-  /** Set when filters are on: matches per second instead of lines. */
+  /** Set when filters are on: matches per second, after the event rate (03.3). */
   matchRate?: number | null
   buffered?: number
+  /** Session expired (01.5): "held at 14:07:35". */
+  heldAt?: number | null
   offlineReason?: string
 }) {
   const label = { connecting: 'Connecting', live: 'Live', paused: 'Paused', offline: 'Offline' }[state]
   const detail =
     state === 'live'
-      ? matchRate != null
-        ? matchRate === 0
-          ? '0 match'
-          : `${fmtRate(matchRate)} match/s`
-        : rate != null
-          ? `${fmtRate(rate)} lines/s`
-          : null
+      ? [
+          rate != null && `${fmtRate(rate)} events/s`,
+          matchRate != null && (matchRate === 0 ? '0 match' : `${fmtRate(matchRate)} match/s`),
+        ]
+          .filter(Boolean)
+          .join(' · ') || null
       : state === 'paused'
-        ? buffered
-          ? `buffering ${buffered.toLocaleString()}`
-          : null
+        ? heldAt
+          ? `held at ${fmtTime(heldAt).slice(0, 8)}`
+          : buffered
+            ? `buffering ${buffered.toLocaleString()}`
+            : null
         : state === 'offline'
           ? offlineReason
           : null
@@ -65,7 +80,7 @@ export function LiveIndicator({
         status={state === 'live' ? 'ok' : state === 'offline' ? 'idle' : 'warn'}
         pulse={state === 'connecting'}
       />
-      {label}
+      <span className="font-sans font-semibold">{label}</span>
       {detail && <span className="text-muted-foreground">· {detail}</span>}
     </span>
   )
@@ -78,6 +93,7 @@ export function TopBar({
   rate,
   matchRate,
   buffered,
+  heldAt,
   stitchedBy,
   offlineReason,
   onTogglePause,
@@ -89,6 +105,7 @@ export function TopBar({
   rate: number | null
   matchRate?: number | null
   buffered?: number
+  heldAt?: number | null
   /** The id key most rows show (`request_id`), `null` when lines carry none. */
   stitchedBy?: string | null
   offlineReason?: string
@@ -105,7 +122,7 @@ export function TopBar({
       )}
       {stitchedBy !== undefined && (
         <span className="font-mono text-muted-foreground text-xs">
-          · {stitchedBy ? `stitched by ${stitchedBy}` : 'no flow id found'}
+          · {stitchedBy ? `correlated by ${stitchedBy}` : 'no flow id found'}
         </span>
       )}
       <div className="flex-1" />
@@ -124,6 +141,7 @@ export function TopBar({
         rate={rate}
         matchRate={matchRate}
         buffered={buffered}
+        heldAt={heldAt}
         offlineReason={offlineReason}
       />
       <Button
@@ -132,7 +150,7 @@ export function TopBar({
         onClick={onTogglePause}
         disabled={state === 'offline' || state === 'connecting'}
       >
-        {state === 'paused' ? <PlayIcon /> : <PauseIcon />}
+        {state === 'paused' ? <PlayIcon /> : <PauseBars />}
         {state === 'paused' ? 'Resume' : 'Pause'}
         <Kbd className="ml-1">space</Kbd>
       </Button>

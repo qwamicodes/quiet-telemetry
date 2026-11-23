@@ -224,7 +224,7 @@ describe('popups (every Base UI popup the app uses opens without crashing)', () 
     await user.click(await screen.findByText('open flow'))
     await waitFor(() => expect(router.state.location.pathname).toBe('/flow/req_123'))
     // No line carries req_123 here (the mock 404s): the 404 flow page (08.6, no close matches).
-    expect(await screen.findByText('This flow is no longer in the window.')).toBeInTheDocument()
+    expect(await screen.findByText('No events with this ID')).toBeInTheDocument()
   })
 
   it('tooltips open on hover', async () => {
@@ -244,7 +244,7 @@ describe('popups (every Base UI popup the app uses opens without crashing)', () 
     await screen.findByText('slow query', {}, { timeout: 5000 })
     await user.click(screen.getByRole('button', { name: 'Export these lines' }))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText('Export lines')).toBeInTheDocument()
+    expect(within(dialog).getByText('Export events')).toBeInTheDocument()
     await user.click(within(dialog).getByRole('radio', { name: 'JSON array' }))
     await user.click(within(dialog).getByRole('switch', { name: 'Include raw line' }))
     const href = within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? ''

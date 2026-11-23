@@ -2,14 +2,24 @@ import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 /** A settings page title with its one-line subtitle and an optional right-hand note. */
-export function PageHeader({ title, sub, aside }: { title: string; sub?: ReactNode; aside?: ReactNode }) {
+export function PageHeader({
+  title,
+  sub,
+  aside,
+  className,
+}: {
+  title: string
+  sub?: ReactNode
+  aside?: ReactNode
+  className?: string
+}) {
   return (
-    <header className="flex items-start justify-between gap-6 pb-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="font-semibold text-xl">{title}</h2>
+    <header className={cn('flex items-end justify-between gap-4', className)}>
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <h2 className="font-semibold text-xl leading-6 tracking-tight">{title}</h2>
         {sub && <p className="text-muted-foreground text-sm">{sub}</p>}
       </div>
-      {aside && <div className="pt-1 font-mono text-muted-foreground text-xs">{aside}</div>}
+      {aside && <div className="flex shrink-0 items-center gap-2">{aside}</div>}
     </header>
   )
 }
@@ -30,16 +40,16 @@ export function SettingRow({
   htmlFor?: string
 }) {
   return (
-    <div className="flex items-start justify-between gap-6 border-b py-4">
-      <div className="flex max-w-xl flex-col gap-0.5">
+    <div className="flex items-center justify-between gap-6 border-b py-4">
+      <div className="flex min-w-0 max-w-xl flex-col gap-1">
         {htmlFor ? (
-          <label htmlFor={htmlFor} className="font-medium">
+          <label htmlFor={htmlFor} className="font-medium text-sm">
             {label}
           </label>
         ) : (
-          <span className="font-medium">{label}</span>
+          <span className="font-medium text-sm">{label}</span>
         )}
-        {hint && <span className="text-muted-foreground text-xs leading-relaxed">{hint}</span>}
+        {hint && <span className="text-muted-foreground text-xs leading-[18px]">{hint}</span>}
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1.5">
         {children}

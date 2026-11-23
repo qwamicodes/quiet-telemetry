@@ -16,7 +16,12 @@ export function MutedNote({
   included = false,
   rules,
   undo = false,
+  ruleCount,
+  sources,
 }: {
+  /** Search, included (05.9): how many rules, on which sources. */
+  ruleCount?: number
+  sources?: string[]
   count: number
   shown: boolean
   onToggle: () => void
@@ -30,6 +35,37 @@ export function MutedNote({
   source?: string
   className?: string
 }) {
+  if (included && ruleCount != null)
+    return (
+      <div
+        data-testid="muted-note"
+        className="flex items-center gap-2 border border-brand/40 bg-brand/5 px-3 py-2 font-mono text-muted-foreground text-xs"
+      >
+        <EyeOffIcon className="size-3.5 text-brand" />
+        <span className="min-w-0 truncate">
+          <span className="font-medium font-sans text-foreground">
+            {count.toLocaleString()} muted {count === 1 ? 'event' : 'events'} included
+          </span>
+          {' · '}from {ruleCount} mute {ruleCount === 1 ? 'rule' : 'rules'}
+          {sources?.length ? ` on ${sources.length > 2 ? `${sources.length} sources` : sources.join(', ')}` : ''} ·
+          shown dimmed · off by default
+        </span>
+        <span className="flex-1" />
+        <Button variant="ghost" size="xs" onClick={onToggle} aria-pressed>
+          Hide
+        </Button>
+        {source && (
+          <Link
+            to="/sources/$name"
+            params={{ name: source }}
+            search={{ edit: 'muted' }}
+            className="shrink-0 text-brand hover:underline"
+          >
+            Edit rules
+          </Link>
+        )}
+      </div>
+    )
   return (
     <div
       data-testid="muted-note"

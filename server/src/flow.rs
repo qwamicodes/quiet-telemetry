@@ -279,7 +279,7 @@ pub struct FlowSummary {
     pub started: i64,
     pub ended: i64,
     pub duration_ms: i64,
-    /// Highest attempt number seen (0 = no retries).
+    /// Attempts after the first (0 = no retries), whatever the queue's numbering.
     pub retries: u32,
     pub errors: u32,
     pub warnings: u32,
@@ -343,7 +343,16 @@ const STATUS_KEYS: &[&str] = &[
     "http.response.status_code",
     "http.status_code",
 ];
-const NAME_KEYS: &[&str] = &["operation", "step", "phase", "event", "name", "job_name"];
+/// `flow` is the v0.1.1 business name; the rest are older loggers.
+const NAME_KEYS: &[&str] = &[
+    "flow",
+    "operation",
+    "step",
+    "phase",
+    "event",
+    "name",
+    "job_name",
+];
 const ATTEMPT_KEYS: &[&str] = &["attempt", "retry_attempt", "attemptsMade", "attempts"];
 const FAILED: &[&str] = &["failed", "failure", "error", "errored", "fatal"];
 const WARNED: &[&str] = &[
@@ -695,7 +704,12 @@ pub fn build(st: Stitched, opened: Option<&str>, expiry_edge: Option<i64>) -> Fl
         started,
         ended,
         duration_ms: ended - started,
-        retries: nodes.iter().filter_map(|n| n.attempt).max().unwrap_or(0),
+        // Retries = attempts after the first, whether the queue numbers them
+        // from 0 (BullMQ attemptsMade) or from 1.
+        retries: {
+            let a = nodes.iter().filter_map(|n| n.attempt);
+            a.clone().max().unwrap_or(0) - a.min().unwrap_or(0)
+        },
         errors,
         warnings,
         ids: st.ids,

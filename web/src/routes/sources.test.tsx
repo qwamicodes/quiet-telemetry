@@ -79,7 +79,8 @@ const bucket = (start: number, count: number, error = 0): Bucket => ({
   warn: 0,
   error,
 })
-// order-worker: 10% errors; the others 0.4%.
+// order-worker: 10% errors and stopped sending (nothing in the last 3 minutes);
+// the others 0.4%. Erroring (v0.1.1-06.1) is the ingest failure, not the share.
 const stats = (name: string): StreamStats => ({
   total: 1000,
   levels: {
@@ -89,7 +90,9 @@ const stats = (name: string): StreamStats => ({
     error: name === 'order-worker' ? 100 : 4,
     none: 0,
   },
-  histogram: Array.from({ length: 60 }, (_, i) => bucket(NOW - (60 - i) * 60_000, 5)),
+  histogram: Array.from({ length: 60 }, (_, i) =>
+    bucket(NOW - (60 - i) * 60_000, name === 'order-worker' && i >= 57 ? 0 : 5),
+  ),
   since: NOW - 24 * H,
   until: NOW,
   hist_since: NOW - H,
@@ -380,14 +383,15 @@ describe('stream source picker (03.8)', () => {
 })
 
 describe('source detail (06.2 / 06.4 / 06.5)', () => {
-  it('shows the window histogram, fields detected and flow id coverage', async () => {
+  it('shows the window histogram, fields detected and correlation coverage (v0.1.1-06.2)', async () => {
     renderAt('/sources/legivent-api')
     expect(await screen.findByText('Fields detected', {}, { timeout: 5000 })).toBeInTheDocument()
     await waitFor(() => expect(screen.getAllByTestId('day-bar')).toHaveLength(96))
-    expect(await screen.findByText(/^2 fields · from the last/)).toBeInTheDocument()
+    expect(await screen.findByText('2 fields · last 1.0k stored records')).toBeInTheDocument()
     expect(screen.getByText('req_8f2a8c')).toBeInTheDocument()
-    expect(screen.getByText('Flow id detected')).toBeInTheDocument()
-    expect(screen.getByText('on 100% of lines')).toBeInTheDocument()
+    expect(screen.getByText('Correlation detected')).toBeInTheDocument()
+    expect(screen.getByText('in the last 1.0k stored records')).toBeInTheDocument()
+    expect(screen.getByText('Open setup')).toBeInTheDocument()
     expect(screen.getByText('0.4% errors · 0% warn')).toBeInTheDocument()
   })
 

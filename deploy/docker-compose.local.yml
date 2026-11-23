@@ -30,11 +30,12 @@ services:
       start_period: 5s
     stop_grace_period: 15s
 
-  # Canonical JSON lines for two sources from one process, so flows stitch:
-  # sample-api (HTTP requests with wideEvents.calls) is printed to stdout and
-  # read through docker.sock; sample-worker (BullMQ-style payout jobs with
-  # retries, carrying the request_id that enqueued them) is POSTed to
-  # /ingest/ndjson. Both receivers get exercised.
+  # v0.1.1 canonical completion events for two sources from one process, so
+  # flows stitch: sample-api (one event per request, with request/response
+  # context and typed errors) is printed to stdout and read through
+  # docker.sock; sample-worker (one event per payout-job attempt, with retries
+  # and the request_id that enqueued it) is POSTed to /ingest/ndjson. Both
+  # receivers get exercised.
   sample:
     image: oven/bun:1.4.4-alpine
     command: ["bun", "/sample/generate.mjs", "both"]

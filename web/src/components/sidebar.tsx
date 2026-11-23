@@ -19,6 +19,7 @@ import { UserMenu } from '@/components/user-menu'
 import { useHealth, useSources } from '@/lib/api'
 import { useConnection } from '@/lib/connection'
 import { fmtWindow } from '@/lib/format'
+import { useNoSourcePasses } from '@/lib/lint-api'
 import { useSidebar } from '@/lib/sidebar'
 import { groupSources, useCollapsedGroups } from '@/lib/source-groups'
 import { useCustomGroups } from '@/lib/source-groups-api'
@@ -28,11 +29,14 @@ function NavItem({
   to,
   icon,
   badge,
+  dot,
   children,
 }: {
   to: '/' | '/search' | '/sources' | '/settings' | '/guide'
   icon: ReactNode
   badge?: string
+  /** A small brand dot after the label (Guide, 11.6 A). */
+  dot?: string
   children: ReactNode
 }) {
   return (
@@ -42,7 +46,10 @@ function NavItem({
       className="flex h-7 items-center gap-2.5 px-3 text-sidebar-foreground outline-none hover:bg-sidebar-accent focus-visible:bg-sidebar-accent data-[status=active]:bg-sidebar-accent data-[status=active]:text-foreground [&_svg]:size-3.5"
     >
       {icon}
-      <span className="flex-1">{children}</span>
+      <span className="flex flex-1 items-center gap-2">
+        {children}
+        {dot && <span role="img" aria-label={dot} className="size-1.5 bg-brand" />}
+      </span>
       {badge && <span className="font-mono text-[11px] text-muted-foreground">{badge}</span>}
     </Link>
   )
@@ -61,14 +68,16 @@ export function Sidebar({
   // Server unreachable: rates would be stale, so they read "—" (design 08.7).
   const down = useConnection().down
   const sources = useSources().data
+  const noPass = useNoSourcePasses((sources ?? []).filter((s) => !s.hidden).map((s) => s.name))
   const rates = useRates(sources)
   // Hidden sources stay under Sources and in search, not here (unless open now).
   const listed = sources?.filter((s) => !s.hidden || s.name === activeSource)
   // Custom groups first, in their order (06.9).
   const custom = useCustomGroups()
   const groups = groupSources(listed ?? [], listed ?? [], undefined, custom)
-  // Grouping off, or a single group (say, only Ingest): no headers, just the list.
-  const flat = groups.length <= 1
+  // Grouping off: no headers, just the list. A single group (say, only
+  // Ingest) keeps its header, like any other (06.7).
+  const flat = groups.length === 0
   const { isCollapsed, toggle, toggleAll, allCollapsed } = useCollapsedGroups()
   const keys = groups.map((g) => g.key)
   const onStream = useRouterState({ select: (s) => s.location.pathname === '/' })
@@ -117,7 +126,7 @@ export function Sidebar({
         <NavItem to="/settings" icon={<SettingsIcon />}>
           Settings
         </NavItem>
-        <NavItem to="/guide" icon={<BookOpenIcon />}>
+        <NavItem to="/guide" icon={<BookOpenIcon />} dot={noPass ? 'No source passes Check my logs yet' : undefined}>
           Guide
         </NavItem>
       </nav>

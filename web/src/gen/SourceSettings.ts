@@ -43,6 +43,17 @@ mask_fields: Array<string>,
  */
 unmasked: Array<PiiKind>, 
 /**
+ * Extra keys redacted before storage (board 06.3 "Redact sensitive
+ * data"): a last segment (`iban`) or a dotted path (`customer.address`).
+ * Credentials are always redacted; see `redact.rs`.
+ */
+redact_fields: Array<string>, 
+/**
+ * Personal-data groups redacted before storage. Email and phone stay
+ * visible unless listed here.
+ */
+redact_pii: Array<PiiKind>, 
+/**
  * Muted lines (board 06.3): lines matching any rule are hidden from the
  * stream and search by default ("N muted · show"); still stored,
  * counted and searchable. Matching happens in the browser.

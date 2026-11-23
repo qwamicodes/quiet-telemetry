@@ -1,9 +1,11 @@
-import { BoxIcon, CornerDownLeftIcon, GlobeIcon, InfoIcon } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { ArrowUpRightIcon, BoxIcon, CornerDownLeftIcon, GlobeIcon, InfoIcon } from 'lucide-react'
 import { type FormEvent, useId, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { MuteRule, MuteScope, MuteShape } from '@/gen'
 import { draftRule, globalOff, matchesMute, routePath, ruleTarget, ruleText, sameRule, storedAs } from '@/lib/mute'
 import { useAddMuteRule, useDeleteMuteRule, useMutePreview, useUpdateMuteRule } from '@/lib/mute-api'
@@ -11,6 +13,7 @@ import { useSettings } from '@/lib/settings-api'
 import { useSourceFields } from '@/lib/stream-api'
 import { toast } from '@/lib/toast'
 import { useDebounced } from '@/lib/use-debounced'
+import { cn } from '@/lib/utils'
 import {
   fmtN,
   fmtShare,
@@ -264,6 +267,7 @@ function Form({
         <Segmented
           label="Rule shape"
           size="sm"
+          pack
           value={d.shape === 'text' ? 'field' : (d.shape as Exclude<MuteShape, 'text'>)}
           onChange={(shape) => set({ shape })}
           options={SHAPES}
@@ -272,23 +276,26 @@ function Form({
 
       {(d.shape === 'route' || d.shape === 'method_route') && (
         <div className="flex flex-col gap-1.5">
-          <label htmlFor={`${id}-route`} className="text-sm">
-            Route
-          </label>
-          <div className="flex gap-2">
+          <div className="flex items-end gap-2">
             {d.shape === 'method_route' && (
-              <select
-                aria-label="Method"
-                value={d.method}
-                onChange={(e) => set({ method: e.target.value })}
-                className="h-9 border bg-transparent px-2 font-mono text-sm"
-              >
-                {METHODS.map((m) => (
-                  <option key={m}>{m}</option>
-                ))}
-              </select>
+              <div className="flex flex-col gap-1.5 text-sm">
+                <span id={`${id}-method`}>Method</span>
+                <Select value={d.method} onValueChange={(v) => v && set({ method: v })}>
+                  <SelectTrigger aria-labelledby={`${id}-method`} aria-label="Method" className="h-9 w-24 font-mono">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {METHODS.map((m) => (
+                      <SelectItem key={m} value={m} className="font-mono">
+                        {m}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             )}
-            <div className="relative flex-1">
+            <div className="relative flex flex-1 flex-col gap-1.5 text-sm">
+              <label htmlFor={`${id}-route`}>Route</label>
               <Input
                 id={`${id}-route`}
                 autoFocus
@@ -298,15 +305,18 @@ function Form({
                 className="pr-24 font-mono"
               />
               {d.shape === 'route' && (
-                <span className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 font-mono text-[11px] text-muted-foreground">
+                <span className="pointer-events-none absolute right-2.5 bottom-2.5 font-mono text-[11px] text-muted-foreground">
                   any method
                 </span>
               )}
             </div>
           </div>
           <span className="text-muted-foreground text-xs">
-            {d.shape === 'route' ? 'Matches every method. ' : `Only ${d.method} requests. `}?query and #hash are
-            ignored. * matches the rest of one segment (/api/v1/orders/*).
+            {d.shape === 'route'
+              ? 'Matches every method. ?query and #hash are ignored. * matches the rest of one segment (/api/v1/orders/*).'
+              : `Only ${d.method} is hidden. ${METHODS.filter((m) => m !== d.method)
+                  .slice(0, 2)
+                  .join(', ')} and others on this route still show.`}
           </span>
         </div>
       )}
@@ -315,16 +325,22 @@ function Form({
           <label htmlFor={`${id}-msg`} className="text-sm">
             Message
           </label>
-          <Input
-            id={`${id}-msg`}
-            autoFocus
-            value={d.message}
-            onChange={(e) => set({ message: e.target.value })}
-            placeholder="request completed"
-            className="font-mono"
-          />
+          <div className="relative">
+            <Input
+              id={`${id}-msg`}
+              autoFocus
+              value={d.message}
+              onChange={(e) => set({ message: e.target.value })}
+              placeholder="request completed"
+              className="pr-14 font-mono"
+            />
+            <span className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 font-mono text-[11px] text-muted-foreground">
+              exact
+            </span>
+          </div>
+          {/* quiet matches messages ignoring case, with * wildcards; the board's "case-sensitive" is not what the server does. */}
           <span className="text-muted-foreground text-xs">
-            The whole message (msg or message), any case. * is a wildcard.
+            Whole text of the msg / message field, any case. Lines with extra words still show. * is a wildcard.
           </span>
         </div>
       )}
@@ -340,7 +356,7 @@ function Form({
                 value={d.field}
                 onChange={(e) => set({ field: e.target.value })}
                 placeholder="user_agent"
-                className="font-mono"
+                className="font-mono [&::-webkit-calendar-picker-indicator]:hidden"
               />
             </div>
             <span className="flex h-9 items-center justify-center border font-mono text-muted-foreground">=</span>
@@ -367,18 +383,42 @@ function Form({
         </div>
       )}
 
-      <WillHide preview={p} loading={preview.isFetching} scope={scope} where={where} empty={!rule.value} />
+      <WillHide
+        preview={p}
+        loading={preview.isFetching}
+        scope={scope}
+        where={where}
+        empty={!rule.value}
+        warn={Boolean(p && share > WARN_SHARE)}
+        method={rule.shape === 'method_route' ? (rule.method ?? undefined) : undefined}
+      />
 
       {p && share > WARN_SHARE && (
         <Warn title={`Hides ${fmtShare(share)} of ${scope === 'global' ? 'all lines' : source}`}>
-          That is a big share of {scope === 'global' ? 'what quiet receives' : 'this source'}. Consider a level filter
-          in the stream instead, or narrow the rule.
+          {rule.shape === 'field' && rule.field === 'level'
+            ? `${rule.value.charAt(0).toUpperCase()}${rule.value.slice(1)} lines are`
+            : 'That is'}{' '}
+          a big share of {scope === 'global' ? 'what quiet receives' : 'this source'}. Consider a level filter in the
+          stream instead, or narrow the rule
+          {rule.shape === 'field' && rule.field === 'level' ? ` (level=${rule.value} + msg)` : ''}.
         </Warn>
       )}
       {covering && (
-        <Warn title="Already hidden by a global rule · 0 more lines">
-          Global rule <span className="font-mono">{ruleText(covering)}</span> hides every line this would. Add anyway:
-          it takes over if the global rule is switched off here.
+        <Warn
+          title={
+            <span className="flex items-center gap-3">
+              Already hidden by a global rule
+              <Link
+                to="/settings/muted-lines"
+                className="inline-flex items-center gap-1 font-normal text-xs hover:underline"
+              >
+                View global rule <ArrowUpRightIcon className="size-3" />
+              </Link>
+            </span>
+          }
+        >
+          Global rule <span className="font-mono">{ruleText(covering)}</span> hides every line this would, so it hides 0
+          more lines. Add anyway: it takes over if the global rule is switched off here.
         </Warn>
       )}
       {duplicate && (
@@ -407,7 +447,9 @@ function Form({
 
       <div className="flex items-center gap-2 pt-1">
         <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
-          {rule.value ? `stored as ${storedAs(rule)}` : ''}
+          {rule.value
+            ? `stored as ${rule.shape === 'method_route' ? `${rule.method} ${rule.value}` : storedAs(rule)}${covering ? ' · overlaps global' : ''}`
+            : ''}
         </span>
         <span className="flex-1" />
         <Button type="button" variant="ghost" onClick={onDone}>
@@ -435,19 +477,25 @@ export function WillHide({
   scope,
   where,
   empty,
+  warn = false,
+  method,
 }: {
   preview: import('@/gen').MutePreview | undefined
   loading: boolean
   scope: MuteScope
   where: string
   empty: boolean
+  /** A big share: the total is drawn in amber (06.17). */
+  warn?: boolean
+  /** A method + route rule: `GET only · HEAD 14 stay visible` (06.15). */
+  method?: string
 }) {
   return (
     <section aria-label="Will hide" aria-live="polite" className="flex flex-col gap-1.5 bg-muted/40 px-3 py-3">
       <div className="flex items-center justify-between font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
         <span>Will hide</span>
         <span className="flex items-center gap-1.5 normal-case tracking-normal">
-          <span className={loading ? 'size-1.5 animate-pulse bg-status-warn' : 'size-1.5 bg-status-ok'} />
+          <span className={cn('size-1.5 rounded-full', loading ? 'animate-pulse bg-status-warn' : 'bg-status-ok')} />
           live preview · last 24h
         </span>
       </div>
@@ -460,7 +508,7 @@ export function WillHide({
       ) : (
         <>
           <div className="flex items-baseline gap-2">
-            <span className="font-mono font-semibold text-lg">
+            <span className={cn('font-mono font-semibold text-lg', warn && 'text-status-warn')}>
               {p.estimated ? '~' : ''}
               {fmtN(p.total)} lines
             </span>
@@ -479,7 +527,7 @@ export function WillHide({
               />
             )
           ) : (
-            <MethodSplit p={p} />
+            <MethodSplit p={p} method={method} />
           )}
           {p.samples.map((l) => (
             <SampleLine key={l.id} line={l} />

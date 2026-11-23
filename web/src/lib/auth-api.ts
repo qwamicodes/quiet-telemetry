@@ -102,7 +102,7 @@ const membersResponse = z.object({
 const createdInvite = z.object({ invite, token: z.string(), path: z.string() }) satisfies z.ZodType<CreatedInvite>
 const resetLink = z.object({ token: z.string(), path: z.string(), expires: z.number() }) satisfies z.ZodType<ResetLink>
 const resetInfo = z.object({ email: z.string(), name: z.string(), expires: z.number() }) satisfies z.ZodType<ResetInfo>
-const passwordChanged = z.object({ user, signed_out: z.number() }) satisfies z.ZodType<PasswordChanged>
+const passwordChanged = z.object({ user }) satisfies z.ZodType<PasswordChanged>
 const signedOutOthers = z.object({ signed_out: z.number() }) satisfies z.ZodType<SignedOutOthers>
 
 /** Path params of the signed-out link pages: anything else is a broken link. */

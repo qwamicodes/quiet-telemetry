@@ -19,7 +19,7 @@ export function QueryInput({
   inputRef?: Ref<HTMLInputElement>
 }) {
   return (
-    <div className="flex h-9 min-w-0 flex-1 items-center gap-2 border border-input px-2.5 focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/40">
+    <div className="flex h-9 min-w-0 flex-1 items-center gap-2 border border-input px-2.5 focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/40 max-md:order-first max-md:basis-full">
       <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
       {chips.map((c) => {
         const neg = c.startsWith('-')
@@ -52,7 +52,9 @@ export function QueryInput({
       <input
         ref={inputRef}
         aria-label="Search"
-        placeholder={chips.length ? '' : 'Search every line: words, "phrases", key:value'}
+        placeholder={
+          chips.length ? '' : 'Search stored events: words, "phrases", flow:… job_id:… level:… or any captured field'
+        }
         className="h-full min-w-24 flex-1 bg-transparent font-mono text-sm outline-none placeholder:text-muted-foreground"
         value={text}
         onChange={(e) => onText(e.target.value)}
@@ -63,7 +65,7 @@ export function QueryInput({
         }}
       />
       <span className="hidden shrink-0 font-mono text-[11px] text-muted-foreground xl:inline">
-        free text · key:value · click any value
+        flow · job_id · level · captured fields
       </span>
     </div>
   )

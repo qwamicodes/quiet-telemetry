@@ -7,7 +7,7 @@ import { Kbd } from '@/components/ui/kbd'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { SourceInfo } from '@/gen'
 import { useSources } from '@/lib/api'
-import { groupOf, groupSources, type SourceGroup, sourceStatus, useCollapsedGroups } from '@/lib/source-groups'
+import { groupSources, type SourceGroup, sourceStatus, useCollapsedGroups } from '@/lib/source-groups'
 import { useCustomGroups } from '@/lib/source-groups-api'
 import { useRates } from '@/lib/use-rates'
 import { cn } from '@/lib/utils'
@@ -45,7 +45,6 @@ export function SourcePicker({ source, name }: { source: SourceInfo | undefined;
     }
     return out
   }, [groups, shown, q, isCollapsed])
-  const group = source ? groupOf(source) : null
 
   const choose = (s: SourceInfo) => {
     setOpen(false)
@@ -105,12 +104,6 @@ export function SourcePicker({ source, name }: { source: SourceInfo | undefined;
           open && 'border-brand/60',
         )}
       >
-        {group && (
-          <>
-            <span className="truncate font-mono text-[13px] text-muted-foreground">{group.name}</span>
-            <span className="text-muted-foreground">/</span>
-          </>
-        )}
         <h1 className="truncate font-medium text-base">{source?.display_name ?? name ?? 'No source'}</h1>
         <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
       </PopoverTrigger>
@@ -131,7 +124,8 @@ export function SourcePicker({ source, name }: { source: SourceInfo | undefined;
             className="h-10 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
           />
           <span className="font-mono text-[11px] text-muted-foreground">
-            {listed.length} sources{groups.length ? ` · ${groups.length} groups` : ''}
+            {listed.length} sources
+            {groups.length ? ` · ${groups.length} ${groups.length === 1 ? 'group' : 'groups'}` : ''}
           </span>
         </div>
         <div role="listbox" aria-label="Sources" className="max-h-[60vh] overflow-y-auto py-1">

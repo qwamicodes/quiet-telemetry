@@ -93,10 +93,46 @@ const LABEL: Record<Range, string> = {
   '7d': 'Last 7 days',
 }
 
-/** `datetime-local` value for a unix ms, in the viewer's zone. */
-function local(ms: number): string {
-  const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60_000)
-  return d.toISOString().slice(0, 16)
+const pad = (n: number) => String(n).padStart(2, '0')
+const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
+const dayStart = (ms: number) => new Date(new Date(ms).setHours(0, 0, 0, 0)).getTime()
+
+/** A custom-range field (05.2): `today 08:07`, `yesterday 22:10`, `Oct 22 14:07`. */
+export function fmtRangeField(ms: number, now = Date.now()): string {
+  const d = new Date(ms)
+  const days = Math.round((dayStart(now) - dayStart(ms)) / 86_400_000)
+  if (days === 0) return `today ${hhmm(d)}`
+  if (days === 1) return `yesterday ${hhmm(d)}`
+  return `${d.toLocaleString('en-US', { month: 'short' })} ${d.getDate()} ${hhmm(d)}`
+}
+
+/**
+ * Reads what was typed: `now`, `today 08:07`, `yesterday 22:10`, `08:07`
+ * (today), `2026-11-22 14:07`, `Oct 22 14:07`. `undefined` for now; `null`
+ * when it can't be read.
+ */
+export function parseRangeField(text: string, now = Date.now()): number | undefined | null {
+  const t = text.trim().toLowerCase()
+  if (t === '' || t === 'now') return undefined
+  const rel = /^(?:(today|yesterday)\s+)?(\d{1,2}):(\d{2})$/.exec(t)
+  if (rel) {
+    const d = new Date(now)
+    if (rel[1] === 'yesterday') d.setDate(d.getDate() - 1)
+    d.setHours(Number(rel[2]), Number(rel[3]), 0, 0)
+    return Number(rel[2]) < 24 && Number(rel[3]) < 60 ? d.getTime() : null
+  }
+  const iso = /^(\d{4})-(\d{2})-(\d{2})[ t](\d{1,2}):(\d{2})$/.exec(t)
+  if (iso) return new Date(+iso[1], +iso[2] - 1, +iso[3], +iso[4], +iso[5]).getTime()
+  const md = /^([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(\d{1,2}):(\d{2})$/.exec(t)
+  if (md) {
+    const month = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(md[1])
+    if (month < 0) return null
+    const d = new Date(now)
+    const at = new Date(d.getFullYear(), month, +md[2], +md[3], +md[4]).getTime()
+    // "Dec 31" typed in January means last year.
+    return at > now ? new Date(d.getFullYear() - 1, month, +md[2], +md[3], +md[4]).getTime() : at
+  }
+  return null
 }
 
 export function TimeRange({
@@ -136,8 +172,21 @@ export function TimeRange({
   })
   const ranges = RANGES.filter((r) => RANGE_MS[r] <= retentionMs)
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const [start, setStart] = useState(() => local(from ?? Date.now() - RANGE_MS[range]))
-  const [end, setEnd] = useState(() => (to ? local(to) : ''))
+  const [start, setStart] = useState(() => fmtRangeField(from ?? Date.now() - RANGE_MS[range]))
+  const [end, setEnd] = useState(() => (to ? fmtRangeField(to) : 'now'))
+  const a = parseRangeField(start)
+  const b = parseRangeField(end)
+  const bad = a == null || b === null || (b !== undefined && b <= a)
+  const tzShort =
+    new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
+      .formatToParts(new Date())
+      .find((p) => p.type === 'timeZoneName')?.value ?? ''
+  // Enter in either field applies; there is no Apply button (05.2).
+  const apply = () => {
+    if (bad || a == null) return
+    onCustom(a, b ?? undefined)
+    setOpen(false)
+  }
   const label = from ? 'Custom' : `Last ${range}`
 
   return (
@@ -197,36 +246,30 @@ export function TimeRange({
           <p className="mb-2 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">Custom range</p>
           <div className="flex items-center gap-2">
             <input
-              type="datetime-local"
+              type="text"
               aria-label="From"
+              aria-invalid={a == null || undefined}
               value={start}
               onChange={(e) => setStart(e.target.value)}
-              className="h-8 min-w-0 flex-1 border bg-transparent px-2 font-mono text-xs outline-none focus:border-ring"
+              onKeyDown={(e) => e.key === 'Enter' && apply()}
+              className="h-8 min-w-0 flex-1 border bg-transparent px-2 font-mono text-xs outline-none focus:border-ring aria-invalid:border-status-err"
             />
             <span className="text-muted-foreground">→</span>
             <input
-              type="datetime-local"
+              type="text"
               aria-label="To"
+              aria-invalid={b === null || (b !== undefined && a != null && b <= a) || undefined}
               value={end}
               placeholder="now"
               onChange={(e) => setEnd(e.target.value)}
-              className="h-8 min-w-0 flex-1 border bg-transparent px-2 font-mono text-xs outline-none focus:border-ring"
+              onKeyDown={(e) => e.key === 'Enter' && apply()}
+              className="h-8 min-w-0 flex-1 border bg-transparent px-2 font-mono text-xs outline-none focus:border-ring aria-invalid:border-status-err"
             />
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="mt-2 w-full"
-            disabled={!start}
-            onClick={() => {
-              onCustom(new Date(start).getTime(), end ? new Date(end).getTime() : undefined)
-              setOpen(false)
-            }}
-          >
-            Apply
-          </Button>
           <p className="mt-2 text-muted-foreground text-xs">
-            Times in {tz}. Lines older than {fmtWindow(retentionMs)} have expired.
+            Times in {tz}
+            {tzShort ? ` (${tzShort})` : ''}. Events older than this source's {fmtWindow(retentionMs)} retention have
+            expired.
           </p>
         </div>
       </PopoverContent>

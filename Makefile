@@ -41,7 +41,7 @@ check-web:
 	cd web && bun install --frozen-lockfile && bun run lint && bun run typecheck && bun run test && bun run build
 
 check-server:
-	cd server && cargo fmt --check && cargo clippy --all-targets -- -D warnings && QUIET_EXPECT_UI=1 cargo test
+	cd server && cargo fmt --check && cargo clippy --all-targets -- -D warnings && env -u QUIET_INGEST_AUTH QUIET_EXPECT_UI=1 cargo test
 
 ## types: regenerate web/src/gen from the Rust wire types
 types:

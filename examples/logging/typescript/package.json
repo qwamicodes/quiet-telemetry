@@ -1,0 +1,17 @@
+{
+  "name": "quiet-logging-reference",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "check": "tsc --noEmit",
+    "demo": "bun run demo.ts"
+  },
+  "dependencies": {
+    "elysia": "1.4.32"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "typescript": "7.0.2"
+  }
+}

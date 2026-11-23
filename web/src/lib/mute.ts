@@ -353,9 +353,15 @@ export function useSearchMuted(lines: LogLine[], override: MutedOverride | undef
   return useMemo(() => {
     const mutedIds = new Set<number>()
     const hiddenIds = new Set<number>()
+    // 05.9: which rule hides each muted line ("rule path:/api/v1/health").
+    const ruleOf = new Map<number, MuteRule>()
+    const mutedSources = new Set<string>()
     for (const l of lines) {
       const rules = rulesOf(l.source)
-      if (rules.length && isMuted(l, rules)) {
+      const rule = rules.length ? mutingRule(l, rules) : undefined
+      if (rule) {
+        ruleOf.set(l.id, rule)
+        mutedSources.add(l.source)
         mutedIds.add(l.id)
         const show = override ? override === 'include' : includes(l.source)
         if (!show) hiddenIds.add(l.id)
@@ -367,6 +373,9 @@ export function useSearchMuted(lines: LogLine[], override: MutedOverride | undef
       muted: mutedIds.size,
       hidden: hiddenIds.size,
       mutedIds,
+      ruleOf,
+      ruleCount: new Set([...ruleOf.values()].map((r) => r.id)).size,
+      mutedSources: [...mutedSources],
       included: mutedIds.size > 0 && hiddenIds.size === 0,
     }
   }, [lines, override, rulesOf, includes])

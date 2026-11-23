@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, GitForkIcon } from 'lucide-react'
+import { ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, EyeOffIcon, GitForkIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
@@ -9,6 +9,7 @@ import { fmtDuration } from '@/lib/flow'
 import { fmtRowTime, fmtTime } from '@/lib/format'
 import { inSpan, jumpIndex, nearestIndex, type Span } from '@/lib/histogram-jump'
 import { type FlowGroup, groupByFlow, highlight, notableFields } from '@/lib/query'
+import { lineDuration, type RowParts, rowParts } from '@/lib/row'
 import { cn } from '@/lib/utils'
 
 const HEAD = 52 // 12px gap + 40px header
@@ -45,7 +46,7 @@ function FieldChip({ k, v, words, onPick }: { k: string; v: string; words: strin
         onPick(`${k}:${/\s/.test(v) ? `"${v}"` : v}`)
       }}
       className={cn(
-        'shrink-0 truncate px-1 font-mono text-xs hover:bg-accent hover:text-foreground',
+        'min-w-0 max-w-full truncate px-1 font-mono text-xs hover:bg-accent hover:text-foreground',
         hit ? 'bg-status-warn/20 text-foreground' : 'text-muted-foreground',
       )}
     >
@@ -54,27 +55,85 @@ function FieldChip({ k, v, words, onPick }: { k: string; v: string; words: strin
   )
 }
 
+/** A field `key` read from a line (dotted paths reach into objects). */
+function fieldAt(line: LogLine, key: string): unknown {
+  const f = line.fields as Record<string, unknown> | undefined
+  if (!f) return undefined
+  if (key in f) return f[key]
+  let cur: unknown = f
+  for (const p of key.split('.')) {
+    if (!cur || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[p]
+  }
+  return cur
+}
+
+const TONE: Record<RowParts['tone'], string> = {
+  ok: 'text-status-ok',
+  warn: 'text-status-warn',
+  err: 'text-status-err',
+  muted: 'text-muted-foreground',
+}
+
+/**
+ * One result (v0.1.1-05.1, aligned lanes): time · level · summary · the field
+ * the search matched · details. The summary reads like the stream's
+ * FLOW · RESULT: `fetch_payouts · GET /api/v1/… → 200 · slow`,
+ * `settle_dealer_payout · attempt 0 → timeout`.
+ */
 function LineRow({
   line,
   words,
+  matchKeys,
   showSource,
   onPick,
   muted = false,
+  mutedBy,
   flash = false,
 }: {
   line: LogLine
   words: string[]
+  /** The search's `key:value` field filters. */
+  matchKeys: [string, string][]
   showSource: boolean
   onPick: (f: string) => void
   /** In the histogram bar just jumped to: briefly tinted. */
   flash?: boolean
   /** Matches its source's muted-lines rules and is shown anyway: dimmed and tagged. */
   muted?: boolean
+  /** The rule that mutes it (`path:/api/v1/health`). */
+  mutedBy?: string
 }) {
+  const p = rowParts(line)
+  const attempt = p.extra.find((x) => x.startsWith('attempt '))
+  const extras = p.extra.filter((x) => x !== attempt)
+  const head = p.path
+    ? `${p.event} · ${p.method} ${p.path}`
+    : line.fields
+      ? `${p.event}${attempt ? ` · ${attempt}` : ''}`
+      : line.msg
+  // The field the search matched, else a free-text hit among the fields.
+  const matched = matchKeys
+    .map(([k]) => [k, fieldAt(line, k)] as const)
+    .filter(([, v]) => v !== undefined && v !== null && typeof v !== 'object')
+    .map(([k, v]) => [k, String(v)] as [string, string])
+  const match =
+    matched[0] ??
+    notableFields(line, words, 1).find(([k, v]) =>
+      words.some((w) => v.toLowerCase().includes(w) || k.toLowerCase().includes(w)),
+    )
+  const dur = lineDuration(line)
+  const meta = [
+    dur != null ? `duration_ms:${dur}` : null,
+    ...notableFields(line, [], 2)
+      .filter(([k]) => k !== 'duration_ms' && k !== 'status' && k !== 'status_code' && k !== match?.[0])
+      .filter(([k]) => !/^(attempt|err\.code|error\.code|outcome)$/.test(k))
+      .map(([k, v]) => `${k}:${v}`),
+  ].filter(Boolean) as string[]
   return (
     <div
       className={cn(
-        'flex h-full items-center gap-3 px-9 font-mono text-[13px] transition-colors',
+        'flex h-full items-center gap-4 px-9 font-mono text-[13px] transition-colors',
         muted && 'opacity-50',
         flash && 'bg-brand/10 shadow-[inset_2px_0_0_var(--brand)]',
       )}
@@ -82,28 +141,51 @@ function LineRow({
       data-flash={flash || undefined}
       data-muted={muted || undefined}
     >
-      <span className="w-24 shrink-0 text-muted-foreground tabular-nums">{fmtRowTime(line.ts, 'seconds')}</span>
+      <span className="w-20 shrink-0 text-muted-foreground tabular-nums">{fmtRowTime(line.ts, 'seconds')}</span>
       <span className="w-12 shrink-0">
         <LevelBadge level={line.level} />
       </span>
       {showSource && <span className="w-28 shrink-0 truncate text-muted-foreground text-xs">{line.source}</span>}
-      <span className="min-w-0 truncate">
-        <Marked text={line.msg} words={words} />
+      <span data-lane="summary" className="w-[420px] shrink-0 truncate max-md:w-auto max-md:min-w-0 max-md:flex-1">
+        <Marked text={head} words={words} />
+        {p.outcome != null && line.fields && (
+          <>
+            <span className="text-muted-foreground"> → </span>
+            <span className={TONE[p.tone]}>{p.outcome}</span>
+          </>
+        )}
+        {extras.map((x, i) => (
+          <span key={x} className={i === 0 && p.extraTone ? TONE[p.extraTone] : 'text-muted-foreground'}>
+            <span className="text-muted-foreground"> · </span>
+            {x}
+          </span>
+        ))}
       </span>
-      {notableFields(line, words).map(([k, v]) => (
-        <FieldChip key={k} k={k} v={v} words={words} onPick={onPick} />
-      ))}
-      <span className="flex-1" />
-      {muted && (
-        <span
-          title="Matches this source’s muted-lines rules"
-          className="shrink-0 border px-1 font-mono text-[10px] text-muted-foreground uppercase tracking-[0.06em]"
-        >
-          muted
-        </span>
+      <span data-lane="match" className="flex w-[200px] min-w-0 shrink-0 overflow-hidden max-md:hidden">
+        {match && <FieldChip k={match[0]} v={match[1]} words={[match[1].toLowerCase()]} onPick={onPick} />}
+      </span>
+      <span data-lane="meta" className="min-w-0 flex-1 truncate text-muted-foreground text-xs max-md:hidden">
+        {meta.join(' · ')}
+      </span>
+      {muted && mutedBy && (
+        <span className="max-w-48 shrink-0 truncate text-muted-foreground text-xs max-md:hidden">rule {mutedBy}</span>
       )}
+      {muted && <MutedTag />}
       <FlowLink line={line} />
     </div>
+  )
+}
+
+/** 05.9: an eye-off "muted" tag on muted rows and their group. */
+function MutedTag() {
+  return (
+    <span
+      title="Matches this source’s muted-lines rules"
+      className="flex shrink-0 items-center gap-1 border px-1 font-mono text-[10px] text-muted-foreground"
+    >
+      <EyeOffIcon className="size-3" />
+      muted
+    </span>
   )
 }
 
@@ -130,7 +212,17 @@ function FlowLink({ line }: { line: LogLine }) {
 
 const OUTCOME: Record<FlowSummary['status'], string> = { ok: 'ok', warn: 'warn', error: 'failed' }
 
-function GroupHead({ group, open, onToggle }: { group: FlowGroup; open: boolean; onToggle: () => void }) {
+function GroupHead({
+  group,
+  open,
+  onToggle,
+  muted = false,
+}: {
+  group: FlowGroup
+  open: boolean
+  onToggle: () => void
+  muted?: boolean
+}) {
   const f = group.summary
   const worst = f
     ? f.status === 'error'
@@ -147,6 +239,24 @@ function GroupHead({ group, open, onToggle }: { group: FlowGroup; open: boolean;
   const title = f?.title ?? (first.fields?.flow as string | undefined) ?? first.msg
   const sources = f?.sources ?? group.sources
   const n = group.lines.length
+  // 05.1: "1 request · 1.9s", "3 attempts · 9.6s", "1 job · 412ms".
+  const reqs = group.lines.filter((l) => {
+    const p = rowParts(l)
+    return Boolean(p.path)
+  }).length
+  const attempts = group.lines.filter((l) => {
+    const f = l.fields as Record<string, unknown> | undefined
+    return Boolean(f && (f.job_id ?? f.jobId) && f.attempt != null)
+  }).length
+  const jobs = new Set(
+    group.lines.map((l) => (l.fields as Record<string, unknown> | undefined)?.job_id).filter(Boolean),
+  ).size
+  const kind = [
+    reqs && `${reqs} ${reqs === 1 ? 'request' : 'requests'}`,
+    attempts > 1 ? `${attempts} attempts` : jobs ? `${jobs} ${jobs === 1 ? 'job' : 'jobs'}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
   return (
     <div className="mt-3 flex h-10 items-center gap-2.5 border border-b-0 bg-card px-3 data-[closed=true]:border-b">
       <button
@@ -162,12 +272,16 @@ function GroupHead({ group, open, onToggle }: { group: FlowGroup; open: boolean;
       <span className="min-w-0 truncate font-medium font-mono text-[13px]">{title}</span>
       {group.id && <span className="shrink-0 font-mono text-muted-foreground text-xs">{group.id.value}</span>}
       <span className="shrink-0 border px-1.5 font-mono text-[11px] text-muted-foreground">{sources.join(' → ')}</span>
+      {muted && <MutedTag />}
       <span className="flex-1" />
       <span className="shrink-0 font-mono text-muted-foreground text-xs tabular-nums">
-        {f
-          ? `${OUTCOME[f.status]} · ${n} of ${f.line_count} lines match · ${f.steps} ${f.steps === 1 ? 'step' : 'steps'} · ${fmtDuration(f.duration_ms)} · `
-          : `${n} ${n === 1 ? 'line' : 'lines'} match · `}
-        {fmtTime(group.last).slice(0, 8)}
+        <span className="text-[11px]">
+          {f ? `${OUTCOME[f.status]} · ` : ''}
+          {n} {n === 1 ? 'event matches' : 'events match'}
+        </span>
+        {kind && <span className="ml-3">{kind}</span>}
+        {f && ` · ${fmtDuration(f.duration_ms)}`}
+        <span className="ml-3">{fmtTime(group.last).slice(0, 8)}</span>
       </span>
       {group.id ? (
         <Link
@@ -198,12 +312,14 @@ export function SearchResults({
   lines,
   view,
   words,
+  matchKeys = [],
   hasMore,
   loadingMore,
   onMore,
   onPick,
   summaries,
   mutedIds,
+  mutedRule,
   refreshing = false,
   jump = null,
   flash = null,
@@ -220,9 +336,13 @@ export function SearchResults({
   summaries?: Map<string, FlowSummary | null>
   /** Muted lines being shown (included in search): dimmed and tagged. */
   mutedIds?: ReadonlySet<number>
+  /** The rule text behind each muted line. */
+  mutedRule?: (lineId: number) => string | undefined
   lines: LogLine[]
   view: 'flows' | 'lines'
   words: string[]
+  /** The search's `key:value` field filters: each row shows the one it matched. */
+  matchKeys?: [string, string][]
   hasMore: boolean
   loadingMore: boolean
   onMore: () => void
@@ -294,22 +414,28 @@ export function SearchResults({
               className="absolute inset-x-0 top-0 list-none"
             >
               {it.kind === 'head' ? (
-                <GroupHead group={it.group} open={it.open} onToggle={() => toggle(it.group.key)} />
+                <GroupHead
+                  group={it.group}
+                  open={it.open}
+                  onToggle={() => toggle(it.group.key)}
+                  muted={it.group.lines.some((l) => mutedIds?.has(l.id))}
+                />
               ) : (
                 <div
                   className={cn(
                     'group/row h-full border-border/60 border-x hover:bg-row-hover',
                     view === 'lines' ? 'border-b' : 'border-t',
                     it.last && 'border-b',
-                    (it.line.level === 'error' || it.line.level === 'fatal') && 'bg-row-error',
                   )}
                 >
                   <LineRow
                     line={it.line}
                     words={words}
+                    matchKeys={matchKeys}
                     showSource={view === 'lines'}
                     onPick={onPick}
                     muted={mutedIds?.has(it.line.id) ?? false}
+                    mutedBy={mutedRule?.(it.line.id)}
                     flash={flash != null && inSpan(it.line.ts, flash)}
                   />
                 </div>

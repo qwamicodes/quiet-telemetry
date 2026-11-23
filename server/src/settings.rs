@@ -55,10 +55,10 @@ pub enum StreamDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TimestampFormat {
-    /// `14:07:35`
-    Seconds,
-    /// `14:07:35.412` (the default).
+    /// `14:07:35` (the default, boards 03.x).
     #[default]
+    Seconds,
+    /// `14:07:35.412`
     Millis,
     /// `2s ago`
     Relative,
@@ -102,7 +102,7 @@ impl Default for GeneralSettings {
             stream_direction: StreamDirection::Bottom,
             timezone: "local".into(),
             public_url: None,
-            timestamps: TimestampFormat::Millis,
+            timestamps: TimestampFormat::Seconds,
             max_line_bytes: DEFAULT_MAX_LINE_BYTES,
             keep_non_json: true,
             check_updates: false,
@@ -235,6 +235,13 @@ pub struct SourceSettings {
     pub mask_fields: Vec<String>,
     /// Built-in PII groups NOT masked for this source.
     pub unmasked: Vec<PiiKind>,
+    /// Extra keys redacted before storage (board 06.3 "Redact sensitive
+    /// data"): a last segment (`iban`) or a dotted path (`customer.address`).
+    /// Credentials are always redacted; see `redact.rs`.
+    pub redact_fields: Vec<String>,
+    /// Personal-data groups redacted before storage. Email and phone stay
+    /// visible unless listed here.
+    pub redact_pii: Vec<PiiKind>,
     /// Muted lines (board 06.3): lines matching any rule are hidden from the
     /// stream and search by default ("N muted · show"); still stored,
     /// counted and searchable. Matching happens in the browser.
@@ -1383,6 +1390,25 @@ impl Settings {
             return invalid("mask_fields: at most 64 keys");
         }
         s.mask_fields = fields;
+        let mut redact: Vec<String> = Vec::new();
+        for f in &s.redact_fields {
+            let f = f.trim();
+            if f.is_empty() {
+                continue;
+            }
+            if f.chars().count() > 128 || f.chars().any(char::is_control) {
+                return invalid("redact_fields: keys up to 128 characters");
+            }
+            if !redact.iter().any(|x| x == f) {
+                redact.push(f.to_string());
+            }
+        }
+        if redact.len() > 64 {
+            return invalid("redact_fields: at most 64 keys");
+        }
+        s.redact_fields = redact;
+        s.redact_pii.sort_by_key(|k| *k as u8);
+        s.redact_pii.dedup();
         let mut muted: Vec<MuteRule> = Vec::new();
         for r in std::mem::take(&mut s.muted) {
             let mut r = r;
@@ -1760,6 +1786,18 @@ impl Settings {
                 .map(|f| f.to_ascii_lowercase().replace('-', "_"))
                 .collect(),
             unmasked: s.unmasked,
+        }
+    }
+}
+
+impl Settings {
+    /// What is redacted before storage for `source` (built-in credentials
+    /// plus the source's own keys and personal-data groups).
+    pub fn redactor(&self, source: &str) -> crate::redact::Redactor {
+        let st = self.state.read().unwrap();
+        match st.sources.get(source) {
+            Some(s) => crate::redact::Redactor::new(&s.redact_fields, &s.redact_pii),
+            None => crate::redact::Redactor::default(),
         }
     }
 }

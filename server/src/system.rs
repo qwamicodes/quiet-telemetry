@@ -390,7 +390,11 @@ pub fn status(sys: &SystemState, r: Readings) -> SystemStatus {
             ),
         });
     }
-    let gb = |b: u64| format!("{:.1} GB", b as f64 / 1e9);
+    // `5 GB`, `2.5 GB`: a cap reads as it was set (v0.1-07.5).
+    let gb = |b: u64| {
+        let v = format!("{:.2}", b as f64 / 1e9);
+        format!("{} GB", v.trim_end_matches('0').trim_end_matches('.'))
+    };
     match disk.state {
         DiskState::Full => issues.push(Issue {
             kind: IssueKind::DiskAtCap,
@@ -398,14 +402,12 @@ pub fn status(sys: &SystemState, r: Readings) -> SystemStatus {
             title: format!("Disk is at {:.0}% of the {} cap", ratio * 100.0, gb(r.cap)),
             detail: match reaches_ms {
                 Some(ms) if ms < r.window_ms => format!(
-                    "quiet is dropping the oldest hour first: search now reaches back {}, not {}. \
-                     The live stream is unaffected.",
+                    "dropping the oldest hour first · search now reaches back {}, not {} · \
+                     live stream unaffected",
                     span(ms),
                     span(r.window_ms)
                 ),
-                _ => {
-                    "quiet is dropping the oldest hour first. The live stream is unaffected.".into()
-                }
+                _ => "dropping the oldest hour first · live stream unaffected".into(),
             },
         }),
         DiskState::Near => issues.push(Issue {

@@ -1,17 +1,18 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useLocation, useNavigate } from '@tanstack/react-router'
 import { ArrowRightIcon, InfoIcon } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
-import { draftFrom, SourceGrouping, validLabel } from '@/components/settings/grouping'
+import { CustomGroupsRow, draftFrom, SourceGrouping, validLabel } from '@/components/settings/grouping'
 import { PageHeader, ReadOnlyNote, SettingRow } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import type { GeneralSettings, GroupingSettings, StreamDirection, TimestampFormat } from '@/gen'
+import type { GeneralSettings, GroupingSettings, GroupMode, TimestampFormat } from '@/gen'
 import { useHealth } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
-import { fmtRowTime, fmtTime, publicHost, validTimeZone } from '@/lib/format'
+import { fmtRowTime, publicHost, validTimeZone } from '@/lib/format'
+import { useSaveMutedSearch } from '@/lib/mute-api'
 import { useSaveGeneral, useSaveGrouping, useSettings } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
 
@@ -45,33 +46,65 @@ export function General() {
       key={JSON.stringify([all.general, all.grouping, all.muted_search])}
       saved={all.general}
       grouping={all.grouping}
+      mutedSearch={all.muted_search}
       version={health?.version}
     />
   )
 }
 
+/** `Africa/Accra · GMT`; `local` names the browser's zone. */
+export function zoneLabel(tz: string): string {
+  const zone = tz === 'local' ? Intl.DateTimeFormat().resolvedOptions().timeZone : tz
+  let abbr = ''
+  try {
+    abbr =
+      new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'short' })
+        .formatToParts(new Date())
+        .find((p) => p.type === 'timeZoneName')?.value ?? ''
+  } catch {
+    return tz
+  }
+  const name = tz === 'local' ? `local (${zone})` : zone
+  return abbr && abbr !== zone ? `${name} · ${abbr}` : name
+}
+
+const GROUP_MODES: { value: GroupMode; label: string }[] = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'label', label: 'Custom label' },
+  { value: 'off', label: 'Off' },
+]
+
 function GeneralForm({
   saved,
   grouping,
+  mutedSearch,
   version,
 }: {
   saved: GeneralSettings
   grouping: GroupingSettings
+  mutedSearch: { include: boolean; origin: string; flag: boolean }
   version?: string
 }) {
   const owner = isOwner(useMe())
   const save = useSaveGeneral()
   const saveGrouping = useSaveGrouping()
+  const saveMuted = useSaveMutedSearch()
+  const { hash } = useLocation()
+  const navigate = useNavigate()
+  const full = hash === 'grouping'
   const [draft, setDraft] = useState(saved)
   const [groupDraft, setGroupDraft] = useState(draftFrom(grouping))
+  const [includeMuted, setIncludeMuted] = useState(mutedSearch.include)
   const groupDirty = JSON.stringify(groupDraft) !== JSON.stringify(draftFrom(grouping))
   const groupOk = groupDraft.mode !== 'label' || validLabel(groupDraft.label)
   const generalDirty = JSON.stringify(draft) !== JSON.stringify(saved)
-  const dirty = generalDirty || groupDirty
+  const mutedDirty = includeMuted !== mutedSearch.include
+  const dirty = generalDirty || groupDirty || mutedDirty
   const nameOk = draft.instance_name.trim().length > 0 && draft.instance_name.trim().length <= 40
   const tzOk = validTimeZone(draft.timezone)
   const urlOk = validPublicUrl(draft.public_url)
   const sample = Date.now() - 2_000
+  const zones = [...new Set(['local', 'UTC', draft.timezone, ...ZONES])]
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -85,156 +118,171 @@ function GeneralForm({
         })
       if (groupDirty && !grouping.locked)
         await saveGrouping.mutateAsync({ ...groupDraft, label: groupDraft.label.trim() })
+      if (mutedDirty) await saveMuted.mutateAsync(includeMuted)
       toast.success('Settings saved', { description: 'Everyone sees the new values on their next page load.' })
     } catch (err) {
       toast.error('Could not save', { description: (err as Error).message })
     }
   }
 
+  const host = `Self-hosted at ${publicHost()} · v${version ?? '…'}`
   return (
-    <form className="max-w-3xl" onSubmit={submit} aria-label="General settings">
-      <PageHeader title="General" sub={`Self-hosted at ${publicHost()} · v${version ?? '…'} · single host`} />
+    <form className="max-w-190" onSubmit={submit} aria-label="General settings">
+      <PageHeader title="General" sub={`${host} · ${full ? 'Source grouping' : 'single host'}`} className="pb-5" />
       {!owner && <ReadOnlyNote />}
       <fieldset disabled={!owner} className="contents">
-        <SettingRow
-          label="Instance name"
-          hint="Shown in the browser tab, the user menu and on invite links (“Join legivent”)."
-          htmlFor="instance-name"
-        >
-          <Input
-            id="instance-name"
-            className="w-70"
-            value={draft.instance_name}
-            maxLength={40}
-            aria-invalid={!nameOk}
-            onChange={(e) => setDraft({ ...draft, instance_name: e.target.value })}
-          />
-        </SettingRow>
-        <SettingRow
-          label="Public URL"
-          hint="Used in invite links and in the snippets on Connect a source. Empty uses the address in your browser."
-          htmlFor="public-url"
-          under={urlOk ? undefined : 'an http(s) address like https://quiet.example.com'}
-        >
-          <Input
-            id="public-url"
-            className="w-70 font-mono text-xs"
-            placeholder={window.location.origin}
-            value={draft.public_url ?? ''}
-            aria-invalid={!urlOk}
-            onChange={(e) => setDraft({ ...draft, public_url: e.target.value })}
-          />
-        </SettingRow>
-        <SettingRow
-          label="Timezone"
-          hint="Used for timestamps in the stream, flows and search. “local” follows each viewer's browser."
-          htmlFor="timezone"
-          under={tzOk ? `now ${fmtTime(Date.now(), draft.timezone).slice(0, 8)}` : 'unknown zone'}
-        >
-          <Input
-            id="timezone"
-            className="w-70 font-mono text-xs"
-            list="quiet-timezones"
-            value={draft.timezone}
-            aria-invalid={!tzOk}
-            onChange={(e) => setDraft({ ...draft, timezone: e.target.value })}
-          />
-          <datalist id="quiet-timezones">
-            <option value="local" />
-            <option value="UTC" />
-            {ZONES.map((z) => (
-              <option key={z} value={z} />
-            ))}
-          </datalist>
-        </SettingRow>
-        <SettingRow
-          label="Timestamps"
-          hint="How rows show their time. Absolute is easier to match against other tools."
-        >
-          <ToggleGroup
-            variant="outline"
-            size="sm"
-            spacing={0}
-            aria-label="Timestamps"
-            value={[draft.timestamps]}
-            onValueChange={(v) => v[0] && setDraft({ ...draft, timestamps: v[0] as TimestampFormat })}
-          >
-            {(['seconds', 'millis', 'relative'] as const).map((f) => (
-              <ToggleGroupItem key={f} value={f} aria-label={f} className="font-mono text-xs">
-                {fmtRowTime(sample, f)}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-        </SettingRow>
-        <SettingRow label="Max line size" hint="Longer lines are cut and marked truncated in the card.">
-          <Select
-            value={String(draft.max_line_bytes)}
-            onValueChange={(v) => v && setDraft({ ...draft, max_line_bytes: Number(v) })}
-          >
-            <SelectTrigger aria-label="Max line size" className="w-30">
-              <SelectValue>{(v: string) => fmtLineSize(Number(v))}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {[...new Set([...LINE_SIZES, draft.max_line_bytes])]
-                .sort((a, b) => a - b)
-                .map((b) => (
-                  <SelectItem key={b} value={String(b)}>
-                    {fmtLineSize(b)}
-                  </SelectItem>
+        {full ? (
+          <SourceGrouping saved={grouping} draft={groupDraft} onChange={setGroupDraft} disabled={!owner} />
+        ) : (
+          <>
+            <SettingRow
+              label="Instance name"
+              hint="Shown in the browser tab and on invite links."
+              htmlFor="instance-name"
+            >
+              <Input
+                id="instance-name"
+                className="w-70"
+                value={draft.instance_name}
+                maxLength={40}
+                aria-invalid={!nameOk}
+                onChange={(e) => setDraft({ ...draft, instance_name: e.target.value })}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Public URL"
+              hint="Used in invite links and in the snippets on Connect a source."
+              htmlFor="public-url"
+              under={urlOk ? undefined : 'an http(s) address like https://quiet.example.com'}
+            >
+              <Input
+                id="public-url"
+                className="w-70 font-mono"
+                placeholder={window.location.origin}
+                value={draft.public_url ?? ''}
+                aria-invalid={!urlOk}
+                onChange={(e) => setDraft({ ...draft, public_url: e.target.value })}
+              />
+            </SettingRow>
+            <SettingRow label="Timezone" hint="Used for timestamps, the histogram and time ranges.">
+              <Select value={draft.timezone} onValueChange={(v) => v && setDraft({ ...draft, timezone: v })}>
+                <SelectTrigger aria-label="Timezone" className="w-70" aria-invalid={!tzOk}>
+                  <SelectValue>{(v: string) => zoneLabel(v)}</SelectValue>
+                </SelectTrigger>
+                <SelectContent className="max-h-80">
+                  {zones.map((z) => (
+                    <SelectItem key={z} value={z}>
+                      {zoneLabel(z)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </SettingRow>
+            <SettingRow label="Timestamps" hint="Absolute is easier to match against other tools.">
+              <ToggleGroup
+                variant="outline"
+                size="sm"
+                spacing={0}
+                aria-label="Timestamps"
+                value={[draft.timestamps]}
+                onValueChange={(v) => v[0] && setDraft({ ...draft, timestamps: v[0] as TimestampFormat })}
+              >
+                {(['seconds', 'millis', 'relative'] as const).map((f) => (
+                  <ToggleGroupItem key={f} value={f} aria-label={f}>
+                    {fmtRowTime(sample, f)}
+                  </ToggleGroupItem>
                 ))}
-            </SelectContent>
-          </Select>
-        </SettingRow>
-        <SettingRow
-          label="Keep non-JSON lines"
-          hint="Plain text lines are kept as raw lines with level info. Off drops them at ingest."
-        >
-          <Switch
-            aria-label="Keep non-JSON lines"
-            checked={draft.keep_non_json}
-            onCheckedChange={(v) => setDraft({ ...draft, keep_non_json: Boolean(v) })}
-          />
-        </SettingRow>
-        <SettingRow
-          label="Include muted lines in search"
-          hint="Moved to Settings → Muted lines, with the global rules. Sources still override it."
-        >
-          <Link
-            to="/settings/muted-lines"
-            className="inline-flex items-center gap-1 text-brand text-sm hover:underline"
-          >
-            Muted lines <ArrowRightIcon className="size-3.5" />
-          </Link>
-        </SettingRow>
-        <SettingRow
-          label="Stream direction"
-          hint="Where the newest line sits, for everyone by default. Each browser can still flip it from the stream."
-        >
-          <ToggleGroup
-            variant="outline"
-            size="sm"
-            spacing={0}
-            aria-label="Stream direction"
-            value={[draft.stream_direction]}
-            onValueChange={(v) => v[0] && setDraft({ ...draft, stream_direction: v[0] as StreamDirection })}
-          >
-            <ToggleGroupItem value="bottom" aria-label="Newest at bottom">
-              Newest at bottom
-            </ToggleGroupItem>
-            <ToggleGroupItem value="top" aria-label="Newest at top">
-              Newest at top
-            </ToggleGroupItem>
-          </ToggleGroup>
-        </SettingRow>
-        <SourceGrouping saved={grouping} draft={groupDraft} onChange={setGroupDraft} disabled={!owner} />
+              </ToggleGroup>
+            </SettingRow>
+            <SettingRow label="Max line size" hint="Longer lines are cut and marked truncated in the card.">
+              <Select
+                value={String(draft.max_line_bytes)}
+                onValueChange={(v) => v && setDraft({ ...draft, max_line_bytes: Number(v) })}
+              >
+                <SelectTrigger aria-label="Max line size" className="w-30">
+                  <SelectValue>{(v: string) => fmtLineSize(Number(v))}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {[...new Set([...LINE_SIZES, draft.max_line_bytes])]
+                    .sort((a, b) => a - b)
+                    .map((b) => (
+                      <SelectItem key={b} value={String(b)}>
+                        {fmtLineSize(b)}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </SettingRow>
+            <SettingRow label="Keep non-JSON lines" hint="Plain text lines are kept as raw lines with level info.">
+              <Switch
+                aria-label="Keep non-JSON lines"
+                checked={draft.keep_non_json}
+                onCheckedChange={(v) => setDraft({ ...draft, keep_non_json: Boolean(v) })}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Include muted lines in search"
+              hint="Muted lines are hidden from the stream and from Search. Turn on to include them in every search. A source can override this; Show muted in Search includes them for one query."
+              under={`default ${mutedSearch.flag ? 'on' : 'off'}`}
+            >
+              <Switch
+                aria-label="Include muted lines in search"
+                checked={includeMuted}
+                onCheckedChange={(v) => setIncludeMuted(Boolean(v))}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Source grouping"
+              hint={
+                <span className="flex flex-col gap-1">
+                  <span>
+                    {grouping.locked ? 'Set by the server environment. ' : ''}Auto: Compose project → Swarm stack →
+                    Standalone. Full options on{' '}
+                    <Link to="/settings" hash="grouping" className="underline-offset-2 hover:underline">
+                      Source grouping
+                    </Link>
+                    .
+                  </span>
+                  <CustomGroupsRow off={groupDraft.mode === 'off'} />
+                </span>
+              }
+            >
+              <Select
+                value={groupDraft.mode}
+                disabled={!owner || grouping.locked}
+                onValueChange={(v) => {
+                  if (!v) return
+                  setGroupDraft({ ...groupDraft, mode: v as GroupMode })
+                  if (v === 'label') navigate({ to: '/settings', hash: 'grouping' })
+                }}
+              >
+                <SelectTrigger aria-label="Source grouping" className="w-30">
+                  <SelectValue>{(v: string) => GROUP_MODES.find((m) => m.value === v)?.label ?? v}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {GROUP_MODES.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Link to="/sources" className="flex items-center gap-1 pt-1 font-medium text-xs hover:underline">
+                Sources <ArrowRightIcon className="size-3.5" />
+              </Link>
+            </SettingRow>
+          </>
+        )}
       </fieldset>
-      <div className="mt-5 flex items-center gap-2 border border-dashed px-4 py-3 text-muted-foreground text-xs">
-        <InfoIcon className="size-3.5" />
-        <span className="flex-1">How long lines are kept (24h default, up to 7d) and the disk cap live in</span>
-        <Link to="/settings/storage" className="flex items-center gap-1 text-foreground hover:underline">
-          Storage <ArrowRightIcon className="size-3.5" />
-        </Link>
-      </div>
+      {!full && (
+        <div className="mt-5 flex items-center gap-2 border border-dashed px-4 py-3 text-muted-foreground text-xs">
+          <InfoIcon className="size-3.5" />
+          <span>How long lines are kept (24h default, 3d / 7d, 5 GB disk cap) lives in</span>
+          <Link to="/settings/storage" className="flex items-center gap-1 font-medium text-foreground hover:underline">
+            Storage <ArrowRightIcon className="size-3.5" />
+          </Link>
+        </div>
+      )}
       {owner && (
         <div className="mt-5 flex justify-end gap-2">
           <Button
@@ -244,13 +292,23 @@ function GeneralForm({
             onClick={() => {
               setDraft(saved)
               setGroupDraft(draftFrom(grouping))
+              setIncludeMuted(mutedSearch.include)
             }}
           >
             Discard
           </Button>
           <Button
             type="submit"
-            disabled={!dirty || !nameOk || !tzOk || !urlOk || !groupOk || save.isPending || saveGrouping.isPending}
+            disabled={
+              !dirty ||
+              !nameOk ||
+              !tzOk ||
+              !urlOk ||
+              !groupOk ||
+              save.isPending ||
+              saveGrouping.isPending ||
+              saveMuted.isPending
+            }
           >
             Save changes
           </Button>

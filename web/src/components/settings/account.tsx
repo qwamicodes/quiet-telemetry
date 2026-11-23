@@ -1,6 +1,7 @@
 import { MonitorIcon, SmartphoneIcon } from 'lucide-react'
 import { type FormEvent, type ReactNode, useState } from 'react'
 import { MIN_PASSWORD, PasswordInput, PasswordMeter } from '@/components/auth/password-input'
+import { PageHeader } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { SessionInfo } from '@/gen'
@@ -17,11 +18,24 @@ import { toast } from '@/lib/toast'
 
 const err = (e: unknown) => (e as Error).message
 
-function Card({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
+function Card({
+  title,
+  sub,
+  aside,
+  children,
+}: {
+  title: string
+  sub?: string
+  aside?: ReactNode
+  children: ReactNode
+}) {
   return (
-    <section className="flex flex-col gap-4 border p-5" aria-label={title}>
-      <header className="flex items-center justify-between">
-        <h3 className="font-medium text-sm">{title}</h3>
+    <section className="flex flex-col gap-4 border bg-card p-5" aria-label={title}>
+      <header className="flex items-center justify-between gap-4">
+        <span className="flex flex-col gap-1">
+          <h3 className="font-semibold text-sm">{title}</h3>
+          {sub && <span className="text-muted-foreground text-xs">{sub}</span>}
+        </span>
         {aside}
       </header>
       {children}
@@ -95,7 +109,13 @@ function Profile() {
       aside={<span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{user.role}</span>}
     >
       <form onSubmit={submit} className="flex flex-col gap-4" aria-label="Profile">
-        <div className="flex gap-4">
+        <div className="flex items-end gap-3">
+          <span
+            aria-hidden
+            className="flex size-14 shrink-0 items-center justify-center border bg-secondary font-semibold text-lg"
+          >
+            {(user.name || user.email).slice(0, 1).toUpperCase()}
+          </span>
           <Labeled id="acc-name" label="Name">
             <Input id="acc-name" value={name} onChange={(e) => setName(e.target.value)} required />
           </Labeled>
@@ -144,14 +164,12 @@ function ChangePasswordCard() {
     change.mutate(
       { current, password: next },
       {
-        onSuccess: (r) => {
+        onSuccess: () => {
           setCurrent('')
           setNext('')
           setConfirm('')
           toast.success('Password updated', {
-            description: r.signed_out
-              ? `${r.signed_out} other session${r.signed_out === 1 ? '' : 's'} signed out.`
-              : 'No other sessions were signed in.',
+            description: 'Other sessions stay signed in. Sign them out under Sessions.',
           })
         },
         onError: (e) => toast.error('Could not update the password', { description: err(e) }),
@@ -159,10 +177,10 @@ function ChangePasswordCard() {
     )
   }
   return (
-    <Card title="Change password">
-      <p className="-mt-2 text-muted-foreground text-xs">
-        You stay signed in here. Every other session is signed out, so a leaked password stops working everywhere.
-      </p>
+    <Card
+      title="Change password"
+      sub="Signing in again isn’t needed. Other sessions stay signed in unless you sign them out below."
+    >
       <form onSubmit={submit} className="flex flex-col gap-4" aria-label="Change password">
         <div className="flex gap-3">
           <Labeled id="pw-current" label="Current password">
@@ -221,16 +239,18 @@ function SessionRow({ s }: { s: SessionInfo }) {
       className="flex items-center gap-3 border-b py-2 last:border-b-0"
       aria-label={s.current ? 'This browser' : label}
     >
-      <span className="text-muted-foreground [&_svg]:size-4">{mobile ? <SmartphoneIcon /> : <MonitorIcon />}</span>
+      <span className="text-muted-foreground [&_svg]:size-3.5">{mobile ? <SmartphoneIcon /> : <MonitorIcon />}</span>
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="text-[13px]">{s.current ? 'This browser' : label}</span>
         <span className="truncate font-mono text-[11px] text-muted-foreground">
-          {[s.current ? label : null, s.ip, `since ${fmtDay(s.created)}`].filter(Boolean).join(' · ')}
+          {[s.current ? label : null, s.ip].filter(Boolean).join(' · ')}
         </span>
       </div>
-      <span className="font-mono text-[11px] text-muted-foreground">{s.current ? 'now' : fmtAgo(s.last_seen)}</span>
+      <span className="w-24 text-right font-mono text-[11px] text-muted-foreground">
+        {s.current ? 'now' : fmtAgo(s.last_seen)}
+      </span>
       {s.current ? (
-        <span className="border border-status-ok/50 px-1.5 py-0.5 font-mono text-[11px] text-status-ok">current</span>
+        <span className="bg-status-ok/15 px-1.5 py-0.5 font-mono text-[11px] text-status-ok">current</span>
       ) : (
         <Button
           variant="ghost"
@@ -288,10 +308,7 @@ export function Account() {
   const auth = useAuth().data
   return (
     <section className="flex max-w-190 flex-col gap-5" aria-label="Account">
-      <header className="flex flex-col gap-1">
-        <h2 className="font-semibold text-xl">Account</h2>
-        <p className="text-muted-foreground text-sm">Your profile and password on this quiet instance.</p>
-      </header>
+      <PageHeader title="Account" sub="Your profile and password on this quiet instance." />
       {auth?.auth === 'off' ? (
         <p className="border border-dashed p-4 text-muted-foreground text-sm">
           Sign-in is off on this server (<code className="font-mono">QUIET_AUTH=off</code>, local development only), so

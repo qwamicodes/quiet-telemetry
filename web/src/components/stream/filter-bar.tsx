@@ -120,7 +120,7 @@ export function FilterBar({
   onWrap: (w: boolean) => void
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-2 px-6 pt-4 pb-3">
+    <div className="flex shrink-0 items-center gap-2 px-5 pt-3">
       <div className="flex h-8 min-w-0 flex-1 items-center gap-1.5 border border-input px-2 focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/40">
         <FilterIcon className="size-3.5 shrink-0 text-muted-foreground" />
         {chips.map((c) => (
@@ -130,7 +130,7 @@ export function FilterBar({
           ref={inputRef}
           aria-label="Filter text"
           placeholder="Filter text, or click any value in a row"
-          className="h-full min-w-24 flex-1 bg-transparent font-mono text-xs outline-none placeholder:text-muted-foreground"
+          className="h-full min-w-24 flex-1 bg-transparent font-mono text-xs outline-none placeholder:font-sans placeholder:text-muted-foreground"
           value={text}
           onChange={(e) => onText(e.target.value)}
           onKeyDown={(e) => {
@@ -160,7 +160,7 @@ export function FilterBar({
         )}
       </div>
       {/* Multi-select: any combination of levels; all on = no level filter. */}
-      <fieldset aria-label="Levels" className="m-0 flex shrink-0 border-0 p-0">
+      <fieldset aria-label="Levels" className="m-0 flex h-8 shrink-0 items-center gap-1 border bg-card px-1">
         {LEVEL_FILTERS.map((l, i) => {
           const on = isOn(levels, l)
           return (
@@ -173,8 +173,7 @@ export function FilterBar({
                     aria-label={`${l} lines`}
                     onClick={() => onToggleLevel(l)}
                     className={cn(
-                      'flex h-8 items-center gap-1.5 border px-2.5 font-mono text-xs',
-                      i > 0 && '-ml-px',
+                      'flex h-6 items-center gap-1.5 px-2 font-mono text-xs',
                       on ? tone[l] : 'text-muted-foreground/70 hover:text-foreground',
                     )}
                   />

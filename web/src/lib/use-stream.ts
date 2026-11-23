@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Frame, LogLine } from '@/gen'
 import { setConnection } from '@/lib/connection'
-import { markSessionLost } from '@/lib/session'
+import { markSessionLost, useSessionLost } from '@/lib/session'
 
 export type ConnState = 'connecting' | 'live' | 'reconnecting'
 
@@ -102,6 +102,8 @@ export function useStream(o: StreamOptions) {
   const [attempt, setAttempt] = useState(0)
   const [retryAt, setRetryAt] = useState<number | null>(null)
   const retryRef = useRef<() => void>(() => {})
+  const resumeRef = useRef<() => void>(() => {})
+  const sessionLost = useSessionLost()
 
   const [everConnected, setEverConnected] = useState(false)
   const [closedAt, setClosedAt] = useState<number | null>(null)
@@ -119,6 +121,9 @@ export function useStream(o: StreamOptions) {
     let raf = 0
     let pending: Frame[] = []
     let lastClose: number | null = null
+    // 4401 closed the socket: hold the lines on screen and wait for sign-in
+    // instead of retrying into the same 401 (01.5).
+    let heldForAuth = false
 
     // Coalesce frames into one render per animation frame.
     const drain = () => {
@@ -157,11 +162,17 @@ export function useStream(o: StreamOptions) {
       }
       sock.onclose = (ev?: { code?: number }) => {
         // 4401: the session behind this stream ended (signed out elsewhere,
-        // removed). Show "session expired"; keep retrying so the stream
-        // resumes once the user signs in again.
+        // removed). Show "session expired" and hold: the lines stay on screen
+        // and the stream resumes once the user signs in again.
         if (ev?.code === 4401) markSessionLost()
         if (disposed || ws !== sock) return
         ws = null
+        if (ev?.code === 4401) {
+          heldForAuth = true
+          setRetryAt(null)
+          setConnection(null)
+          return
+        }
         tries++
         setAttempt(tries)
         setState('reconnecting')
@@ -179,10 +190,16 @@ export function useStream(o: StreamOptions) {
 
     /** Skip the wait: used by "Retry now", `online` and tab focus. */
     const retryNow = () => {
-      if (disposed || ws) return
+      if (disposed || ws || heldForAuth) return
       connect()
     }
     retryRef.current = retryNow
+    resumeRef.current = () => {
+      if (!heldForAuth) return
+      heldForAuth = false
+      tries = 0
+      retryNow()
+    }
     const onVisible = () => {
       if (document.visibilityState === 'visible') retryNow()
     }
@@ -197,10 +214,16 @@ export function useStream(o: StreamOptions) {
       window.removeEventListener('online', retryNow)
       document.removeEventListener('visibilitychange', onVisible)
       retryRef.current = () => {}
+      resumeRef.current = () => {}
       ws?.close()
       setConnection(null)
     }
   }, [source, level, levels, q, max, key])
+
+  // Signed in again from the session-expired dialog: pick the stream back up.
+  useEffect(() => {
+    if (!sessionLost) resumeRef.current()
+  }, [sessionLost])
 
   const retryNow = useCallback(() => retryRef.current(), [])
   // Derived during render, so the very render that changes the filters is

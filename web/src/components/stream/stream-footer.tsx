@@ -3,7 +3,7 @@ import { Kbd } from '@/components/ui/kbd'
 import type { LiveState } from './top-bar'
 
 /** State on the left (one sentence that changes with the stream), keys on the right. */
-export function StreamFooter({ state, text }: { state: LiveState | 'filtered' | 'quiet'; text: string }) {
+export function StreamFooter({ state, text }: { state: LiveState | 'filtered' | 'quiet' | 'errors'; text: string }) {
   const dot =
     state === 'live' || state === 'quiet'
       ? 'ok'
@@ -11,8 +11,8 @@ export function StreamFooter({ state, text }: { state: LiveState | 'filtered' | 
         ? 'warn'
         : 'idle'
   return (
-    <footer className="flex h-9 shrink-0 items-center gap-2 border-t px-3 font-mono text-[11px] text-muted-foreground">
-      <StatusDot status={state === 'filtered' ? 'ok' : dot} />
+    <footer className="flex h-8 shrink-0 items-center gap-2 border-t px-3 font-mono text-[11px] text-muted-foreground">
+      <StatusDot status={state === 'errors' ? 'err' : state === 'filtered' ? 'ok' : dot} />
       <span data-testid="stream-footer" className="truncate">
         {text}
       </span>

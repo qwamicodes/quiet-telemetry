@@ -1,6 +1,7 @@
 import { CheckIcon, PlusIcon } from 'lucide-react'
 import { useState } from 'react'
 import { CopyButton } from '@/components/copy-button'
+import { PageHeader } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -167,21 +168,19 @@ export function IngestTokens() {
   const [revoking, setRevoking] = useState<IngestToken | null>(null)
   return (
     <section className="flex max-w-190 flex-col gap-5" aria-label="Ingest tokens">
-      <header className="flex items-start justify-between gap-6">
-        <div className="flex flex-col gap-1">
-          <h2 className="font-semibold text-xl">Ingest tokens</h2>
-          <p className="text-muted-foreground text-sm">
-            Vector, Fluent Bit, OTLP over HTTP and NDJSON pushes authenticate with these. Docker needs none.
-          </p>
-        </div>
-        {owner ? (
-          <Button onClick={() => setCreating(true)}>
-            <PlusIcon /> Create token
-          </Button>
-        ) : (
-          <span className="border px-2 py-1 font-mono text-[11px] text-muted-foreground">owners manage tokens</span>
-        )}
-      </header>
+      <PageHeader
+        title="Ingest tokens"
+        sub="Vector, Fluent Bit, OTLP over HTTP and NDJSON pushes authenticate with these. Docker needs none."
+        aside={
+          owner ? (
+            <Button onClick={() => setCreating(true)}>
+              <PlusIcon /> Create token
+            </Button>
+          ) : (
+            <span className="border px-2 py-1 font-mono text-[11px] text-muted-foreground">owners manage tokens</span>
+          )
+        }
+      />
 
       {created && (
         <div className="flex flex-col gap-3 border border-status-ok/50 bg-status-ok/5 p-4" role="status">
@@ -199,7 +198,7 @@ export function IngestTokens() {
         </div>
       )}
 
-      <table className="w-full border text-left">
+      <table className="w-full border bg-card text-left">
         <thead className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
           <tr className="h-9 border-b">
             <th className="px-4 font-normal">Name</th>

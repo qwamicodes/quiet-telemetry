@@ -1,0 +1,78 @@
+# HTTP API
+
+The UI uses exactly this API. Request and response types are defined in Rust and exported to `web/src/gen/` (`make types`), which is the most precise reference for field names.
+
+Every `/api` route needs a session cookie except the public auth routes, and every non-GET request also needs the `X-Quiet-Csrf` header (see [Accounts](accounts.md)). Without a session: `401 { error, code: "session_required" | "session_expired" }`. `/health`, `/ready` and the ingest endpoints don't use sessions. Owner-only routes answer members with 403 `owner_only`; bad values get 400 `invalid`.
+
+## Health and sources
+
+- `GET /health` (liveness) · `GET /ready` (readiness, 503 while shutting down)
+- `GET /api/health`: version, `retention_ms`, `disk_bytes`, `stored_lines`, `oldest`, and `ingest: { auth, loopback, max_body, rate, tokens }`
+- `GET /api/about`: version, commit, build date, start time, store kind, SQLite version, database size, data dir, live clients, member count, Docker status (Settings → About)
+- `GET /api/sources`: every source, with `display_name`, `hidden`, `paused` and its group · `GET /api/sources/grouping-preview`: how sources would group under each mode
+- `GET /api/sources/:name/lines?limit=`: the newest lines of one source
+- `GET /api/sources/:name/fields?sample=2000`: fields detected, flow ids, malformed lines
+- `GET /api/sources/:name/activity` → `{ rejections, rejected_15m, paused_dropped }`
+- `GET /api/sources/:name/lint?sample=1000`: **Check my logs**, the newest records scored against the canonical completion event → `{ source, sampled, passed, applicable, checks: [{ id, title, status: pass|warn|fail|review|optional|na, share, detail, fix }] }`
+- `POST /api/sources/:name/remove {"confirm":"<name>","revoke_tokens":true}` (owner): pause + hide the source, delete its stored lines and revoke the ingest tokens bound to it; returns `{ lines, revoked, previous }` (Undo = restore each token within 60 s + `PUT` the previous settings)
+- `GET /api/id-coverage?keys=a,b&sample=2000`: how often each id key appears, across sources
+- `GET /api/system` → `{ ok, issues: [{kind, severity, title, detail}], docker, disk, ingest, store, now }` (the system banners)
+
+## Stream
+
+- `WS /api/stream?source=&backlog=&level=&q=` → frames `backlog`, `lines` (batched every 75 ms), `gap` (client fell behind). The upgrade must be same-origin; the stream re-checks its session every 30 s and closes with code 4401 once it ends.
+- `GET /api/stream/stats?source=&q=&window=`: level chips, volume histogram and totals, counted in the store.
+
+## Search and export
+
+- `GET /api/search?q=&source=a,b&level=&since=&until=&id=&order=newest|oldest&cursor=&limit=&buckets=` → `{ lines, next_cursor, total, bytes, histogram, searched, took_ms, since, until }`. Times are unix ms; missing bounds = the retention window ending now. `total`/`histogram` come with the first page when `buckets` is set. Query language: [Search](how-it-works.md#search).
+- `GET /api/export?<search params>&format=ndjson|json|csv&gzip=1&mask=pii&raw=1&columns=a,b&muted=include|hide|auto` streams a file (oldest first). `muted=hide` leaves out lines matching their source's muted-lines rules, `auto` does so per source as search does by default; without it every line is kept. With `Authorization: Bearer qx_…` it needs no session (the token is the credential). Members always get PII masked.
+- `POST /api/export/token {"query":"<export query string>"}` → `{ token, expires_at, path }`: a read-only `qx_` token for that one query, reusable for 15 minutes; only its SHA-256 is kept (in memory). Members only get one for a masked query (`mask=pii`), else 403 `mask_required`.
+- `POST /api/export/jobs {"query":"<export query string>"}` → `202 { id, state, done, total, … }`: the server prepares a very large export (the UI uses it over ~100k lines). Poll `GET /api/export/jobs/:id` (`preparing` → `ready` | `failed`; `done`/`total`/`eta_ms`), fetch `GET /api/export/jobs/:id/download` once ready, `DELETE` to cancel or discard. Session only, owner of the job only; members always masked; files kept an hour in `<data dir>/exports`. The retention window waits while a job prepares.
+
+## Flows
+
+- `GET /api/flow?id=<any id>` or `?line=<line id>` → `{ flow, since, until, took_ms }`: `flow` has the header numbers (`title`, `status`, `line_count`, `steps`, `sources`, `duration_ms`, `retries`, `stitched_by`, `truncated`), `nodes`, `edges`, the `lines` themselves, `missing_parent` (a request id the jobs carry whose own line isn't in the window) and `partial`. Unknown id → 404 `{ error, id, close: [{ key, value, msg, ts, source }] }` (ids with the same prefix). Ids go in the query string, so any id works.
+- `POST /api/flow-summaries {"ids":[…]}` (≤ 100) → `{ flows: [{ id, flow: <header numbers> | null }] }`; ids of one flow share its `key`.
+
+## Settings and storage
+
+- `GET /api/settings` → `{ general, storage, grouping, flow_ids, sources, muted_global, muted_search }` (any signed-in user)
+- Owner only:
+  - `PUT /api/settings/general {instance_name, stream_direction, timezone, public_url, timestamps, max_line_bytes, keep_non_json, check_updates, search_include_muted}`
+  - `PUT /api/settings/storage {retention_ms?: number|null, max_disk?: number|null}` (`null` = use the flag)
+  - `PUT /api/settings/grouping {mode, label} | null` (`null` = auto; 400 when `QUIET_GROUP_BY` / `QUIET_GROUP_LABEL` lock it)
+  - `PUT /api/settings/flow-ids {order, match_by}`
+  - `PUT /api/settings/sources/:name {display_name, hidden, paused, retention_ms, id_keys, default_level, mask_fields, unmasked, redact_fields, redact_pii, muted, search_include_muted, muted_global_off}` · `DELETE /api/settings/sources/:name` (back to instance defaults)
+- `GET /api/storage` → `{ settings, store, path, used, ratio, lines, oldest, fs_free, hours: [{start, lines, bytes}], sources: [{source, lines, bytes, disk, share}], bytes_per_hour, steady_bytes, cap_in_ms, now }`
+- `POST /api/storage/purge {source?, confirm}` (owner; `confirm` = `purge`, or the source name) → `{ lines, source }`
+
+## Source groups
+
+- `GET /api/source-groups` · `POST /api/source-groups` (owner) · `PATCH|DELETE /api/source-groups/:id` (owner) · `PUT /api/source-groups/assign` (owner; move sources into a group, or back to automatic)
+
+## Muted lines
+
+- `POST /api/mute/rules` (owner) → the added rule · `PATCH /api/mute/rules/:id` (owner) · `DELETE /api/mute/rules/:id` (owner) → the deleted rule, for Undo
+- `PUT /api/mute/sources/:name/global/:id {apply}` (owner): "Don't apply here" for a global rule on one source
+- `PUT /api/mute/search {include: bool | null}` (owner): whether search includes muted lines
+- `GET /api/mute/stats`: 24h hits per rule and source (a bounded scan, marked `estimated` when scaled up; cached for a minute)
+- `POST /api/mute/preview`: what a draft rule would hide
+
+Matching happens in the browser for the stream and search; these counts come from the stored window.
+
+## Ingest tokens
+
+- `GET /api/ingest-tokens` → `{ tokens: [{ id, name, preview: "qi_••••1a77", source | null, created, last_used, revoked }] }` (anyone signed in; previews only)
+- `POST /api/ingest-tokens {"name","source"?}` → `201 { token, secret }` (owner; the secret only here)
+- `DELETE /api/ingest-tokens/:id` → the revoked token (owner) · `POST /api/ingest-tokens/:id/restore` → the token, working again (Undo within 60 s, else 409)
+
+## Accounts
+
+- Public (no session): `GET /api/auth/state` → `{ auth: "on"|"off", setup_required, user, csrf, version, host, instance_name }` · `POST /api/auth/setup {name,email,password}` (first run only, else 409) · `POST /api/auth/login {email,password,remember?}` (401 / 429 + `Retry-After`) · `POST /api/auth/invite {token}` → the invite, or 410 `{ code: expired|used|revoked, invite }` · `POST /api/auth/invite/accept {token,name,email?,password}` · `POST /api/auth/reset {token}` → `{ email, name, expires }` · `POST /api/auth/reset/accept {token,password}` → 204 (signs out everywhere). Sign-in routes answer `{ user, csrf }` and set the cookie.
+- Session: `POST /api/auth/logout` · `GET`/`PATCH /api/account {name,email,password?}` (changing the email needs the password) · `POST /api/account/password {current,password}` → `{ user }` (other sessions stay signed in) · `GET /api/account/sessions` · `DELETE /api/account/sessions/:id` · `POST /api/account/sessions/sign-out-others` · `GET /api/members` → `{ members, invites }` (invites for owners only).
+- Owner: `POST /api/invites {email?,role}` → `201 { invite, token, path }` · `DELETE /api/invites/:id` · `PATCH /api/members/:id {role}` · `DELETE /api/members/:id` · `POST /api/members/:id/reset-link` → `{ token, path, expires }`. Removing or demoting the last owner: 409 `last_owner`.
+
+## Ingest
+
+Each needs `Authorization: Bearer qi_…` (see [Ingest](ingest.md)): `POST /ingest/ndjson`, `POST /ingest/vector`, `POST /ingest/fluentbit` (or `/ingest/fluent-bit`), `POST /v1/logs`, `POST /v1/traces`.

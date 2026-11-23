@@ -75,3 +75,13 @@ describe('groupByFlow with flow summaries', () => {
     expect(displayIds(lines)).toEqual(['payout:1', 'req_2', 'req_1'])
   })
 })
+
+describe('fieldFilters', () => {
+  it('keeps field filters a result row can show it matched', async () => {
+    const { fieldFilters } = await import('@/lib/query')
+    expect(fieldFilters('dealer_id:88 level:warn -path:/health source:api "error.code":X timeout')).toEqual([
+      ['dealer_id', '88'],
+    ])
+    expect(fieldFilters('error.reason:upstream_timeout id:req_1')).toEqual([['error.reason', 'upstream_timeout']])
+  })
+})
