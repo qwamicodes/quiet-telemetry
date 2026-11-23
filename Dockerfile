@@ -11,7 +11,8 @@ COPY web/ ./
 RUN bun --bun run build
 
 FROM rust:1-alpine AS server
-RUN apk add --no-cache musl-dev
+# ca-certificates: the CA bundle the scratch image ships for TLS to R2 / S3.
+RUN apk add --no-cache musl-dev ca-certificates
 WORKDIR /src/server
 # Dependencies first so they cache across source changes. The stand-in
 # main uses none of them, so cargo's unused-dependency lint is switched off
@@ -31,7 +32,9 @@ RUN touch src/main.rs src/web.rs && cargo build --release && strip target/releas
 
 FROM scratch
 COPY --from=server /src/server/target/release/quiet /quiet
-ENV QUIET_ADDR=0.0.0.0:7070 QUIET_DATA_DIR=/data
+# Retained history talks to R2 / S3 over TLS; rustls reads these roots.
+COPY --from=server /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ENV QUIET_ADDR=0.0.0.0:7070 QUIET_DATA_DIR=/data SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 # The searchable window (SQLite). Mount a volume here or it is lost with the container.
 VOLUME ["/data"]
 EXPOSE 7070
