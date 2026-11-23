@@ -109,6 +109,8 @@ export const customGroup = z.object({
 export const sourceInfo = z.object({
   name: z.string(),
   kind: z.enum(['docker', 'http', 'vector', 'fluentbit', 'otlp']),
+  // v0.1.0 while an old-format record arrived in the last 24 h (00.3); older servers omit it.
+  format: z.enum(['v0.1.0', 'v0.1.1']).optional().catch(undefined),
   containers: z.array(z.string()),
   group: z.string().nullable(),
   group_kind: groupKind.nullable().catch(null),
