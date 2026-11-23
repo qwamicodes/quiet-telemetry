@@ -61,7 +61,7 @@ Open http://127.0.0.1:5173 (Vite proxies `/api`, `/ingest` and `/v1` to the serv
 - Working on something unrelated to accounts? `QUIET_AUTH=off make dev` skips sign-in entirely (loopback only; see [Accounts](reference/accounts.md)).
 - Edit `web/src/**` and the page updates; edit `server/src/**` and the server restarts (with cargo-watch) or re-run `make dev`.
 - The server also reads your local Docker socket here, so your running containers show up too. Turn that off with `QUIET_DOCKER=off make dev`.
-- Working on retained history? `make dev-history` is `make dev` with sign-in off plus Garage: only Garage runs in Docker (ports on `127.0.0.1:3900` / `:3903`), quiet sets it up and connects it as `garage-local` on first start, and nothing is built into an image, so web and server edits reload as usual. Data stays in `server/data` and the `garage-data` volume; `make down` stops Garage. It needs ports 7070 and 5173 free, so stop the compose stack (`make down`) first if it is running.
+- Working on retained history? `make dev-history` is `make dev` with sign-in off plus Garage: only Garage runs in Docker (ports on `127.0.0.1:3900` / `:3903`), quiet sets it up and connects it as `garage-local` on first start, and nothing is built into an image, so web and server edits reload as usual. The UI is on http://127.0.0.1:7070 (Vite) and the server moves to :7071 behind it; `make sample` still posts to :7070. Data stays in `server/data` and the `garage-data` volume; `make down` stops Garage. It needs ports 7070 and 7071 free, so stop the compose stack (`make down`) first if it is running.
 - The server on :7070 serves the UI embedded at build time. After a web change, `cd web && bun run build` (or use :5173).
 
 ## 4. Before you push

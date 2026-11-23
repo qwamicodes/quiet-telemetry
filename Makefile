@@ -36,13 +36,16 @@ up-history:
 
 ## dev-history: `make dev` plus Garage for retained history, sign-in off. Nothing
 ## is built into an image: only Garage runs in Docker; the server (cargo watch)
-## and the UI (Vite, :5173) run on this machine and reload as you edit. Data
+## and the UI (Vite on :7070, server on :7071) run on this machine and reload as you edit. Data
 ## stays in server/data and the garage-data volume. `make down` stops Garage.
 GARAGE_ADMIN_TOKEN_LOCAL := $(or $(QUIET_GARAGE_ADMIN_TOKEN),quiet-local-garage-admin)
 dev-history:
 	$(COMPOSE_HISTORY) up -d garage
-	@echo "quiet: http://127.0.0.1:5173 (sign-in off) · retained history in Garage (Settings → Storage)"
+	@echo "quiet: http://127.0.0.1:7070 (Vite, sign-in off; server on :7071) · retained history in Garage (Settings → Storage)"
 	@QUIET_AUTH=off \
+	QUIET_ADDR=127.0.0.1:7071 \
+	QUIET_SERVER=http://127.0.0.1:7071 \
+	QUIET_WEB_PORT=7070 \
 	QUIET_GARAGE_ENDPOINT=http://127.0.0.1:3900 \
 	QUIET_GARAGE_ADMIN_ENDPOINT=http://127.0.0.1:3903 \
 	QUIET_GARAGE_ADMIN_TOKEN=$(GARAGE_ADMIN_TOKEN_LOCAL) \
