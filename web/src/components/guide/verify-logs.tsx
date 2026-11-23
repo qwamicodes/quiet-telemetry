@@ -190,6 +190,47 @@ function FixWithAgent({ r, onFullPrompt }: { r: LintReport; onFullPrompt: () => 
   )
 }
 
+/**
+ * Failing fields · excerpt (11.6): a few records each failing check saw,
+ * failures first. Excerpts are the stored record, redacted again by the
+ * server, so a credential never shows here.
+ */
+function FailingFields({ r }: { r: LintReport }) {
+  const order: Record<LintCheck['status'], number> = { fail: 0, warn: 1, review: 2, optional: 3, pass: 4, na: 5 }
+  const rows = r.checks
+    .filter((c) => c.failing.length > 0)
+    .sort((a, b) => order[a.status] - order[b.status])
+    .slice(0, 4)
+  if (!rows.length) return null
+  return (
+    <Panel title="Failing fields" aside="excerpt · sanitized">
+      <ul className="flex flex-col">
+        {rows.map((c) => {
+          const f = c.failing[0]
+          return (
+            <li key={c.id} className="flex flex-col gap-1.5 border-b px-3.5 py-3 last:border-b-0">
+              <span className="flex items-baseline justify-between gap-2 text-[13px]">
+                <span className="truncate">{CHECK_TITLE[c.id] ?? c.title}</span>
+                <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                  {c.failing.length > 1 ? `${c.failing.length} shown` : `line ${f.line_id}`}
+                </span>
+              </span>
+              <span
+                className={cn('font-mono text-[11px]', c.status === 'fail' ? 'text-level-error' : 'text-level-warn')}
+              >
+                {f.note}
+              </span>
+              <pre className="max-h-24 overflow-hidden whitespace-pre-wrap break-all border bg-background px-2 py-1.5 font-mono text-[11px] text-muted-foreground leading-[16px]">
+                {f.excerpt}
+              </pre>
+            </li>
+          )
+        })}
+      </ul>
+    </Panel>
+  )
+}
+
 /** Verify your logs (v0.1.1-11.6, the Check my logs tab). */
 export function VerifyLogs({ source, onFullPrompt }: { source?: string; onFullPrompt: () => void }) {
   const { loaded, visible, current } = useCheckSource(source)
@@ -273,6 +314,7 @@ export function VerifyLogs({ source, onFullPrompt }: { source?: string; onFullPr
         </section>
         <aside className="flex flex-col gap-4">
           <FixWithAgent r={r} onFullPrompt={onFullPrompt} />
+          <FailingFields r={r} />
         </aside>
       </div>
       <section aria-label="Verify beyond this sample" className="border bg-card">

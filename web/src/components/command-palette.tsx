@@ -129,6 +129,7 @@ export function CommandPalette({
         <span className="font-mono text-muted-foreground text-xs">
           {kindLabel(s.kind).toLowerCase()} ·{' '}
           {s.paused ? 'paused' : live && rate ? `${rate < 10 ? Number(rate.toFixed(1)) : Math.round(rate)}/s` : 'idle'}
+          {s.id_key && ` · ${s.id_key}`}
         </span>
         <Enter />
       </CommandItem>

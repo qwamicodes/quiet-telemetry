@@ -41,7 +41,7 @@ const health: Health = {
   ok: true,
   version: '0.1.0',
   started: 0,
-  docker: { state: 'connected', containers: 3 },
+  docker: { state: 'connected', containers: 3, endpoint: '/var/run/docker.sock', engine: null },
   store: 'sqlite',
   retention_ms: 24 * H,
   disk_bytes: 0,
@@ -141,7 +141,7 @@ function fresh() {
   system = {
     ok: true,
     issues: [],
-    docker: { state: 'connected', containers: 3 },
+    docker: { state: 'connected', containers: 3, endpoint: '/var/run/docker.sock', engine: null },
     disk: {
       state: 'ok',
       used: 1.9e9,
@@ -159,7 +159,7 @@ function fresh() {
     store: { kind: 'sqlite', write_errors: 0, last_error: null, last_error_at: null, disk_full: false },
     now: NOW,
   }
-  activity = { source: 'legivent-api', rejections: [], rejected_15m: 0, paused_dropped: 0 }
+  activity = { source: 'legivent-api', rejections: [], rejected_15m: 0, paused_dropped: 0, dropped: [], dropped_24h: 0 }
   calls = []
   muteStats = { since: NOW - 24 * H, until: NOW, sources: {}, rules: {} }
 }
@@ -367,7 +367,7 @@ const aboutInfo: About = {
   data_dir: '/var/lib/quiet',
   live_clients: 3,
   members: 2,
-  docker: { state: 'connected', containers: 6 },
+  docker: { state: 'connected', containers: 6, endpoint: '/var/run/docker.sock', engine: '27.3.1' },
 }
 
 function renderAt(path: string, user: User = owner) {
@@ -656,7 +656,7 @@ describe('Settings → About (07.6)', () => {
     expect(screen.getByText('sqlite 3.46.0 · wal')).toBeInTheDocument()
     expect(screen.getByText('websocket · 2 members')).toBeInTheDocument()
     expect(screen.getByText('/var/lib/quiet')).toBeInTheDocument()
-    expect(screen.getByText('docker.sock · 6 containers')).toBeInTheDocument()
+    expect(screen.getByText('/var/run/docker.sock · engine 27.3')).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Check for updates daily' })).not.toBeChecked()
     await new Promise((r) => setTimeout(r, 50))
     expect(githubCalls).toBe(0)

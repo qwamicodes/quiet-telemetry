@@ -34,6 +34,7 @@ import {
   maskToken,
   snippets,
 } from '@/lib/connect'
+import { dockerEndpoint, dockerEngine } from '@/lib/docker'
 import { fmtElapsed, fmtTime, publicOrigin } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { useCreateToken } from '@/lib/tokens-api'
@@ -213,7 +214,10 @@ function Wait({
       </div>
       {kind === 'docker' && d?.state === 'connected' && (
         <>
-          <CheckRow at={seen}>/var/run/docker.sock readable</CheckRow>
+          <CheckRow at={seen}>
+            {/* 02.3: "/var/run/docker.sock readable · engine 27.3" */}
+            {dockerEndpoint(d)} readable{dockerEngine(d) && ` · ${dockerEngine(d)}`}
+          </CheckRow>
           <CheckRow at={seen}>
             {d.containers} {d.containers === 1 ? 'container' : 'containers'} found on this host
           </CheckRow>

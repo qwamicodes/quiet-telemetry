@@ -72,8 +72,20 @@ export const logLine = z.object({
 export const dockerStatus = z.discriminatedUnion('state', [
   z.object({ state: z.literal('disabled') }),
   z.object({ state: z.literal('connecting') }),
-  z.object({ state: z.literal('connected'), containers: z.number() }),
-  z.object({ state: z.literal('unavailable'), error: z.string() }),
+  z.object({
+    state: z.literal('connected'),
+    containers: z.number(),
+    // Older servers send neither.
+    endpoint: z.string().default(''),
+    engine: z.string().nullable().default(null),
+  }),
+  z.object({
+    state: z.literal('unavailable'),
+    error: z.string(),
+    /** Next reconnect attempt, unix ms (03.7 countdown). */
+    retry_at: z.number().nullable().default(null),
+    attempt: z.number().default(0),
+  }),
 ]) satisfies z.ZodType<DockerStatus>
 
 export const ingestInfo = z.object({
@@ -117,6 +129,8 @@ export const sourceInfo = z.object({
   auto_group_kind: groupKind.optional().catch(undefined),
   lines: z.number(),
   last_ts: z.number().nullable(),
+  /** The id key its newest rows show (⌘K source rows, 03.9). */
+  id_key: z.string().optional(),
   display_name: z.string().nullable(),
   hidden: z.boolean(),
   paused: z.boolean(),

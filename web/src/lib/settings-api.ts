@@ -247,6 +247,20 @@ export const sourceActivity = z.object({
   rejections: z.array(rejection),
   rejected_15m: z.number(),
   paused_dropped: z.number(),
+  // 06.6 Dropped records; older servers send none.
+  dropped: z
+    .array(
+      z.object({
+        minute: z.number(),
+        source: z.string(),
+        reason: z.enum(['text_policy', 'parse_limit', 'size_limit', 'duplicate_key']),
+        stored: z.boolean(),
+        count: z.number(),
+        bytes: z.number(),
+      }),
+    )
+    .default([]),
+  dropped_24h: z.number().default(0),
 }) satisfies z.ZodType<SourceActivity>
 
 const purged = z.object({ lines: z.number(), source: z.string().nullable() }) satisfies z.ZodType<Purged>

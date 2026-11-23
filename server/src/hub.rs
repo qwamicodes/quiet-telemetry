@@ -99,6 +99,12 @@ pub struct SourceMeta {
     pub auto_group_kind: Option<GroupKind>,
     pub lines: u64,
     pub last_ts: Option<i64>,
+    /// The id key its newest line with an id showed on the row
+    /// (`request_id`, `job_id`); ⌘K source rows show it (03.9, 08.1).
+    /// Since the server started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub id_key: Option<String>,
 }
 
 pub struct Source {
@@ -231,6 +237,12 @@ impl Hub {
             }
             m.lines += 1;
             m.last_ts = Some(m.last_ts.map_or(line.ts, |t| t.max(line.ts)));
+            if let Some(id) = &line.display_id {
+                let key = id.key.as_str();
+                if m.id_key.as_deref() != Some(key) {
+                    m.id_key = Some(key.to_string());
+                }
+            }
         });
         let _ = source.tx.send(line.clone());
     }
@@ -272,6 +284,25 @@ pub fn label_sources(sources: &mut [SourceInfo]) {
 mod tests {
     use super::*;
     use crate::normalize::normalize;
+
+    #[test]
+    fn a_source_remembers_the_id_key_its_rows_show() {
+        let hub = Hub::new();
+        let send = |raw: &str| {
+            hub.broadcast(
+                &Arc::new(normalize(raw, "worker", None, 1)),
+                SourceKind::Http,
+            )
+        };
+        send(r#"{"msg":"boot"}"#);
+        assert_eq!(hub.source("worker").unwrap().meta().id_key, None);
+        send(r#"{"job_id":"payout-88-1300","queue":"payouts"}"#);
+        send("plain text keeps the key");
+        assert_eq!(
+            hub.source("worker").unwrap().meta().id_key.as_deref(),
+            Some("job_id")
+        );
+    }
 
     #[test]
     fn labels_are_disambiguated_only_when_they_collide() {

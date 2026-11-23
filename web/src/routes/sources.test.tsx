@@ -36,7 +36,7 @@ const health: Health = {
   ok: true,
   version: '0.1.0',
   started: 0,
-  docker: { state: 'connected', containers: 2 },
+  docker: { state: 'connected', containers: 2, endpoint: '/var/run/docker.sock', engine: null },
   store: 'sqlite',
   retention_ms: 24 * H,
   disk_bytes: 0,
@@ -101,6 +101,7 @@ const stats = (name: string): StreamStats => ({
 const fields = (name: string): SourceFields => ({
   sampled: 1000,
   json: 1000,
+  level_scheme: 'pino',
   fields: [
     { key: 'request_id', kind: 'str', coverage: 1, sample: 'req_8f2a8c' },
     { key: 'status', kind: 'num', coverage: 0.98, sample: '201' },
@@ -118,7 +119,17 @@ const fields = (name: string): SourceFields => ({
     { id: 42, ts: NOW - 120_000, reason: 'truncated', raw: '{"level":30,"msg":"provider payload"' },
   ],
 })
-const activity: SourceActivity = { source: 'legivent-api', rejections: [], rejected_15m: 3, paused_dropped: 0 }
+const activity: SourceActivity = {
+  source: 'legivent-api',
+  rejections: [],
+  rejected_15m: 3,
+  paused_dropped: 0,
+  dropped: [
+    { minute: NOW - 60_000, source: 'legivent-api', reason: 'size_limit', stored: true, count: 2, bytes: 140_000 },
+    { minute: NOW - 120_000, source: 'legivent-api', reason: 'text_policy', stored: false, count: 9, bytes: 900 },
+  ],
+  dropped_24h: 11,
+}
 let calls: { url: string; method: string; body: unknown }[] = []
 const ingestTokens = [
   {
@@ -456,14 +467,20 @@ describe('source detail (06.2 / 06.4 / 06.5)', () => {
     )
   })
 
-  it('the rejected tab shows the stats and the newest malformed lines; the malformed tab lists them', async () => {
+  it('the rejected tab shows dropped records by reason (06.6); malformed lines have their own tab', async () => {
     const user = userEvent.setup()
     renderAt('/sources/legivent-api?tab=rejected')
     expect(await screen.findByText('Rejected 15 min', {}, { timeout: 5000 })).toBeInTheDocument()
-    expect(await screen.findByText('Error: paystack transfer timed out after 2000ms')).toBeInTheDocument()
-    expect(screen.getByText('not JSON')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /View all 6/ }))
+    expect(screen.getByText('Dropped 24h')).toBeInTheDocument()
+    expect(screen.getByText('11')).toBeInTheDocument()
+    expect(screen.getByText('payloads not stored')).toBeInTheDocument()
+    expect(screen.getByText('size limit')).toBeInTheDocument()
+    expect(screen.getByText('cut')).toBeInTheDocument()
+    expect(screen.getByText('text policy')).toBeInTheDocument()
+    expect(screen.getByText('not stored')).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: /6 malformed lines .* Malformed tab/ }))
     expect(await screen.findByRole('tab', { name: 'Malformed 6', selected: true })).toBeInTheDocument()
+    expect(await screen.findByText('Error: paystack transfer timed out after 2000ms')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /paystack transfer/ })).toHaveAttribute('href', '/line/41')
   })
 })

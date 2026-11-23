@@ -12,6 +12,10 @@ export const lintCheck = z.object({
   share: z.number().nullable(),
   detail: z.string(),
   fix: z.string(),
+  // 11.6 Failing fields · excerpt; older servers send none.
+  failing: z
+    .array(z.object({ line_id: z.number(), ts: z.number(), note: z.string(), excerpt: z.string() }))
+    .default([]),
 }) satisfies z.ZodType<LintCheck>
 
 export const lintReport = z.object({

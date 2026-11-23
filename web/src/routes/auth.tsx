@@ -21,6 +21,7 @@ import { Switch } from '@/components/ui/switch'
 import type { InviteProblem, SetupHost } from '@/gen'
 import { ApiError } from '@/lib/api'
 import { inviteQuery, resetQuery, useAcceptInvite, useAuth, useCompleteReset, useLogin, useSetup } from '@/lib/auth-api'
+import { dockerEndpoint, dockerEngine } from '@/lib/docker'
 import { fmtBytes, fmtDay, fmtWindow } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
@@ -81,7 +82,11 @@ function ThisHost({ host, checkedAt }: { host: SetupHost; checkedAt: number }) {
   const d = host.docker
   const docker =
     d.state === 'connected'
-      ? { ok: true, title: 'Docker socket readable', detail: `/var/run/docker.sock · ${d.containers} containers` }
+      ? {
+          ok: true,
+          title: 'Docker socket readable',
+          detail: [dockerEndpoint(d), dockerEngine(d), `${d.containers} containers`].filter(Boolean).join(' · '),
+        }
       : d.state === 'disabled'
         ? { ok: null, title: 'Docker receiver off', detail: 'QUIET_DOCKER=off · HTTP ingest only' }
         : d.state === 'connecting'
