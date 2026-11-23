@@ -1867,6 +1867,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_destinations_are_owner_only_and_never_return_secrets() {
+        let mem = Arc::new(object_store::memory::InMemory::new());
+        let history = crate::history::History::memory().with_connector(Arc::new(move |_, _| {
+            Ok(mem.clone() as crate::history::remote::Remote)
+        }));
+        let t = T::with(
+            AppState::new(
+                Pipeline::new(Arc::new(MemoryStore::new(100)), Hub::new()),
+                Arc::new(Mutex::new(DockerStatus::Disabled)),
+            )
+            .with_history(Arc::new(history)),
+        )
+        .await;
+        let owner = t.setup_owner().await;
+        let (member, _) = t.add_member(&owner, "ama@x.co").await;
+        let body = json!({
+            "name": "garage-local", "kind": "garage", "endpoint": "http://garage:3900",
+            "bucket": "quiet-history", "access_key_id": "GK0123456789abcdef",
+            "secret_access_key": "very-secret-value", "activate": true
+        });
+        let r = t
+            .post("/api/storage/destinations", body.clone(), &member)
+            .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN);
+        assert_eq!(r.body["code"], "owner_only");
+        let mut no_csrf = owner.clone();
+        no_csrf.csrf = None;
+        let r = t
+            .post("/api/storage/destinations", body.clone(), &no_csrf)
+            .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text);
+        let r = t.post("/api/storage/destinations", body, &owner).await;
+        assert_eq!(r.status, StatusCode::CREATED, "{}", r.text);
+        assert_eq!(r.body["verify"]["ok"], true);
+        assert_eq!(r.body["destination"]["active"], true);
+        assert!(!r.text.contains("very-secret-value"));
+        let id = r.body["destination"]["id"].as_i64().unwrap();
+        // Members read; nobody gets the secret back.
+        for who in [&owner, &member] {
+            let r = t.get("/api/storage/destinations", who).await;
+            assert_eq!(r.status, StatusCode::OK);
+            assert_eq!(
+                r.body["destinations"][0]["access_key_preview"],
+                "GK01••••cdef"
+            );
+            assert!(!r.text.contains("very-secret-value"));
+            let r = t.get("/api/storage/history", who).await;
+            assert_eq!(r.body["enabled"], true);
+        }
+        let r = t
+            .post(
+                &format!("/api/storage/destinations/{id}/verify"),
+                json!({}),
+                &member,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN);
+        let r = t
+            .post(
+                &format!("/api/storage/destinations/{id}/activate"),
+                json!({"copy_history": true}),
+                &owner,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(r.body["code"], "not_yet");
+        let r = t
+            .call(
+                Method::DELETE,
+                &format!("/api/storage/destinations/{id}"),
+                None,
+                &owner,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::CONFLICT);
+        assert_eq!(r.body["code"], "active");
+    }
+
+    #[tokio::test]
     async fn settings_writes_are_owner_only_and_need_csrf() {
         let t = T::new().await;
         let owner = t.setup_owner().await;

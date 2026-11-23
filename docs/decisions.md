@@ -4,6 +4,19 @@ Technical choices made while building quiet, newest slice first. Each one
 stands unless Kwaame pushes back. The product-level log lives with the
 project notes; this file records what the code does and why.
 
+## Retained history, 5a · store and connectors (2026-11-23)
+
+Design agreed in `docs/v0.1.1-storage-design.md`: local SQLite stays the default and works alone; retained history is optional, in Garage next to quiet or a bucket the owner brings.
+
+- **Segments are SQLite files with the store's own tables.** `build_segment` opens a new file, ATTACHes `quiet.db` read-only (URI `mode=ro`) and copies one hour (`l_`, `i_`; the contentless FTS rebuilt from the copied lines) plus a `segment` metadata table, then VACUUMs. It runs on its own connections in `spawn_blocking`, never on the writer thread. History will be read with the same SQL as local hours.
+- **`object_store` (0.14) without `aws-lc-rs`.** Features `aws-base` + `reqwest` + `ring`, with our own `reqwest` (`rustls-no-provider`) and `rustls` (`ring`). The default `aws` feature pulls `aws-lc-rs` (C + cmake), a risk for the musl / scratch image. The ring provider is installed once (`remote::init_tls`) before any client is built. Roots come from the system store: the image now ships `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE`).
+- **Secrets: `chacha20poly1305`.** RustCrypto's pure-Rust AEAD (audited, maintained, no C, small: `chacha20` + `poly1305`). One 32-byte key in `<data dir>/secret.key`, created 0600; values stored as `nonce ‖ ciphertext`; nonces from `rand`. Losing the key file means re-entering secrets, never exposing them.
+- **Instance id in an `instance` table** (`k`, `v` text) rather than the store's `meta` table (integers only, and absent with `--store memory`).
+- **Archive in the retention job, not a separate worker.** Oldest first, one hour at a time; HEAD checks the uploaded size; the hour is dropped only after the catalog row is written. A failure stops the pass and holds the rest (`Retention::hold_hours`: the instance window waits, per-source windows and the cap still run). Backoff 30 s doubling to 15 min, shown in a `history_unavailable` system issue.
+- **Gaps are computed, not guessed.** The job lists stored hours before and after the sweep; an hour that disappeared without a catalog row is a gap, with its reason from what the pass knew (waiting → `destination_unavailable`, expiring with nothing active → `no_destination`, else `disk_cap`). Nothing is recorded before history was first turned on.
+- **Garage bootstrap through the v1 admin API** (`/v1/status`, `/v1/layout`, `/v1/layout/apply`, `/v1/bucket`, `/v1/key`, `/v1/bucket/allow`), pinned to `dxflrs/garage:v1.1.0`, in an overlay compose file so the default stack is unchanged. Checked against a real Garage 1.1: layout, bucket, key, Verify, then two hours archived when the window was shortened.
+- **Not in 5a:** history retention, capacity, copy history, deleting a destination's data (both answer 501 `not_yet`), multipart uploads for very large hours, `quiet storage reindex`, and searching history (5c). The Settings screens follow the design doc and still need comparing with the Paper boards "v1.1 storage & retention".
+
 ## Docker source identity, d-docker-identity (2026-10-23)
 
 Replaces d-sources (swarm service → compose service → container name). On Parnion that key merged 46 running containers into 23 sources: every `postgres` (5 projects), `redis` (4), `web` (4), `backend`/`frontend` (4 each), and RCH prod + staging `api`, `auth`, `dashboard`, `payment-worker`, `minio`, `garage`. A merged source took its group from the first container, so the rest looked missing. Legivent's staging/prod Postgres and Redis merged the same way.

@@ -68,6 +68,8 @@ enum Msg {
     ExpireSource(String, i64, oneshot::Sender<anyhow::Result<u64>>),
     /// Every hour, newest included.
     PurgeAll(oneshot::Sender<anyhow::Result<u64>>),
+    /// One hour, whole (retained history archived it).
+    DropHour(i64, oneshot::Sender<anyhow::Result<u64>>),
 }
 
 pub struct SqliteStore {
@@ -324,6 +326,35 @@ impl Store for SqliteStore {
         self.ask(|tx| Msg::Expire(cutoff, tx)).await?
     }
 
+    async fn hours(&self) -> anyhow::Result<Vec<i64>> {
+        self.read(|c| {
+            let mut st = c.prepare("SELECT hour FROM partitions ORDER BY hour")?;
+            let v = st
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<Vec<i64>, _>>()?;
+            Ok(v)
+        })
+        .await
+    }
+
+    async fn drop_hour(&self, hour: i64) -> anyhow::Result<u64> {
+        // Archiving goes oldest first, so nothing older than this hour is left.
+        self.ring.expire((hour + 1) * HOUR).await?;
+        self.ask(|tx| Msg::DropHour(hour, tx)).await?
+    }
+
+    async fn build_segment(
+        &self,
+        hour: i64,
+        exclude: &[String],
+        out: &std::path::Path,
+    ) -> anyhow::Result<super::SegmentStats> {
+        let src = self.readers.path.clone();
+        let exclude = exclude.to_vec();
+        let out = out.to_path_buf();
+        tokio::task::spawn_blocking(move || build_segment_sync(&src, hour, &exclude, &out)).await?
+    }
+
     async fn enforce_cap(&self, max_bytes: u64) -> anyhow::Result<u64> {
         self.ask(|tx| Msg::Cap(max_bytes, tx)).await?
     }
@@ -450,9 +481,127 @@ fn hour_of(line: &Line) -> i64 {
     ts.div_euclid(HOUR)
 }
 
+/// The three tables (and indexes) of one hour. Archived segments use the
+/// same layout, so history reads them with the same SQL.
+fn partition_ddl(hour: i64) -> String {
+    let (l, f, i) = (t('l', hour), t('f', hour), t('i', hour));
+    format!(
+        "CREATE TABLE IF NOT EXISTS {l} (
+             id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, received INTEGER NOT NULL,
+             source TEXT NOT NULL, level INTEGER, raw TEXT NOT NULL);
+         CREATE INDEX IF NOT EXISTS \"l_{hour}_ts\" ON {l} (ts);
+         CREATE INDEX IF NOT EXISTS \"l_{hour}_src\" ON {l} (source, ts);
+         CREATE VIRTUAL TABLE IF NOT EXISTS {f} USING fts5 (raw, content='');
+         CREATE TABLE IF NOT EXISTS {i} (value TEXT NOT NULL, key INTEGER NOT NULL, line_id INTEGER NOT NULL);
+         CREATE INDEX IF NOT EXISTS \"i_{hour}_v\" ON {i} (value);"
+    )
+}
+
 /// Table names are generated from an integer, never from input.
 fn t(prefix: char, hour: i64) -> String {
     format!("\"{prefix}_{hour}\"")
+}
+
+/// `file:` URI for a read-only ATTACH (`?`, `#`, `%` and spaces escaped).
+fn ro_uri(path: &std::path::Path) -> String {
+    let mut p = String::new();
+    for c in path.to_string_lossy().chars() {
+        match c {
+            '%' => p.push_str("%25"),
+            '?' => p.push_str("%3f"),
+            '#' => p.push_str("%23"),
+            ' ' => p.push_str("%20"),
+            c => p.push(c),
+        }
+    }
+    format!("file:{p}?mode=ro")
+}
+
+/// Copy one hour from the store at `src` into a new SQLite file at `out`:
+/// the same three tables (the FTS index rebuilt from the lines), minus the
+/// `exclude` sources, plus a `segment` table describing it. Runs on its own
+/// connections, never on the writer thread.
+fn build_segment_sync(
+    src: &std::path::Path,
+    hour: i64,
+    exclude: &[String],
+    out: &std::path::Path,
+) -> anyhow::Result<super::SegmentStats> {
+    if out.exists() {
+        std::fs::remove_file(out)?;
+    }
+    let c = Connection::open_with_flags(
+        out,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    c.busy_timeout(std::time::Duration::from_secs(5))?;
+    c.execute_batch("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")?;
+    c.execute("ATTACH DATABASE ?1 AS src", [ro_uri(src)])?;
+    let (l, f, i) = (t('l', hour), t('f', hour), t('i', hour));
+    let exists: bool = c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM src.sqlite_master WHERE type = 'table' AND name = ?1)",
+        [format!("l_{hour}")],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        anyhow::bail!("hour {hour} is not stored");
+    }
+    let skip = if exclude.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " WHERE source NOT IN ({})",
+            vec!["?"; exclude.len()].join(", ")
+        )
+    };
+    c.execute_batch(&format!("BEGIN; {}", partition_ddl(hour)))?;
+    c.execute(
+        &format!("INSERT INTO main.{l} SELECT * FROM src.{l}{skip}"),
+        params_from_iter(exclude.iter()),
+    )?;
+    c.execute_batch(&format!(
+        "INSERT INTO main.{f} (rowid, raw) SELECT id, raw FROM main.{l};
+         INSERT INTO main.{i} SELECT * FROM src.{i} WHERE line_id IN (SELECT id FROM main.{l});"
+    ))?;
+    let (lines, bytes_raw, min_ts, max_ts): (i64, i64, Option<i64>, Option<i64>) = c.query_row(
+        &format!("SELECT COUNT(*), COALESCE(SUM(LENGTH(raw)), 0), MIN(ts), MAX(ts) FROM main.{l}"),
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    let sources: Vec<String> = {
+        let mut st = c.prepare(&format!(
+            "SELECT DISTINCT source FROM main.{l} ORDER BY source"
+        ))?;
+        let v = st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        v
+    };
+    c.execute_batch("CREATE TABLE segment (k TEXT PRIMARY KEY, v TEXT NOT NULL);")?;
+    for (k, v) in [
+        ("schema", "1".to_string()),
+        ("hour", hour.to_string()),
+        ("lines", lines.to_string()),
+        ("bytes_raw", bytes_raw.to_string()),
+        ("sources", serde_json::to_string(&sources)?),
+        ("min_ts", min_ts.map(|v| v.to_string()).unwrap_or_default()),
+        ("max_ts", max_ts.map(|v| v.to_string()).unwrap_or_default()),
+        (
+            "redaction",
+            "lines were sanitized before storage".to_string(),
+        ),
+    ] {
+        c.execute("INSERT INTO segment (k, v) VALUES (?1, ?2)", params![k, v])?;
+    }
+    c.execute_batch("COMMIT; DETACH DATABASE src; VACUUM;")?;
+    Ok(super::SegmentStats {
+        lines: lines as u64,
+        bytes_raw: bytes_raw as u64,
+        sources,
+        min_ts,
+        max_ts,
+    })
 }
 
 struct Writer {
@@ -549,6 +698,13 @@ impl Writer {
                 Some(Msg::PurgeAll(done)) => {
                     let _ = done.send(self.purge_all());
                 }
+                Some(Msg::DropHour(hour, done)) => {
+                    let r = self.drop_hour(hour);
+                    if r.is_ok() {
+                        self.reclaim();
+                    }
+                    let _ = done.send(r);
+                }
                 Some(Msg::Lines(..)) | None => {}
             }
         }
@@ -560,17 +716,9 @@ impl Writer {
         if self.known.contains(&hour) {
             return Ok(());
         }
-        let (l, f, i) = (t('l', hour), t('f', hour), t('i', hour));
         self.conn.execute_batch(&format!(
-            "CREATE TABLE IF NOT EXISTS {l} (
-                 id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, received INTEGER NOT NULL,
-                 source TEXT NOT NULL, level INTEGER, raw TEXT NOT NULL);
-             CREATE INDEX IF NOT EXISTS \"l_{hour}_ts\" ON {l} (ts);
-             CREATE INDEX IF NOT EXISTS \"l_{hour}_src\" ON {l} (source, ts);
-             CREATE VIRTUAL TABLE IF NOT EXISTS {f} USING fts5 (raw, content='');
-             CREATE TABLE IF NOT EXISTS {i} (value TEXT NOT NULL, key INTEGER NOT NULL, line_id INTEGER NOT NULL);
-             CREATE INDEX IF NOT EXISTS \"i_{hour}_v\" ON {i} (value);
-             INSERT OR IGNORE INTO partitions (hour) VALUES ({hour});"
+            "{} INSERT OR IGNORE INTO partitions (hour) VALUES ({hour});",
+            partition_ddl(hour)
         ))?;
         self.known.insert(hour);
         Ok(())

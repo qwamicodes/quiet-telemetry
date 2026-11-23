@@ -27,6 +27,19 @@ Every flag also reads its env var (`quiet --help`). `quiet` with no subcommand i
 | `--ingest-max-body` / `QUIET_INGEST_MAX_BODY` | `16MB` | Largest ingest body, checked before and after gzip (1KB … 1GB). Over it: 413. |
 | `--ingest-rate` / `QUIET_INGEST_RATE` | `20000` | Lines per second per ingest token, bursts of 5 s worth; `0` = unlimited. Over it: 429 + `Retry-After`. |
 
+## Retained history (Garage)
+
+Optional. With all three of the first variables set, quiet sets Garage up on first start through its admin API (a single-node layout when none exists, the bucket, an access key with read/write) and connects it as the active destination `garage-local`. It retries for about two minutes while Garage starts, and does nothing once `garage-local` exists. Without them, connect Garage, R2, S3 or an S3-compatible store in **Settings → Storage → Retained history**.
+
+| Env | Example | |
+|---|---|---|
+| `QUIET_GARAGE_ENDPOINT` | `http://garage:3900` | Garage's S3 API. |
+| `QUIET_GARAGE_ADMIN_ENDPOINT` | `http://garage:3903` | Garage's admin API (v1). |
+| `QUIET_GARAGE_ADMIN_TOKEN` | | The admin token Garage was started with (`GARAGE_ADMIN_TOKEN`). |
+| `QUIET_GARAGE_BUCKET` | `quiet-history` (default) | Created when missing. |
+
+`make up-history` runs the local stack with Garage (`deploy/docker-compose.history.yml`, config in `deploy/garage/garage.toml`); `deploy/docker-compose.prod.yml` has the same service commented out. The image ships a CA bundle (`SSL_CERT_FILE`) for TLS to R2 and S3.
+
 ## Other subcommands
 
 - `quiet pipe --name <source> [--url http://127.0.0.1:7070] [--token qi_…] [--silent]` sends stdin to a server as NDJSON (plain http only; env `QUIET_SOURCE`, `QUIET_URL`, `QUIET_TOKEN`). It echoes stdin to stdout unless `--silent`. See [Ingest](ingest.md).

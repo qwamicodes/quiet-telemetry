@@ -26,6 +26,14 @@ services:
       QUIET_AUTH: "on"
       QUIET_TRUST_PROXY: "on"
       QUIET_COOKIE_SECURE: auto
+      # Retained history (optional): with Garage running next to quiet (see
+      # the commented `garage` service below), quiet sets it up on first
+      # start and archives hours that leave the window. Or connect R2 / S3 in
+      # Settings → Storage instead and leave these out.
+      # QUIET_GARAGE_ENDPOINT: http://garage:3900
+      # QUIET_GARAGE_ADMIN_ENDPOINT: http://garage:3903
+      # QUIET_GARAGE_ADMIN_TOKEN: ${QUIET_GARAGE_ADMIN_TOKEN}
+      # QUIET_GARAGE_BUCKET: quiet-history
     # Route it through Dokploy's Traefik (TLS). The UI and /api need a session,
     # ingest needs a qi_ token. First start: open it and create the owner right
     # away (the first visitor becomes the owner). Locked out:
@@ -51,5 +59,18 @@ services:
         limits: { memory: 256M }
         reservations: { memory: 64M }
 
+  # garage:
+  #   image: dxflrs/garage:v1.1.0
+  #   restart: unless-stopped
+  #   environment:
+  #     GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}        # openssl rand -hex 32
+  #     GARAGE_ADMIN_TOKEN: ${QUIET_GARAGE_ADMIN_TOKEN} # openssl rand -base64 32
+  #   volumes:
+  #     - ./garage/garage.toml:/etc/garage.toml:ro
+  #     - quiet-prod-garage:/var/lib/garage
+  #   labels:
+  #     quiet.ignore: "true"
+
 volumes:
   quiet-prod-data:
+  # quiet-prod-garage:

@@ -1,0 +1,32 @@
+# Retained history with Garage, in-house next to quiet (v0.1.1).
+#   make up-history
+#   (or: docker compose -f deploy/docker-compose.local.yml -f deploy/docker-compose.history.yml up --build)
+# quiet keeps its local window as before; hours that leave it are archived to
+# Garage. On first start quiet sets Garage up (layout, bucket, key) and
+# connects it as the active destination `garage-local`.
+# Local values only: set your own GARAGE_RPC_SECRET (64 hex chars) and
+# QUIET_GARAGE_ADMIN_TOKEN anywhere else.
+services:
+  quiet:
+    environment:
+      QUIET_GARAGE_ENDPOINT: http://garage:3900
+      QUIET_GARAGE_ADMIN_ENDPOINT: http://garage:3903
+      QUIET_GARAGE_ADMIN_TOKEN: ${QUIET_GARAGE_ADMIN_TOKEN:-quiet-local-garage-admin}
+      QUIET_GARAGE_BUCKET: quiet-history
+    depends_on:
+      garage: { condition: service_started }
+
+  garage:
+    image: dxflrs/garage:v1.1.0
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-4f0c3a1b2d5e6f7081920a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f}
+      GARAGE_ADMIN_TOKEN: ${QUIET_GARAGE_ADMIN_TOKEN:-quiet-local-garage-admin}
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage-data:/var/lib/garage
+    labels:
+      quiet.ignore: "true"
+    stop_grace_period: 15s
+
+volumes:
+  garage-data:

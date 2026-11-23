@@ -1,7 +1,8 @@
 # quiet · local workflow: local → main → prod.
-.PHONY: dev server web sample up down logs check check-web check-server types build
+.PHONY: dev server web sample up up-history down logs check check-web check-server types build
 
 COMPOSE := docker compose -f deploy/docker-compose.local.yml
+COMPOSE_HISTORY := $(COMPOSE) -f deploy/docker-compose.history.yml
 
 ## dev: server (cargo watch if installed) + Vite with hot reload on :5173 (proxies /api, /ingest, /v1 to :7070)
 dev:
@@ -28,8 +29,13 @@ up:
 	$(COMPOSE) up --build -d
 	@echo "quiet: http://127.0.0.1:7070"
 
+## up-history: the same stack plus Garage for retained history (quiet connects it as garage-local)
+up-history:
+	$(COMPOSE_HISTORY) up --build -d
+	@echo "quiet: http://127.0.0.1:7070 · retained history in Garage (Settings → Storage)"
+
 down:
-	$(COMPOSE) down
+	$(COMPOSE_HISTORY) down
 
 logs:
 	$(COMPOSE) logs -f quiet

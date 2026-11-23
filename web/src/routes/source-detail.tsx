@@ -1090,6 +1090,20 @@ export function SourceSettingsForm({
                   </SelectContent>
                 </Select>
               </div>
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <span className="flex flex-col">
+                  <span>Keep in retained history</span>
+                  <span className="text-muted-foreground text-xs">
+                    Off: its lines are deleted when they leave the local window, never archived.
+                  </span>
+                </span>
+                <Switch
+                  aria-label="Keep in retained history"
+                  checked={draft.exclude_history !== true}
+                  onCheckedChange={(v) => set({ exclude_history: v ? undefined : true })}
+                  disabled={!owner}
+                />
+              </div>
             </div>
           </Panel>
         </div>

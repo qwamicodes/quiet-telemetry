@@ -29,6 +29,7 @@ receivers ──► pipeline ─────────────────
 - `hub.rs`: source registry + per-source broadcast channel. `api.rs`: `/health`, `/ready`, `/api/*`, the stream WebSocket.
 - `web.rs`: the built UI embedded with rust-embed (SPA fallback, ETags, immutable hashed assets, gzip/br).
 - `server.rs`: wiring and graceful shutdown (SIGTERM → `/ready` 503 → drain → close streams with 1012 → stop receivers → timeout).
+- `history/`: retained history: `catalog.rs` (destinations, archived hours, gaps), `remote.rs` (object store client, object layout, Verify), `secret.rs` (secrets at rest), `garage.rs` (Garage bootstrap); `history_api.rs`: `/api/storage/destinations*`, `/api/storage/history`. The retention job calls it before dropping hours.
 - `bindings.rs`: ts-rs exports the wire types to `web/src/gen/`; a test fails when they are stale (`make types` regenerates).
 
 ### Web (`web/src`)
@@ -105,6 +106,18 @@ Results group by flow (or show events), with a histogram, a time range (presets 
 ## Storage
 
 SQLite (bundled, WAL) in `--data-dir`. One set of tables per hour: the lines (only the raw line is stored; fields and ids are re-derived when read), a contentless FTS5 index over the raw line, and a side index of every correlation id. A writer thread coalesces queued lines into one transaction; the in-memory ring in front serves the live stream and is warmed from disk on start, so ids, sources and the backlog survive restarts. Every minute (and right after a storage setting changes) the retention job drops hours older than the window, then deletes lines of sources with a shorter window of their own, then drops the oldest hours while the database is over the disk cap, and hands the pages back to the OS (incremental vacuum). Per-source volume is counted per hour (`source_hours`), so Settings → Storage never scans lines.
+
+### Retained history (v0.1.1)
+
+Optional, off until a destination is connected (design: [docs/v0.1.1-storage-design.md](../v0.1.1-storage-design.md)). The local window above is unchanged and works on its own; retained history keeps hours after they leave it, in **Garage** running next to quiet (`make up-history`, see [Configuration](configuration.md#retained-history-garage)) or a bucket the owner brings: **Cloudflare R2**, **Amazon S3** or any **S3-compatible** store (MinIO, Backblaze B2, Wasabi, Ceph).
+
+- **Archive before drop.** Before the retention job drops an hour that left the window, it builds a **segment**: a standalone SQLite file with that hour's three tables (lines, FTS, id index; the same layout, so history is read with the same SQL) and a `segment` metadata table, compressed with zstd. Lines of sources switched off under *Keep in retained history* are left out. It uploads `<prefix>v1/hours/YYYY/MM/DD/<hour>.seg.zst` and `<prefix>v1/manifest/<hour>.json` (counts, sources, time range, sha256), checks the object's size with HEAD, records the hour in the catalog and only then drops it locally. `<prefix>` defaults to `quiet/<instance id>/`, so two servers can share a bucket; `<prefix>v1/instance.json` describes the instance.
+- **Already sanitized.** Segments are built from stored lines, after redaction before storage: nothing reaches object storage that redaction removed.
+- **When the destination is unreachable** the hours wait on local disk (the window doesn't drop them), a system banner says how many and when quiet retries (30 s, doubling to 15 min). Only the disk cap can drop a waiting hour, and that becomes a gap.
+- **Gaps** record hours that left local storage without being archived, once history has been turned on: `no_destination`, `destination_unavailable` (waited, then the cap dropped it), `disk_cap` (dropped before it left the window) or `excluded` (only excluded sources). Search will say "not retained" for them.
+- **Destinations.** Several can be saved; one is **active** (new hours go there), the others are **read only** and keep what they hold. A destination must pass **Verify** (write → read → list → delete, each step reported) to be made active; a failed delete only means cleanup will be blocked. Secrets are encrypted at rest with ChaCha20-Poly1305 and a key in `<data dir>/secret.key` (0600), and are never returned: the API shows `AKIA••••7Q2X`. Removing a destination forgets it and its catalog rows; its objects stay in the bucket.
+- **Catalog** (in `quiet.db`): `instance` (instance id, when history was first on), `destinations`, `history_hours`, `history_gaps`. Search plans from it and never lists a bucket.
+- Still to come (Phase 5b/5c): history retention policy, capacity, copying history between destinations, deleting a destination's data, and searching retained history.
 
 ## Settings
 

@@ -44,9 +44,22 @@ Every `/api` route needs a session cookie except the public auth routes, and eve
   - `PUT /api/settings/storage {retention_ms?: number|null, max_disk?: number|null}` (`null` = use the flag)
   - `PUT /api/settings/grouping {mode, label} | null` (`null` = auto; 400 when `QUIET_GROUP_BY` / `QUIET_GROUP_LABEL` lock it)
   - `PUT /api/settings/flow-ids {order, match_by}`
-  - `PUT /api/settings/sources/:name {display_name, hidden, paused, retention_ms, id_keys, default_level, mask_fields, unmasked, redact_fields, redact_pii, muted, search_include_muted, muted_global_off}` · `DELETE /api/settings/sources/:name` (back to instance defaults)
+  - `PUT /api/settings/sources/:name {display_name, hidden, paused, retention_ms, id_keys, default_level, mask_fields, unmasked, redact_fields, redact_pii, exclude_history, muted, search_include_muted, muted_global_off}` · `DELETE /api/settings/sources/:name` (back to instance defaults)
 - `GET /api/storage` → `{ settings, store, path, used, ratio, lines, oldest, fs_free, hours: [{start, lines, bytes}], sources: [{source, lines, bytes, disk, share}], bytes_per_hour, steady_bytes, cap_in_ms, now }`
 - `POST /api/storage/purge {source?, confirm}` (owner; `confirm` = `purge`, or the source name) → `{ lines, source }`
+
+## Retained history
+
+Secrets are write-only: responses carry `access_key_preview`, never the secret.
+
+- `GET /api/storage/history` → `{ enabled, enabled_at, instance_id, active, destinations, gaps: [{ hour, reason, at }] (newest 100), gap_hours, waiting_hours }`. `reason`: `no_destination` · `destination_unavailable` · `disk_cap` · `excluded`.
+- `GET /api/storage/destinations` → `{ destinations: [{ id, name, kind, endpoint, region, bucket, prefix, path_style, access_key_preview, active, state, verified_at, last_verify, hours, lines, bytes_stored, first, last, error, next_retry, created_at }] }`. `kind`: `garage` · `r2` · `s3` · `s3_compatible`; `state`: `ok` · `unavailable` · `read_only`.
+- Owner only:
+  - `POST /api/storage/destinations {name, kind, endpoint?, region?, bucket, prefix?, path_style?, access_key_id, secret_access_key, activate?}` → `201 { destination, verify }`. Saved even when Verify fails; made active only when `activate` and Verify passed. 409 `name_taken`.
+  - `PATCH /api/storage/destinations/:id {…same fields, all optional}` (a blank secret keeps the saved one) → `{ destination, verify }`
+  - `POST /api/storage/destinations/:id/verify` → `{ ok, cleanup, steps: [{ step: write|read|list|delete, ok, error? }], at }`
+  - `POST /api/storage/destinations/:id/activate {copy_history?}` → the destination; 409 `verify_failed`; `copy_history: true` → 501 `not_yet` (Phase 5b)
+  - `DELETE /api/storage/destinations/:id {delete_history?}` → 204; keeps the objects in the bucket; 409 `active` for the active one; `delete_history: true` → 501 `not_yet` (Phase 5b)
 
 ## Source groups
 

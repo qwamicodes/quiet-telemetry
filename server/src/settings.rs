@@ -242,6 +242,11 @@ pub struct SourceSettings {
     /// Personal-data groups redacted before storage. Email and phone stay
     /// visible unless listed here.
     pub redact_pii: Vec<PiiKind>,
+    /// Leave this source's lines out of retained history (they still expire
+    /// from the local window). `null` = included, the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub exclude_history: Option<bool>,
     /// Muted lines (board 06.3): lines matching any rule are hidden from the
     /// stream and search by default ("N muted · show"); still stored,
     /// counted and searchable. Matching happens in the browser.
@@ -948,6 +953,18 @@ impl Settings {
     }
 
     /// Sources with a shorter window than the instance's: `(name, window ms)`.
+    /// Sources left out of retained history.
+    pub fn history_excluded(&self) -> Vec<String> {
+        self.state
+            .read()
+            .unwrap()
+            .sources
+            .iter()
+            .filter(|(_, v)| v.exclude_history == Some(true))
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
     pub fn source_windows(&self) -> Vec<(String, i64)> {
         let global = self.retention_ms();
         self.state
@@ -1409,6 +1426,9 @@ impl Settings {
         s.redact_fields = redact;
         s.redact_pii.sort_by_key(|k| *k as u8);
         s.redact_pii.dedup();
+        if s.exclude_history == Some(false) {
+            s.exclude_history = None;
+        }
         let mut muted: Vec<MuteRule> = Vec::new();
         for r in std::mem::take(&mut s.muted) {
             let mut r = r;
