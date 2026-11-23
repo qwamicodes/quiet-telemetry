@@ -21,6 +21,10 @@ hours: number, lines: number, bytes_stored: number,
  */
 first: number | null, last: number | null, 
 /**
+ * When the newest upload here finished (Overview: "Last upload 4s ago").
+ */
+last_upload: number | null, 
+/**
  * The last upload error while unavailable, and when it retries.
  */
 error: string | null, next_retry: number | null, created_at: number, 

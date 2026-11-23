@@ -391,6 +391,9 @@ pub struct Destination {
     /// Start of the oldest / newest archived hour, unix ms.
     pub first: Option<i64>,
     pub last: Option<i64>,
+    /// When the newest upload here finished (Overview: "Last upload 4s ago").
+    #[ts(type = "number | null")]
+    pub last_upload: Option<i64>,
     /// The last upload error while unavailable, and when it retries.
     pub error: Option<String>,
     pub next_retry: Option<i64>,
@@ -724,6 +727,7 @@ impl History {
             bytes_stored: held.bytes_stored,
             first: held.first_hour.map(|h| h * HOUR),
             last: held.last_hour.map(|h| h * HOUR),
+            last_upload: held.last_archived_at,
             error: down.map(|u| u.error.clone()),
             next_retry: down.map(|u| u.next_retry),
             created_at: d.created_at,
@@ -943,7 +947,29 @@ impl History {
 
     /// Test a connection without saving it (v1.1-05/06: "Test connection",
     /// then "Save connector").
-    pub async fn test(&self, n: &NewDestination, now: i64) -> Result<VerifyResult, HistoryError> {
+    /// With `existing` and a blank key id or secret, the saved credentials of
+    /// that connector are used (editing without re-entering the secret).
+    pub async fn test(
+        &self,
+        n: &NewDestination,
+        existing: Option<i64>,
+        now: i64,
+    ) -> Result<VerifyResult, HistoryError> {
+        let mut n = n.clone();
+        if let Some(id) = existing {
+            let saved = self.find(id)?;
+            let (secret, token) = remote::unpack(&self.secrets.open_sealed(&saved.secret_enc)?);
+            if n.access_key_id.trim().is_empty() && !saved.access_key_id.is_empty() {
+                n.access_key_id = saved.access_key_id.clone();
+            }
+            if n.secret_access_key.trim().is_empty() && !n.access_key_id.is_empty() {
+                n.secret_access_key = secret;
+                if n.session_token.is_none() {
+                    n.session_token = token;
+                }
+            }
+        }
+        let n = &n;
         Self::check_fields(
             &n.name,
             n.kind,

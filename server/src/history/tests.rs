@@ -1383,7 +1383,10 @@ mod history_search {
 async fn the_connection_test_lists_writes_reads_deletes_and_saves_nothing() {
     let (_b, conn) = bucket();
     let h = History::memory().with_connector(conn);
-    let v = h.test(&new_dest("production-r2", false), 0).await.unwrap();
+    let v = h
+        .test(&new_dest("production-r2", false), None, 0)
+        .await
+        .unwrap();
     let order: Vec<_> = v.steps.iter().map(|s| s.step).collect();
     assert_eq!(
         order,
@@ -1401,7 +1404,7 @@ async fn the_connection_test_lists_writes_reads_deletes_and_saves_nothing() {
     // not run.
     let down: Connector = Arc::new(|_, _| anyhow::bail!("no credentials found"));
     let h = History::memory().with_connector(down);
-    let v = h.test(&new_dest("x", false), 0).await.unwrap();
+    let v = h.test(&new_dest("x", false), None, 0).await.unwrap();
     assert!(!v.ok);
     assert!(v.steps[0]
         .error
@@ -1429,7 +1432,10 @@ async fn host_credentials_need_no_keys_on_amazon_s3_only() {
     let mut n = new_dest("disaster-recovery", false);
     n.access_key_id = String::new();
     n.secret_access_key = String::new();
-    assert!(matches!(h.test(&n, 0).await, Err(HistoryError::Invalid(_))));
+    assert!(matches!(
+        h.test(&n, None, 0).await,
+        Err(HistoryError::Invalid(_))
+    ));
     n.kind = DestinationKind::S3;
     n.endpoint = None;
     assert!(h.check_s3_host(&n));

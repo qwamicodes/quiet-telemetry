@@ -380,9 +380,16 @@ async fn remove(
 }
 
 /// Test a connection without saving it (v1.1-05/06).
+#[derive(Debug, Deserialize)]
+struct TestQuery {
+    /// Reuse this connector's saved credentials when the body leaves them blank.
+    id: Option<i64>,
+}
+
 async fn test(
     State(s): State<AppState>,
     Extension(v): Extension<Viewer>,
+    axum::extract::Query(q): axum::extract::Query<TestQuery>,
     body: Option<Json<NewDestination>>,
 ) -> Response {
     if let Err(r) = require_owner(&v) {
@@ -395,7 +402,7 @@ async fn test(
             "expected the same body as POST /api/storage/destinations",
         );
     };
-    match s.history.test(&n, now()).await {
+    match s.history.test(&n, q.id, now()).await {
         Ok(r) => Json::<VerifyResult>(r).into_response(),
         Err(e) => failed(e),
     }

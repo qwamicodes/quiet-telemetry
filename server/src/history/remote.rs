@@ -107,8 +107,27 @@ pub fn normalize_prefix(prefix: &str, instance_id: &str) -> String {
     }
 }
 
+/// The S3 error code and message in a provider response, if any:
+/// `AccessDenied · Access Denied`.
+fn s3_code(s: &str) -> Option<String> {
+    let tag = |t: &str| {
+        let open = format!("<{t}>");
+        let start = s.find(&open)? + open.len();
+        let end = s[start..].find(&format!("</{t}>"))? + start;
+        Some(s[start..end].trim().to_string())
+    };
+    let code = tag("Code")?;
+    Some(match tag("Message").filter(|m| !m.is_empty()) {
+        Some(m) => format!("{code} · {m}"),
+        None => code,
+    })
+}
+
 fn short(e: impl std::fmt::Display) -> String {
     let s = e.to_string();
+    if let Some(c) = s3_code(&s) {
+        return c;
+    }
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.chars().count() > 240 {
         format!("{}…", s.chars().take(240).collect::<String>())
@@ -163,13 +182,20 @@ pub async fn verify(remote: &Remote, prefix: &str, now: i64) -> VerifyResult {
         error: Some(why.to_string()),
     };
     // List: reading the prefix's listing (empty is fine).
-    let mut listed = remote.list(Some(&ObjPath::from(format!("{prefix}v1"))));
+    let mut listing = remote.list(Some(&ObjPath::from(format!("{prefix}v1"))));
     let mut list = Ok(());
-    if let Some(Err(e)) = listed.next().await {
+    if let Some(Err(e)) = listing.next().await {
         list = Err(short(e));
     }
-    drop(listed);
+    drop(listing);
+    let listed = list.is_ok();
     steps.push(step(VerifyStepKind::List, list));
+    if !listed {
+        steps.push(not_run(VerifyStepKind::Write, "list failed"));
+        steps.push(not_run(VerifyStepKind::Read, "list failed"));
+        steps.push(not_run(VerifyStepKind::Delete, "no test object created"));
+        return VerifyResult::from_steps(steps, now);
+    }
     let write = remote
         .put(&key, PutPayload::from(body.clone().into_bytes()))
         .await
@@ -194,4 +220,14 @@ pub async fn verify(remote: &Remote, prefix: &str, now: i64) -> VerifyResult {
     let del = remote.delete(&key).await.map_err(short);
     steps.push(step(VerifyStepKind::Delete, del));
     VerifyResult::from_steps(steps, now)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn provider_errors_read_as_their_s3_code() {
+        let e = r#"Generic S3 error: Error performing PUT http://x/y in 1ms - Server returned non-2xx status code: 403 Forbidden: <?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>"#;
+        assert_eq!(super::short(e), "AccessDenied · Access Denied");
+        assert_eq!(super::short("connection refused"), "connection refused");
+    }
 }
