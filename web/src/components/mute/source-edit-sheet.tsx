@@ -9,7 +9,6 @@ import type { SourceSettings } from '@/gen'
 import { DEFAULT_SOURCE_SETTINGS, useSaveSource, useSettings } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
-import { OWNERS_ONLY } from './rule-bits'
 import { SourceMutedLines } from './source-muted-lines'
 
 export type EditTab = 'general' | 'ids' | 'muted'
@@ -69,12 +68,18 @@ export function SourceEditSheet({
             </SheetBody>
             <SheetFooter>
               <span className="font-mono text-[11px] text-muted-foreground">
-                {owner ? 'Rule changes apply right away · Undo in the toast' : OWNERS_ONLY}
+                {owner ? 'Rule changes apply right away · Undo in the toast' : 'member · read-only'}
               </span>
               <span className="flex-1" />
-              <Button onClick={onClose}>
-                Done <Kbd>esc</Kbd>
-              </Button>
+              {owner ? (
+                <Button onClick={onClose}>
+                  Done <Kbd>esc</Kbd>
+                </Button>
+              ) : (
+                <Button variant="outline" onClick={onClose}>
+                  Close
+                </Button>
+              )}
             </SheetFooter>
           </>
         ) : data ? (

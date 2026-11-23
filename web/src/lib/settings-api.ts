@@ -126,6 +126,9 @@ export const sourceSettings = z.object({
   default_level: level.nullable(),
   mask_fields: z.array(z.string()),
   unmasked: z.array(piiKind),
+  // Redaction before storage (06.3); older servers omit them.
+  redact_fields: z.array(z.string()).default([]),
+  redact_pii: z.array(piiKind).default([]),
   muted: z.array(muteRule).catch([]),
   search_include_muted: z.boolean().nullable().catch(null),
   muted_global_off: z.array(globalOffSchema).catch([]),
@@ -294,6 +297,8 @@ export const DEFAULT_SOURCE_SETTINGS: SourceSettings = {
   default_level: null,
   mask_fields: [],
   unmasked: [],
+  redact_fields: [],
+  redact_pii: [],
   muted: [],
   search_include_muted: null,
   muted_global_off: [],

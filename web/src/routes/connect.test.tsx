@@ -148,8 +148,16 @@ describe('connect a source', () => {
       },
     ]
     await act(() => client.invalidateQueries({ queryKey: ['sources'] }))
-    expect(await within(panel).findByText('traefik is connected')).toBeInTheDocument()
-    expect(within(panel).getByRole('button', { name: /Open stream/ })).toHaveAttribute('href', '/?source=traefik')
+    // First line in: the page becomes "You're live." (02.4).
+    expect(await screen.findByRole('heading', { name: "You're live." })).toBeInTheDocument()
+    expect(screen.getAllByText('traefik is connected').length).toBeGreaterThan(0)
+    expect(screen.getByText('Token created')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Open stream/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Copy agent prompt/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check my logs' })).toHaveAttribute(
+      'href',
+      '/guide?tab=check&source=traefik',
+    )
   })
 
   it('File / stdin binds the token to the typed source; other sources growing do not count', async () => {
@@ -197,16 +205,27 @@ describe('connect a source', () => {
       },
     ]
     await act(() => client.invalidateQueries({ queryKey: ['sources'] }))
-    expect(await within(panel).findByText('cron-runner is connected')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: "You're live." })).toBeInTheDocument()
+    expect(screen.getAllByText('cron-runner is connected').length).toBeGreaterThan(0)
   })
 
   it('Docker needs no token: shows the socket state and waits right away', async () => {
+    const user = userEvent.setup()
     renderAt('/connect')
     const panel = await screen.findByRole('region', { name: 'Connect Docker' })
-    expect(within(panel).getByTestId('snippet')).toHaveTextContent('/var/run/docker.sock:/var/run/docker.sock:ro')
-    expect(await within(panel).findByText('readable · 9 containers')).toBeInTheDocument()
+    expect(within(panel).getByRole('link', { name: /Docs/ })).toHaveAttribute(
+      'href',
+      expect.stringContaining('#4-point'),
+    )
+    // The socket reads: steps 1 and 2 fold to one line each, step 3 lists its checks (02.3).
     expect(await within(panel).findByText('watching /var/run/docker.sock …')).toBeInTheDocument()
+    expect(within(panel).getByText('/var/run/docker.sock readable')).toBeInTheDocument()
+    expect(within(panel).getByText('9 containers found on this host')).toBeInTheDocument()
+    expect(within(panel).getByText('request_id → job_id → trace_id → correlation_id')).toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: /Generate token/ })).not.toBeInTheDocument()
+    await user.click(within(panel).getByText('compose.yaml · /var/run/docker.sock:ro'))
+    expect(within(panel).getByTestId('snippet')).toHaveTextContent('/var/run/docker.sock:/var/run/docker.sock:ro')
+    expect(within(panel).getByText('readable · 9 containers')).toBeInTheDocument()
   })
 })
 

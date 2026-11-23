@@ -1,22 +1,27 @@
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import {
+  ArrowDownIcon,
   ArrowLeftIcon,
+  ArrowUpIcon,
+  ArrowUpRightIcon,
   CheckIcon,
   ChevronRightIcon,
   EyeOffIcon,
-  GaugeIcon,
+  GripVerticalIcon,
+  KeyRoundIcon,
   PauseIcon,
   PencilIcon,
   PlayIcon,
   PlusIcon,
   RowsIcon,
   Trash2Icon,
+  TriangleAlertIcon,
   XIcon,
 } from 'lucide-react'
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { SourceEditSheet } from '@/components/mute/source-edit-sheet'
-import { IdOrderEditor } from '@/components/settings/id-order'
 import { Caps, Panel } from '@/components/settings/kit'
 import { fmtSpan, PurgeDialog } from '@/components/settings/storage'
 import { StatusDot } from '@/components/status-dot'
@@ -30,6 +35,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Kbd } from '@/components/ui/kbd'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import type { Level, PiiKind, RemovedSource, SourceInfo, SourceSettings } from '@/gen'
@@ -74,6 +80,12 @@ export function SourceDetailPage() {
   const owner = isOwner(useMe())
   const save = useSaveSource(name)
   const live = isRecent(info?.last_ts ?? null)
+  const stats = useStreamStats(name, undefined).data
+  const [removing, setRemoving] = useState(false)
+  // Where the Settings tab puts its Discard / Save changes (06.3).
+  const [actionSlot, setActionSlot] = useState<HTMLElement | null>(null)
+  // Refused in the last 15 minutes and nothing accepted: "rejecting" (06.6).
+  const rejecting = !live && (activity?.rejected_15m ?? 0) > 0
 
   const togglePause = async () => {
     try {
@@ -92,6 +104,8 @@ export function SourceDetailPage() {
   const tabs: [SourceTab, string][] = [
     ['overview', 'Overview'],
     ['rejected', `Rejected ${activity ? fmtCount(activity.rejections.reduce((a, r) => a + r.count, 0)) : ''}`],
+    // "Malformed", not the board's "Dropped": these lines are stored (as raw
+    // text). Dropped records need server work (they are never stored).
     ['malformed', `Malformed ${fields ? fmtCount(fields.malformed_total) : ''}`],
     ['settings', 'Settings'],
   ]
@@ -106,12 +120,14 @@ export function SourceDetailPage() {
         <span className="font-mono text-muted-foreground">{name}</span>
       </nav>
       <header className="flex items-center gap-3">
-        <StatusDot status={saved.paused ? 'warn' : live ? 'ok' : 'idle'} />
+        <StatusDot status={rejecting ? 'err' : saved.paused ? 'warn' : live ? 'ok' : 'idle'} />
         <h1 className="font-semibold text-2xl">{saved.display_name ?? info?.display_name ?? name}</h1>
         {info && (
           <span className="border px-1.5 py-0.5 font-mono text-muted-foreground text-xs">{kindLabel(info.kind)}</span>
         )}
-        {saved.paused ? (
+        {rejecting ? (
+          <span className="bg-status-err/15 px-1.5 py-0.5 font-mono text-status-err text-xs">rejecting</span>
+        ) : saved.paused ? (
           <span className="bg-status-warn/15 px-1.5 py-0.5 font-mono text-status-warn text-xs">paused</span>
         ) : live ? (
           <span className="bg-status-ok/15 px-1.5 py-0.5 font-mono text-status-ok text-xs">live</span>
@@ -120,25 +136,42 @@ export function SourceDetailPage() {
           <span className="border border-dashed px-1.5 py-0.5 font-mono text-muted-foreground text-xs">hidden</span>
         )}
         <span className="flex-1" />
-        <Link to="/guide" search={{ tab: 'check', source: name }}>
-          <Button variant="ghost">
-            <GaugeIcon /> Check logs
-          </Button>
-        </Link>
-        <Button
-          variant="outline"
-          onClick={() => navigate({ search: (x) => ({ ...x, edit: 'general' }), replace: true })}
-        >
-          <PencilIcon /> Edit
-        </Button>
-        {owner && (
-          <Button variant="outline" onClick={togglePause} disabled={save.isPending}>
-            {saved.paused ? <PlayIcon /> : <PauseIcon />} {saved.paused ? 'Resume ingest' : 'Pause ingest'}
-          </Button>
+        {tab === 'settings' ? (
+          <span ref={setActionSlot} className="flex items-center gap-2" />
+        ) : tab === 'rejected' && rejecting ? (
+          <>
+            <Button variant="outline" nativeButton={false} render={<Link to="/" search={{ source: name }} />}>
+              <RowsIcon /> Open stream
+            </Button>
+            {owner && (
+              <Button nativeButton={false} render={<Link to="/settings/ingest-tokens" />}>
+                <KeyRoundIcon /> Create new token
+              </Button>
+            )}
+          </>
+        ) : (
+          <>
+            {owner && (
+              <Button variant="destructive" onClick={() => setRemoving(true)}>
+                <Trash2Icon /> Remove
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              onClick={() => navigate({ search: (x) => ({ ...x, tab: 'settings' }), replace: true })}
+            >
+              <PencilIcon /> Settings
+            </Button>
+            {owner && (
+              <Button variant="outline" onClick={togglePause} disabled={save.isPending}>
+                {saved.paused ? <PlayIcon /> : <PauseIcon />} {saved.paused ? 'Resume ingest' : 'Pause ingest'}
+              </Button>
+            )}
+            <Button nativeButton={false} render={<Link to="/" search={{ source: name }} />}>
+              <RowsIcon /> Open stream
+            </Button>
+          </>
         )}
-        <Button nativeButton={false} render={<Link to="/" search={{ source: name }} />}>
-          <RowsIcon /> Open stream
-        </Button>
       </header>
       <div className="flex gap-1 border-b" role="tablist" aria-label="Source">
         {tabs.map(([t, label]) => (
@@ -173,8 +206,8 @@ export function SourceDetailPage() {
         onTab={(t) => navigate({ search: (x) => ({ ...x, edit: t }), replace: true })}
         onClose={() => navigate({ search: (x) => ({ ...x, edit: undefined }), replace: true })}
       />
-      {tab === 'overview' && <Overview info={info} name={name} saved={saved} owner={owner} />}
-      {tab === 'rejected' && <Rejected name={name} info={info} />}
+      {tab === 'overview' && <Overview info={info} name={name} saved={saved} />}
+      {tab === 'rejected' && <Rejected name={name} info={info} rejecting={rejecting} />}
       {tab === 'malformed' && <MalformedPanel name={name} />}
       {tab === 'settings' && settings && (
         <SourceSettingsForm
@@ -183,17 +216,26 @@ export function SourceDetailPage() {
           saved={saved}
           globalOrder={settings.flow_ids.order}
           globalRetention={settings.storage.retention_ms}
+          info={info}
+          actionSlot={actionSlot}
         />
+      )}
+      {removing && (
+        <RemoveSourceDialog name={name} lines={stats?.total ?? info?.lines ?? 0} onClose={() => setRemoving(false)} />
       )}
     </div>
   )
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'err' | 'warn' }) {
   return (
     <div className="flex flex-1 flex-col gap-1 border bg-card px-4 py-3.5">
       <Caps>{label}</Caps>
-      <span className="font-mono text-2xl">{value}</span>
+      <span
+        className={cn('font-mono text-2xl', tone === 'err' && 'text-status-err', tone === 'warn' && 'text-status-warn')}
+      >
+        {value}
+      </span>
       {sub && <span className="font-mono text-[11px] text-muted-foreground">{sub}</span>}
     </div>
   )
@@ -267,24 +309,13 @@ export function DayHistogram({ name, windowMs }: { name: string; windowMs: numbe
   )
 }
 
-function Overview({
-  info,
-  name,
-  saved,
-  owner,
-}: {
-  info?: SourceInfo
-  name: string
-  saved: SourceSettings
-  owner: boolean
-}) {
+function Overview({ info, name, saved }: { info?: SourceInfo; name: string; saved: SourceSettings }) {
   const settings = useSettings().data
   const health = useHealth().data
   const sources = useSources().data
   const rate = useRates(sources)[name]
   const stats = useStreamStats(name, undefined).data
   const fields = useSourceFields(name).data
-  const [removing, setRemoving] = useState(false)
   // The sources list still loading is not "no line yet".
   if (!info) return <p className="text-muted-foreground">{sources ? `No line from ${name} yet.` : 'Loading…'}</p>
   const order = saved.id_keys ?? settings?.flow_ids.order ?? []
@@ -292,7 +323,7 @@ function Overview({
   const total = stats?.total ?? info.lines
   const coverage = new Map((fields?.ids ?? []).map((c) => [c.key, c.coverage]))
   const shownId = order.find((k) => (coverage.get(k) ?? 0) > 0)
-  const second = order.find((k) => k !== shownId && (coverage.get(k) ?? 0) > 0)
+  const sampled = fields ? `${fmtCount(fields.sampled)} stored records` : ''
   const hourAvg = stats ? stats.histogram.reduce((n, b) => n + b.count, 0) / 3600 : null
   const peak = stats ? Math.max(0, ...stats.histogram.map((b) => b.count)) / 60 : null
   return (
@@ -301,7 +332,7 @@ function Overview({
         <Stat
           label="Rate"
           value={isRecent(info.last_ts) ? fmtRate(rate) : 'off'}
-          sub={hourAvg != null && peak != null ? `avg ${fmtRate(hourAvg)} · peak ${fmtRate(peak)} (1h)` : undefined}
+          sub={hourAvg != null && peak != null ? `avg ${fmtRate(hourAvg)} · peak ${fmtRate(peak)}` : undefined}
         />
         <Stat
           label="Last line"
@@ -318,12 +349,12 @@ function Overview({
           }
         />
         <div className="flex flex-1 flex-col gap-1 border bg-card px-4 py-3.5">
-          <Caps>Flow id</Caps>
+          <Caps>Correlation</Caps>
           <span className={cn('font-mono text-2xl', shownId ? 'text-brand' : 'text-muted-foreground')}>
             {shownId ?? (fields ? 'none found' : '…')}
           </span>
           <span className="font-mono text-[11px] text-muted-foreground">
-            {shownId ? `on ${fmtPct(coverage.get(shownId) ?? 0)} of lines` : 'no id key on its lines'}
+            {shownId ? `in the last ${sampled}` : 'no id key on its lines'}
           </span>
         </div>
       </div>
@@ -331,10 +362,7 @@ function Overview({
       <DayHistogram name={name} windowMs={windowMs} />
 
       <div className="grid grid-cols-[1fr_360px] items-start gap-4">
-        <Panel
-          title="Fields detected"
-          aside={fields ? `${fields.fields.length} fields · from the last ${fmtCount(fields.sampled)} lines` : ''}
-        >
+        <Panel title="Fields detected" aside={fields ? `${fields.fields.length} fields · last ${sampled}` : ''}>
           {!fields ? (
             <p className="px-4 py-6 text-muted-foreground text-sm">Reading recent lines…</p>
           ) : fields.fields.length === 0 ? (
@@ -365,10 +393,13 @@ function Overview({
         </Panel>
 
         <div className="flex flex-col gap-4">
-          <Panel title="Flow id detected" aside={saved.id_keys ? 'source order' : 'default order'}>
+          <Panel
+            title="Correlation detected"
+            aside={<span className="border px-1.5 py-0.5">{saved.id_keys ? 'source order' : 'default order'}</span>}
+          >
             <p className="px-4 pt-3 text-muted-foreground text-xs">
               {shownId
-                ? `${shownId} is on ${fmtPct(coverage.get(shownId) ?? 0)} of lines, so flows stitch by it.${second ? ` ${second} links other lines in.` : ''}`
+                ? 'IDs relate observed events. They do not prove delivery, parentage or SLO coverage.'
                 : 'None of the id keys appear on its lines, so each line opens as a one-node flow.'}
             </p>
             <ol className="px-4 py-2 font-mono text-xs">
@@ -408,22 +439,28 @@ function Overview({
             </dl>
           </Panel>
 
-          {owner && (
-            <section className="flex items-center gap-3 border border-status-err/40 px-4 py-3">
-              <div className="flex flex-1 flex-col">
-                <span className="font-medium text-sm">Remove source</span>
-                <span className="font-mono text-[11px] text-muted-foreground">
-                  stops ingest · deletes {fmtCount(total)} lines
-                </span>
-              </div>
-              <Button variant="destructive" size="sm" onClick={() => setRemoving(true)}>
-                <Trash2Icon /> Remove
-              </Button>
-            </section>
-          )}
+          <Panel title="Logging setup">
+            <div className="flex flex-col gap-3 px-4 py-3">
+              <p className="text-muted-foreground text-xs">
+                Configure request and job events in your app. Choose capture, sampling and your SLOs.
+              </p>
+              <span className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  nativeButton={false}
+                  render={<Link to="/guide" search={{ tab: 'check', source: name }} />}
+                >
+                  Open setup
+                </Button>
+                <Button variant="ghost" size="sm" nativeButton={false} render={<Link to="/guide" />}>
+                  Read guide <ArrowUpRightIcon />
+                </Button>
+              </span>
+            </div>
+          </Panel>
         </div>
       </div>
-      {removing && <RemoveSourceDialog name={name} lines={total} onClose={() => setRemoving(false)} />}
     </div>
   )
 }
@@ -582,7 +619,7 @@ function MalformedPanel({ name }: { name: string }) {
   )
 }
 
-function Rejected({ name, info }: { name: string; info?: SourceInfo }) {
+function Rejected({ name, info, rejecting }: { name: string; info?: SourceInfo; rejecting: boolean }) {
   const a = useActivity(name).data
   const f = useSourceFields(name).data
   const stats = useStreamStats(name, undefined).data
@@ -591,27 +628,50 @@ function Rejected({ name, info }: { name: string; info?: SourceInfo }) {
   const navigate = route.useNavigate()
   if (!a) return <p className="text-muted-foreground">Loading…</p>
   const total = stats?.total ?? info?.lines ?? 0
+  const newest = a.rejections[0]
   return (
     <div className="flex flex-col gap-4">
+      {rejecting && newest && (
+        <div role="alert" className="flex items-start gap-3 border border-status-err/40 bg-status-err/10 px-4 py-3">
+          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-status-err" />
+          <span className="flex flex-col gap-0.5">
+            <span className="font-medium text-sm">
+              Ingest is rejecting requests · {newest.status} {newest.reason}
+            </span>
+            <span className="text-muted-foreground text-xs">
+              {newest.status === 401
+                ? 'The configured ingest token was revoked. Create a new token and update the exporter.'
+                : 'Fix the sender and its requests are stored again.'}{' '}
+              Rejected request bodies are not stored.
+            </span>
+          </span>
+        </div>
+      )}
       <div className="flex gap-3">
         <Stat
           label="Accepted"
           value={isRecent(info?.last_ts ?? null) ? fmtRate(rate) : '0/s'}
+          tone={rejecting ? 'err' : undefined}
           sub={info?.last_ts ? `last good line ${fmtClock(info.last_ts)}` : 'no line yet'}
         />
         <Stat
           label="Rejected 15 min"
           value={fmtCount(a.rejected_15m)}
-          sub={`~${(a.rejected_15m / 900).toFixed(2)} req/s`}
+          tone={a.rejected_15m > 0 ? 'err' : undefined}
+          sub={`~${(a.rejected_15m / 900).toFixed(2)} req/s${newest && a.rejected_15m > 0 ? ` · ${newest.status}` : ''}`}
         />
         <Stat
           label={`Malformed ${fmtWindow(health24(stats))}`}
           value={f ? fmtCount(f.malformed_total) : '…'}
           sub={f && total ? `${fmtPct(f.malformed_total / total)} · kept as raw text` : 'kept as raw text'}
         />
-        <Stat label={`Lines ${fmtWindow(health24(stats))}`} value={fmtCount(total)} sub="stored" />
+        <Stat
+          label={`Lines ${fmtWindow(health24(stats))}`}
+          value={fmtCount(total)}
+          sub={rejecting && newest?.status === 401 ? 'before the token was revoked' : 'stored'}
+        />
       </div>
-      <Panel title="Rejected requests" aside="grouped per minute · bodies are not stored · last 24h">
+      <Panel title="Rejected requests" aside="ingest requests · bodies not stored">
         {a.rejections.length === 0 ? (
           <p className="px-4 py-6 text-center text-muted-foreground text-sm">
             Nothing refused for {name}. Requests that name this source (token or X-Quiet-Source) show up here.
@@ -620,7 +680,7 @@ function Rejected({ name, info }: { name: string; info?: SourceInfo }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left">
-                {['Time', 'Status', 'Reason', 'Endpoint', 'Token', 'Count'].map((h) => (
+                {['Time', 'Status', 'Reason', 'Endpoint', 'Token ID', 'Count'].map((h) => (
                   <th key={h} className="px-4 py-2 font-normal">
                     <Caps>{h}</Caps>
                   </th>
@@ -684,16 +744,101 @@ const health24 = (stats: { since: number; until: number } | undefined) =>
 
 const LEVELS: (Level | 'all')[] = ['all', 'debug', 'info', 'warn', 'error']
 
+/** What groups a source's containers (06.3 "Matched by"), as quiet reads it from the Docker socket. */
+export function matchedBy(info: SourceInfo | undefined, name: string): { value: string; note: string } {
+  if (info?.kind === 'docker') {
+    const label =
+      info.group_kind === 'stack'
+        ? 'com.docker.swarm.service.name'
+        : info.group_kind === 'compose'
+          ? 'com.docker.compose.service'
+          : 'container name'
+    return {
+      value: `${label} = ${name}`,
+      note: 'From the local Docker socket. Redeploys and replicas join this source.',
+    }
+  }
+  return {
+    value: `X-Quiet-Source or token = ${name}`,
+    note: 'Pushed over HTTP. Any sender that names this source, or uses a token bound to it, joins it.',
+  }
+}
+
+/**
+ * The source's correlation id order (06.3): reorder with ↑/↓, each key with
+ * its share of the sampled records. Keys are added and removed instance-wide
+ * in Settings → Flow id order.
+ */
+function SourceIdOrder({
+  name,
+  value,
+  onChange,
+  disabled,
+}: {
+  name: string
+  value: string[]
+  onChange: (v: string[]) => void
+  disabled: boolean
+}) {
+  const fields = useSourceFields(name).data
+  const coverage = new Map((fields?.ids ?? []).map((c) => [c.key, c.coverage]))
+  const move = (i: number, d: -1 | 1) => {
+    const next = value.slice()
+    ;[next[i], next[i + d]] = [next[i + d], next[i]]
+    onChange(next)
+  }
+  return (
+    <ol className="flex flex-col gap-1.5" aria-label="Correlation id order">
+      {value.map((k, i) => (
+        <li key={k} className="flex h-9 items-center gap-3 border bg-background px-3 font-mono text-xs">
+          <GripVerticalIcon className="size-3.5 text-muted-foreground" aria-hidden />
+          <span className="w-3 text-muted-foreground">{i + 1}</span>
+          <span className="bg-brand/15 px-1.5 py-0.5 text-brand">{k}</span>
+          <span className="flex-1" />
+          <span className="text-[11px] text-muted-foreground">
+            {fields ? `${fmtPct(coverage.get(k) ?? 0)} of sample` : ''}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={`Move ${k} up`}
+            disabled={disabled || i === 0}
+            onClick={() => move(i, -1)}
+          >
+            <ArrowUpIcon />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={`Move ${k} down`}
+            disabled={disabled || i === value.length - 1}
+            onClick={() => move(i, 1)}
+          >
+            <ArrowDownIcon />
+          </Button>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
 export function SourceSettingsForm({
   name,
   saved,
   globalOrder,
   globalRetention,
+  info,
+  actionSlot,
 }: {
   name: string
   saved: SourceSettings
   globalOrder: SourceSettings['id_keys'] & {}
   globalRetention: number
+  info?: SourceInfo
+  /** The page header's action area: Discard and Save changes render there (06.3). */
+  actionSlot?: HTMLElement | null
 }) {
   const owner = isOwner(useMe())
   const save = useSaveSource(name)
@@ -707,6 +852,18 @@ export function SourceSettingsForm({
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
   const set = (p: Partial<SourceSettings>) => setDraft({ ...draft, ...p })
   const windows = WINDOWS.filter((w) => w.ms <= globalRetention)
+  const matched = matchedBy(info, name)
+  // ⌘↵ saves from anywhere on the tab.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && owner && dirty) {
+        e.preventDefault()
+        submit()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
 
   const submit = async (e?: FormEvent) => {
     e?.preventDefault()
@@ -751,44 +908,38 @@ export function SourceSettingsForm({
                 onChange={(e) => set({ display_name: e.target.value || null })}
               />
               <span className="text-muted-foreground text-xs">
-                Shown in the sidebar, stream and flows. Stored lines keep the original name ({name}).
+                Shown in the sidebar, stream and flows. Stored lines keep the original name.
               </span>
-              <div className="mt-2 flex items-center justify-between gap-4 text-sm">
-                <span className="flex flex-col">
-                  <span>Hide from the sidebar</span>
-                  <span className="text-muted-foreground text-xs">
-                    Still stored, searchable and listed under Sources.
-                  </span>
-                </span>
-                <Switch
-                  aria-label="Hide from the sidebar"
-                  checked={draft.hidden}
-                  onCheckedChange={(v) => set({ hidden: v })}
-                />
-              </div>
+              <label htmlFor="matched-by" className="mt-2 text-sm">
+                Matched by
+              </label>
+              <Input id="matched-by" readOnly value={matched.value} className="font-mono text-xs" />
+              <span className="text-muted-foreground text-xs">{matched.note}</span>
             </div>
           </Panel>
           <Panel
             title="Correlation id order"
             aside={
-              draft.id_keys ? (
-                <button type="button" className="underline" onClick={() => set({ id_keys: null })}>
-                  Reset to instance order
-                </button>
-              ) : (
-                'instance order'
-              )
+              <button
+                type="button"
+                className="hover:text-foreground disabled:opacity-50"
+                disabled={!draft.id_keys}
+                onClick={() => set({ id_keys: null })}
+              >
+                Reset to default
+              </button>
             }
           >
-            <div className="flex flex-col gap-2 p-4">
-              <IdOrderEditor
+            <div className="flex flex-col gap-3 p-4">
+              <SourceIdOrder
+                name={name}
                 value={draft.id_keys ?? globalOrder}
                 onChange={(id_keys) => set({ id_keys })}
                 disabled={!owner}
               />
               <span className="text-muted-foreground text-xs">
-                The first id found is the one a row shows; every id still counted links the line into flows. Keys you
-                remove are ignored for this source (new lines, rows, stitching).
+                Choose the ID shown first. Shared IDs correlate events; only explicit parent links establish job
+                relationships.
               </span>
             </div>
           </Panel>
@@ -929,12 +1080,18 @@ export function SourceSettingsForm({
           <Panel className="border-status-warn/40">
             <div className="flex items-center justify-between gap-4 p-4 text-sm">
               <span className="flex flex-col">
-                <span className="font-medium">Pause ingest</span>
+                <span className="font-medium">Ignore this source</span>
                 <span className="text-muted-foreground text-xs">
-                  Stop storing new lines from this source. Lines already stored expire with the window. Undo anytime.
+                  Stop storing new lines from this {info?.kind === 'docker' ? 'container' : 'source'}. Lines already
+                  stored expire with the window. Undo anytime.
                 </span>
               </span>
-              <Switch aria-label="Pause ingest" checked={draft.paused} onCheckedChange={(v) => set({ paused: v })} />
+              {/* Ignore = pause ingest + hide from the sidebar, like a group's Ignore (06.12). */}
+              <Switch
+                aria-label="Ignore this source"
+                checked={draft.paused && draft.hidden}
+                onCheckedChange={(v) => set({ paused: v, hidden: v })}
+              />
             </div>
           </Panel>
           {owner && (
@@ -953,7 +1110,7 @@ export function SourceSettingsForm({
         </div>
       </fieldset>
       {owner && (
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end">
           <Button
             type="button"
             variant="ghost"
@@ -966,8 +1123,27 @@ export function SourceSettingsForm({
               }
             }}
           >
-            Reset all
+            Reset all to instance settings
           </Button>
+        </div>
+      )}
+      {owner &&
+        actionSlot &&
+        createPortal(
+          <>
+            <Button type="button" variant="ghost" disabled={!dirty} onClick={() => setDraft(saved)}>
+              Discard
+            </Button>
+            <Button type="button" disabled={!dirty || save.isPending} onClick={() => submit()}>
+              Save changes
+              <Kbd className="ml-1">⌘</Kbd>
+              <Kbd>↵</Kbd>
+            </Button>
+          </>,
+          actionSlot,
+        )}
+      {owner && !actionSlot && (
+        <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" disabled={!dirty} onClick={() => setDraft(saved)}>
             Discard
           </Button>

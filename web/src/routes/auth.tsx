@@ -1,6 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate, useRouter } from '@tanstack/react-router'
-import { ArrowRightIcon, CheckIcon, ClockIcon, KeyRoundIcon, LinkIcon, TerminalIcon, XIcon } from 'lucide-react'
+import {
+  ArrowRightIcon,
+  CheckIcon,
+  ClockIcon,
+  KeyRoundIcon,
+  LinkIcon,
+  LockIcon,
+  TerminalIcon,
+  XIcon,
+} from 'lucide-react'
 import { type FormEvent, type ReactNode, useState } from 'react'
 import { AuthCard, AuthFrame, Field, FormError } from '@/components/auth/auth-frame'
 import { MIN_PASSWORD, PasswordInput, PasswordMeter } from '@/components/auth/password-input'
@@ -68,11 +77,11 @@ function HostCheck({ ok, title, detail }: { ok: boolean | null; title: string; d
   )
 }
 
-function ThisHost({ host }: { host: SetupHost }) {
+function ThisHost({ host, checkedAt }: { host: SetupHost; checkedAt: number }) {
   const d = host.docker
   const docker =
     d.state === 'connected'
-      ? { ok: true, title: 'Docker socket readable', detail: `docker.sock · ${d.containers} containers` }
+      ? { ok: true, title: 'Docker socket readable', detail: `/var/run/docker.sock · ${d.containers} containers` }
       : d.state === 'disabled'
         ? { ok: null, title: 'Docker receiver off', detail: 'QUIET_DOCKER=off · HTTP ingest only' }
         : d.state === 'connecting'
@@ -80,7 +89,15 @@ function ThisHost({ host }: { host: SetupHost }) {
           : { ok: false, title: 'Docker socket not readable', detail: 'mount /var/run/docker.sock read-only' }
   return (
     <aside aria-label="This host" className="w-full max-w-[340px] self-center border bg-card p-5">
-      <h2 className="mb-2 font-medium text-sm">This host</h2>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="font-medium text-sm">This host</h2>
+        {checkedAt > 0 && (
+          <span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+            checked{' '}
+            {new Date(checkedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })}
+          </span>
+        )}
+      </div>
       <ul>
         <HostCheck {...docker} />
         <HostCheck
@@ -93,16 +110,19 @@ function ThisHost({ host }: { host: SetupHost }) {
           title="Storage defaults"
           detail={`${fmtWindow(host.retention_ms)} searchable · ${fmtBytes(host.max_disk)} disk cap`}
         />
+        {/* The address this page was opened on: invite and reset links use it. */}
+        <HostCheck ok={null} title="Public URL" detail={`${window.location.origin} · edit later`} />
       </ul>
       <p className="mt-3 text-muted-foreground text-xs">
-        v0.1 runs on one host and reads the local Docker socket. Remote hosts come in v0.2.
+        v0.1 runs on one host and reads the local Docker socket. Remote hosts come in v0.3.
       </p>
     </aside>
   )
 }
 
 export function SetupPage() {
-  const host = useAuth().data?.host
+  const auth = useAuth()
+  const host = auth.data?.host
   const setup = useSetup()
   const navigate = useNavigate()
   const [name, setName] = useState('')
@@ -166,7 +186,7 @@ export function SetupPage() {
             <Field
               label="Password"
               htmlFor="setup-password"
-              hint={`At least ${MIN_PASSWORD} characters. Stored as an argon2id hash on this host.`}
+              hint={`At least ${MIN_PASSWORD} characters. Stored as an argon2 hash on this host.`}
             >
               <PasswordInput
                 id="setup-password"
@@ -184,7 +204,7 @@ export function SetupPage() {
             </SubmitButton>
           </form>
         </AuthCard>
-        {host && <ThisHost host={host} />}
+        {host && <ThisHost host={host} checkedAt={auth.dataUpdatedAt} />}
       </div>
     </AuthFrame>
   )
@@ -193,6 +213,7 @@ export function SetupPage() {
 // ---- sign in ---------------------------------------------------------------------
 
 export function SignInPage() {
+  const auth = useAuth()
   const { redirect } = signInRoute.useSearch()
   const login = useLogin()
   const router = useRouter()
@@ -207,7 +228,10 @@ export function SignInPage() {
   return (
     <AuthFrame>
       <AuthCard>
-        <Heading title="Sign in to quiet" sub={window.location.host} />
+        <Heading
+          title="Sign in to quiet"
+          sub={[auth.data?.instance_name, window.location.host].filter(Boolean).join(' · ')}
+        />
         <form onSubmit={submit} className="flex flex-col gap-4" aria-label="Sign in">
           <Field label="Email" htmlFor="signin-email">
             <Input
@@ -266,7 +290,7 @@ export function SignInPage() {
             </p>
             <div className="flex items-center justify-between gap-2 border bg-background py-1 pr-1 pl-2.5">
               <code className="truncate font-mono text-xs">$ quiet admin reset-password &lt;email&gt;</code>
-              <CopyButton text="quiet admin reset-password " label="Copy" variant="ghost" />
+              <CopyButton text="quiet admin reset-password " label="Copy command" variant="ghost" iconOnly />
             </div>
             <p className="text-muted-foreground text-xs">
               It prints a one-time link (valid for an hour) to choose a new password.
@@ -291,6 +315,17 @@ function Initial({ name }: { name: string }) {
 function daysLeft(ts: number) {
   const d = Math.ceil((ts - Date.now()) / 86_400_000)
   return d <= 1 ? 'expires within a day' : `expires in ${d} days`
+}
+
+/** "3 days ago", "5 hours ago", "just now". */
+function ago(ts: number) {
+  const m = Math.max(0, Math.round((Date.now() - ts) / 60_000))
+  if (m < 1) return 'just now'
+  if (m < 60) return `${m} ${m === 1 ? 'minute' : 'minutes'} ago`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h} ${h === 1 ? 'hour' : 'hours'} ago`
+  const d = Math.round(h / 24)
+  return `${d} ${d === 1 ? 'day' : 'days'} ago`
 }
 
 function InviteDead({ problem }: { problem: InviteProblem }) {
@@ -329,6 +364,7 @@ function InviteDead({ problem }: { problem: InviteProblem }) {
           <dt className="text-brand">{problem.code === 'expired' ? 'expired' : 'expires'}</dt>
           <dd className={problem.code === 'expired' ? 'text-level-warn' : 'text-muted-foreground'}>
             {fmt(inv.expires)}
+            {problem.code === 'expired' && ` · ${ago(inv.expires)}`}
           </dd>
         </dl>
       )}
@@ -387,6 +423,7 @@ export function InvitePage() {
   }
   const inv = lookup.data.invite
   const instance = auth?.instance_name || 'quiet'
+  const team = instance === 'quiet' ? 'this team' : instance
   const submit = (e: FormEvent) => {
     e.preventDefault()
     accept.mutate(
@@ -403,11 +440,11 @@ export function InvitePage() {
     <AuthFrame>
       <AuthCard>
         <Heading
-          title={`Join ${instance}`}
+          title={instance === 'quiet' ? 'Join quiet' : `Join ${instance} on quiet`}
           sub={
             inv.role === 'owner'
-              ? 'A calm view of this team’s logs. Owners also manage members, invites and ingest tokens.'
-              : 'A calm view of this team’s logs. Members can read every source.'
+              ? `A calm view of ${team}’s logs. Owners also manage members, invites and ingest tokens.`
+              : `A calm view of ${team}’s logs. Members can read every source.`
           }
         />
         <div className="mb-5 flex items-center gap-3 border p-3">
@@ -432,16 +469,24 @@ export function InvitePage() {
                 : 'Used to sign in.'
             }
           >
-            <Input
-              id="invite-email"
-              type="email"
-              className="font-mono"
-              value={inv.email ?? email}
-              onChange={(e) => setEmail(e.target.value)}
-              readOnly={!!inv.email}
-              autoComplete="username"
-              required
-            />
+            <div className="relative">
+              <Input
+                id="invite-email"
+                type="email"
+                className={cn('font-mono', inv.email && 'pr-8')}
+                value={inv.email ?? email}
+                onChange={(e) => setEmail(e.target.value)}
+                readOnly={!!inv.email}
+                autoComplete="username"
+                required
+              />
+              {inv.email && (
+                <LockIcon
+                  aria-hidden
+                  className="pointer-events-none absolute top-1/2 right-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+                />
+              )}
+            </div>
           </Field>
           <Field label="Your name" htmlFor="invite-name">
             <Input
@@ -465,7 +510,7 @@ export function InvitePage() {
           </Field>
           <FormError>{accept.error ? message(accept.error) : null}</FormError>
           <SubmitButton pending={accept.isPending}>
-            Join <ArrowRightIcon />
+            {instance === 'quiet' ? 'Join' : `Join ${instance}`} <ArrowRightIcon />
           </SubmitButton>
         </form>
       </AuthCard>

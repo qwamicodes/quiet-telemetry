@@ -227,6 +227,18 @@ export function IdOrderEditor({
   )
 }
 
+/** Example values for the stitching line (07.8): `req_8f2a8c`, `ord-delivery:1182`. */
+const exampleId = (key: string, i: number) =>
+  key === 'request_id'
+    ? 'req_8f2a8c'
+    : key === 'job_id'
+      ? 'ord-delivery:1182'
+      : key === 'trace_id'
+        ? '4bf92f3577b34da6'
+        : i === 0
+          ? 'id_8f2a8c'
+          : 'id_1182'
+
 /** Settings → Flow id order (board v0.1-07.8): instance order, match by key or value, per-source overrides. */
 export function FlowIdOrder() {
   const settings = useSettings().data
@@ -289,10 +301,10 @@ function FlowIdForm({
   }
 
   return (
-    <form className="flex max-w-3xl flex-col gap-4" onSubmit={submit} aria-label="Flow id order">
+    <form className="flex max-w-190 flex-col gap-4" onSubmit={submit} aria-label="Flow id order">
       <PageHeader
         title="Flow id order"
-        sub="quiet opens a line's flow using the first of these ids it finds. Drag to reorder. Keys you remove stop counting as correlation ids."
+        sub="quiet opens a line’s flow using the first of these ids it finds. Drag to reorder."
       />
       {!owner && <ReadOnlyNote />}
       {add && (
@@ -310,12 +322,6 @@ function FlowIdForm({
         disabled={!owner}
         share={share}
       />
-      {coverage && coverage.sampled > 0 && (
-        <span className="text-muted-foreground text-xs">
-          Coverage from the newest {coverage.sampled.toLocaleString()} lines across every source. A custom field matches
-          an exact top-level key first, then the dotted path.
-        </span>
-      )}
       <div className="flex flex-col gap-1 border bg-card px-4 py-3 font-mono text-xs">
         <Caps>How a line is stitched</Caps>
         <span>
@@ -323,14 +329,14 @@ function FlowIdForm({
           {draft.order.slice(0, 2).map((k, i) => (
             <span key={k}>
               {i > 0 && ', '}
-              <span className="text-brand">"{k}"</span>: "…"
+              <span className="text-brand">"{k}"</span>: "{exampleId(k, i)}"
             </span>
           ))}
-          {' , … }'}
+          {', … }'}
         </span>
         <span className="text-muted-foreground">
-          → first match wins: the row shows {first}.
-          {second && ` ${second} still links the other lines into the same flow.`}
+          → first match wins: {first} {exampleId(first ?? '', 0)}.
+          {second && ` ${second} still links the worker’s lines into the same flow.`}
         </span>
       </div>
       <SettingRow

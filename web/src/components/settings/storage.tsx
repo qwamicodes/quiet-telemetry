@@ -1,3 +1,4 @@
+import { Link } from '@tanstack/react-router'
 import { AlertTriangleIcon, Trash2Icon } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
 import { Caps, PageHeader, Panel, ReadOnlyNote, SettingRow } from '@/components/settings/kit'
@@ -29,6 +30,7 @@ import {
   WINDOWS,
 } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
+import { useRates } from '@/lib/use-rates'
 import { cn } from '@/lib/utils'
 
 const NEAR = 0.9
@@ -42,6 +44,12 @@ export function fmtSpan(ms: number): string {
 }
 
 const gb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : fmtBytes(b))
+/** A cap reads as set: `5 GB`, `2.5 GB`. */
+export const fmtCap = (b: number) => (b >= 1e9 ? `${+(b / 1e9).toFixed(2)} GB` : fmtBytes(b))
+/** The directory of the database file: `/var/lib/quiet`. */
+const dirOf = (path: string | null | undefined) =>
+  path?.includes('/') ? path.slice(0, path.lastIndexOf('/')) || '/' : null
+const fmtRate = (r: number | undefined) => (r == null ? '–' : r > 0 && r < 1 ? '<1/s' : `${Math.round(r)}/s`)
 
 /** The hourly partitions across the window: filled = stored, amber = next to go, hatched = dropped by the cap. */
 function HourStrip({ r, capping }: { r: StorageReport; capping: boolean }) {
@@ -171,6 +179,7 @@ export function Storage() {
   const settings = useSettings().data
   const system = useSystem().data
   const sources = useSources().data
+  const rates = useRates(sources)
   const owner = isOwner(useMe())
   const save = useSaveStorage()
   const [capGb, setCapGb] = useState<string | null>(null)
@@ -212,7 +221,7 @@ export function Storage() {
   }
 
   return (
-    <div className="flex max-w-4xl flex-col gap-5">
+    <div className="flex max-w-190 flex-col gap-5">
       <PageHeader
         title="Storage"
         sub={
@@ -238,21 +247,32 @@ export function Storage() {
           <AlertTriangleIcon className="mt-0.5 size-4 shrink-0 text-status-warn" />
           <div className="flex flex-1 flex-col gap-1">
             <span className="font-medium">
-              Disk is at {Math.round(r.ratio * 100)}% of the {gb(st.max_disk)} cap
+              Disk is at {Math.round(r.ratio * 100)}% of the {fmtCap(st.max_disk)} cap
             </span>
             <span className="text-muted-foreground text-xs leading-relaxed">
               {capping
                 ? 'quiet is dropping the oldest hour first to stay under it.'
                 : 'At the cap quiet drops the oldest hour first.'}
-              {top && ` ${top.source} is ${Math.round(top.share * 100)}% of the volume;`} muting its noisy lines or
-              raising the cap {shrunk ? `gives the ${fmtWindow(st.retention_ms)} window back` : 'keeps the full window'}
-              .
+              {top && ` ${top.source} is ${Math.round(top.share * 100)}% of the volume today;`} muting its debug lines
+              or raising the cap{' '}
+              {shrunk ? `gives the ${fmtWindow(st.retention_ms)} window back` : 'keeps the full window'}.
             </span>
           </div>
           {owner && (
-            <Button size="sm" onClick={raiseCap}>
-              Raise cap
-            </Button>
+            <span className="flex shrink-0 gap-2">
+              {top && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  render={<Link to="/sources/$name" params={{ name: top.source }} search={{ edit: 'muted' }} />}
+                >
+                  Mute {top.source} debug
+                </Button>
+              )}
+              <Button size="sm" onClick={raiseCap}>
+                Raise cap
+              </Button>
+            </span>
           )}
         </div>
       )}
@@ -262,7 +282,7 @@ export function Storage() {
           <div className="flex items-baseline justify-between">
             <span className="flex items-baseline gap-2">
               <span className={cn('font-mono text-2xl', warn && 'text-status-warn')}>{gb(r.used)}</span>
-              <span className="font-mono text-muted-foreground text-xs">of {gb(st.max_disk)} disk cap</span>
+              <span className="font-mono text-muted-foreground text-xs">of {fmtCap(st.max_disk)} disk cap</span>
             </span>
             <span className={cn('font-mono text-xs', warn ? 'text-status-warn' : 'text-muted-foreground')}>
               {Math.round(r.ratio * 100)}%
@@ -281,12 +301,9 @@ export function Storage() {
           </div>
           <HourStrip r={r} capping={capping} />
           <p className="text-muted-foreground text-xs leading-relaxed">
-            Lines are stored in hourly partitions. When an hour leaves the window, or the disk cap is hit, the oldest
-            hour is dropped first, whole.{' '}
-            {r.bytes_per_hour != null &&
-              (r.cap_in_ms != null
-                ? `At the recent ${fmtBytes(r.bytes_per_hour)}/h the cap is reached in about ${fmtSpan(r.cap_in_ms)}, before the window fills.`
-                : `At the recent ${fmtBytes(r.bytes_per_hour)}/h the window settles near ${fmtBytes(r.steady_bytes ?? 0)}, under the cap.`)}
+            {shrunk && reaches != null
+              ? `Hatched hours were dropped by the cap. Search and flows now reach back ${fmtSpan(reaches)} instead of ${fmtWindow(st.retention_ms)}.`
+              : 'Lines are stored in hourly partitions. When an hour leaves the window, or the disk cap is hit, the oldest hour is dropped first, whole.'}
           </p>
         </div>
       </Panel>
@@ -298,7 +315,9 @@ export function Storage() {
             <>
               How long lines stay searchable and stitchable into flows. Whichever limit hits first wins.
               {r.bytes_per_hour != null &&
-                ` Est. at today's volume: ${WINDOWS.map((w) => `${w.label} ≈ ${fmtBytes((r.bytes_per_hour ?? 0) * (w.ms / HOUR))}`).join(' · ')}.`}
+                (r.bytes_per_hour * (st.retention_ms / HOUR) > st.max_disk
+                  ? ` ${fmtWindow(st.retention_ms)} ≈ ${fmtBytes(r.bytes_per_hour * (st.retention_ms / HOUR))} at today’s volume, more than the ${fmtCap(st.max_disk)} cap, so the cap wins.`
+                  : ` est. at today’s volume: ${WINDOWS.map((w) => `${w.label} ≈ ${fmtBytes((r.bytes_per_hour ?? 0) * (w.ms / HOUR))}`).join(' · ')}.`)}
             </>
           }
           under={
@@ -337,8 +356,8 @@ export function Storage() {
           htmlFor="disk-cap"
           under={
             <>
-              {r.fs_free != null && `${gb(r.fs_free)} free on the data volume · `}
-              {ORIGIN_LABEL[st.max_disk_origin]}
+              {r.fs_free != null && `${+(r.fs_free / 1e9).toFixed(1)} GB free on ${dirOf(r.path) ?? 'the data volume'}`}
+              {st.max_disk_origin !== 'default' && ` · ${ORIGIN_LABEL[st.max_disk_origin]}`}
             </>
           }
         >
@@ -361,19 +380,13 @@ export function Storage() {
             )}
           </form>
         </SettingRow>
-        <SettingRow
-          label="At the cap"
-          hint="The oldest whole hour is dropped first, so search reaches back less far until volume falls. The live stream is never affected."
-        >
-          <span className="font-mono text-xs">drop oldest hour</span>
-        </SettingRow>
       </div>
 
       <Panel title="Volume by source" aside={`${fmtCount(r.lines)} lines · ${gb(r.used)}`}>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left">
-              {['Source', 'Lines in window', 'On disk', 'Share'].map((h) => (
+              {['Source', 'Lines in window', 'On disk', 'Share', 'Rate now'].map((h) => (
                 <th key={h} className="px-4 py-2 font-normal">
                   <Caps>{h}</Caps>
                 </th>
@@ -383,7 +396,7 @@ export function Storage() {
           <tbody>
             {r.sources.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
+                <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
                   Nothing stored yet.
                 </td>
               </tr>
@@ -400,12 +413,13 @@ export function Storage() {
                   <td className="px-4 py-2 font-mono">{r.store === 'sqlite' ? gb(s.disk) : fmtBytes(s.bytes)}</td>
                   <td className="px-4 py-2">
                     <span className="flex items-center gap-2">
-                      <span className="h-1.5 w-32 bg-muted">
+                      <span className="h-1.5 w-28 bg-muted">
                         <span className="block h-full bg-brand" style={{ width: `${s.share * 100}%` }} />
                       </span>
                       <span className="font-mono text-muted-foreground text-xs">{Math.round(s.share * 100)}%</span>
                     </span>
                   </td>
+                  <td className="px-4 py-2 font-mono text-xs">{fmtRate(rates[s.source])}</td>
                 </tr>
               )
             })}

@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogLine } from '@/gen'
+import { clearSessionLost, resetSession } from './session'
 import { applyFrame, applyFrames, backoff, streamKey, streamUrl, useStream } from './use-stream'
 
 const line = (id: number): LogLine => ({
@@ -229,6 +230,32 @@ describe('useStream', () => {
     })
     rerender({ source: 'worker' })
     expect(result.current).toMatchObject({ settled: false, stale: false, lines: [] })
+  })
+
+  it('a 4401 close holds the lines and waits for sign-in instead of retrying (01.5)', async () => {
+    resetSession()
+    const { result } = renderHook(() => useStream({ source: 'api' }))
+    const first = FakeSocket.all[0]
+    act(() => {
+      first.open()
+      first.send({ type: 'backlog', lines: [line(1), line(2)] })
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1)
+    })
+    act(() => (first.onclose as (e: { code: number }) => void)?.({ code: 4401 }))
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+    })
+    // No retry loop into the same 401, and the rows stay on screen.
+    expect(FakeSocket.all).toHaveLength(1)
+    expect(result.current.lines.map((l) => l.id)).toEqual([1, 2])
+    act(() => result.current.retryNow())
+    expect(FakeSocket.all).toHaveLength(1)
+    // Signed in again: the stream picks up.
+    act(() => clearSessionLost())
+    expect(FakeSocket.all).toHaveLength(2)
+    resetSession()
   })
 
   it('does not connect without a source', () => {

@@ -9,14 +9,25 @@ import {
   LoaderCircleIcon,
   WaypointsIcon,
 } from 'lucide-react'
-import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import {
+  type CSSProperties,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { LevelBadge } from '@/components/level-badge'
-import { MutedTag, RowToolbar, useMuteCtx } from '@/components/stream/row-mute'
+import { MutedTag, previewHits, RowToolbar, useMuteCtx } from '@/components/stream/row-mute'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { FlowSummary, LogLine } from '@/gen'
+import { DENSITY_ROW, readAppearance } from '@/lib/appearance'
 import { STRUCTURED_ONLY } from '@/lib/diagram-stats'
 import { fmtDuration } from '@/lib/flow'
 import { useFlowSummaries } from '@/lib/flow-api'
@@ -24,50 +35,27 @@ import { fmtRowTime } from '@/lib/format'
 import { inSpan, jumpIndex, nearestIndex, type Span } from '@/lib/histogram-jump'
 import { parseJsonString } from '@/lib/json-string'
 import { matchesMute } from '@/lib/mute'
-import { chip, lineDuration, previewFields, type RowParts, rowParts } from '@/lib/row'
+import { chip, lineDuration, previewFields, type RowParts, redactedCount, rowParts } from '@/lib/row'
 import { useDebounced } from '@/lib/use-debounced'
 import { cn } from '@/lib/utils'
 
 export { lineDuration }
 
 export const ROW = 28
-/** time 88 · lvl 56 · flow 236 · summary flex · id 128 · steps 64 · duration 64 (design F.1). */
+/**
+ * time 88 · lvl 56 · request (resizable, `--col-request`, default 236) · flow ·
+ * result flex · id 204 · duration 64 (v0.1.1-03.x: no STEPS column; the row
+ * preview says how many events the flow has).
+ */
 export const COLS =
-  'grid grid-cols-[96px_56px_minmax(0,236px)_minmax(0,1fr)_128px_64px_72px] items-center gap-3 pr-3 pl-4'
-/** Squares drawn at most; the title says the real count. */
-const MAX_SQUARES = 8
-
+  'grid grid-cols-[88px_56px_minmax(0,var(--col-request,236px))_minmax(0,1fr)_204px_64px] items-center gap-3 px-3'
+/** The REQUEST column's width: default, limits and where it is remembered (resize review board). */
+export const REQUEST_COL = { def: 236, min: 140, max: 560, key: 'quiet.stream.col.request' } as const
 const TONE: Record<RowParts['tone'], string> = {
   ok: 'text-status-ok',
   warn: 'text-status-warn',
   err: 'text-status-err',
   muted: 'text-muted-foreground',
-}
-
-/** One square per step of the line's flow: ok first, then warnings, then errors. */
-export function StepSquares({ summary }: { summary: FlowSummary | null | undefined }) {
-  if (!summary) return <span className="text-muted-foreground/40">·</span>
-  const n = Math.min(summary.steps, MAX_SQUARES)
-  const err = Math.min(summary.errors, n)
-  const warn = Math.min(summary.warnings, n - err)
-  return (
-    <span
-      className="flex items-center gap-0.5"
-      title={`${summary.steps} ${summary.steps === 1 ? 'step' : 'steps'} · ${summary.line_count} ${summary.line_count === 1 ? 'line' : 'lines'}`}
-    >
-      {Array.from({ length: n }, (_, i) => (
-        <span
-          // biome-ignore lint/suspicious/noArrayIndexKey: squares are positional
-          key={i}
-          className={cn(
-            'size-1.5',
-            i >= n - err ? 'bg-status-err' : i >= n - err - warn ? 'bg-status-warn' : 'bg-foreground/60',
-          )}
-        />
-      ))}
-      {summary.steps > MAX_SQUARES && <span className="ml-1 text-[11px] text-muted-foreground">+</span>}
-    </span>
-  )
 }
 
 export interface RowActions {
@@ -115,7 +103,6 @@ const LogRow = memo(function LogRow({
   line,
   selected,
   expanded,
-  summary,
   actions,
   wrap,
   flash = false,
@@ -123,7 +110,6 @@ const LogRow = memo(function LogRow({
   line: LogLine
   selected: boolean
   expanded: boolean
-  summary: FlowSummary | null | undefined
   actions: RowActions
   wrap: boolean
   /** In the histogram minute just jumped to: briefly tinted. */
@@ -139,6 +125,7 @@ const LogRow = memo(function LogRow({
   const mute = useMuteCtx()
   const mutedBy = mute?.stateOf(line).mutedBy
   const hiding = mute?.hiding != null && !mutedBy && matchesMute(line, mute.hiding)
+  const previewed = !mutedBy && !hiding && previewHits(mute?.previewing, line)
   return (
     // biome-ignore lint/a11y/useSemanticElements: virtualised div grid; a <tr> cannot be absolutely positioned
     <div
@@ -147,6 +134,7 @@ const LogRow = memo(function LogRow({
       data-flash={flash || undefined}
       data-muted={mutedBy ? true : undefined}
       data-hiding={hiding || undefined}
+      data-previewed={previewed || undefined}
       role="row"
       tabIndex={-1}
       onClick={() => actions.onSelect(line)}
@@ -154,20 +142,21 @@ const LogRow = memo(function LogRow({
       className={cn(
         COLS,
         'group/row relative w-full cursor-default border-border/60 border-b font-mono text-[13px] outline-none hover:bg-row-hover',
-        wrap ? 'min-h-7 py-1' : 'h-7',
+        wrap ? 'min-h-(--row-h) py-1' : 'h-(--row-h)',
         bad && 'bg-row-error shadow-[inset_2px_0_0_var(--status-err)]',
         selected && 'bg-row-selected shadow-[inset_2px_0_0_var(--brand)]',
         flash && !selected && 'bg-brand/10 shadow-[inset_2px_0_0_var(--brand)]',
         expanded && 'border-b-0',
         mutedBy && 'text-muted-foreground [&>*:not(:last-child)]:opacity-55',
         hiding && 'opacity-35 transition-opacity duration-150',
+        previewed && 'bg-status-warn/10 shadow-[inset_2px_0_0_var(--status-warn)]',
       )}
     >
       <span className="text-muted-foreground tabular-nums">{fmtRowTime(line.ts)}</span>
       <span>
         <LevelBadge level={line.level} />
       </span>
-      <span className={cn('flex min-w-0 gap-1.5', !wrap && 'truncate')}>
+      <span className={cn('flex min-w-0 gap-2', !wrap && 'truncate')}>
         {p.path ? (
           <>
             <span className="shrink-0 text-muted-foreground">{p.method}</span>
@@ -183,11 +172,11 @@ const LogRow = memo(function LogRow({
           <span className="text-muted-foreground/50">—</span>
         )}
       </span>
-      <span className={cn('flex min-w-0 items-baseline gap-1.5', wrap ? 'flex-wrap break-all' : 'truncate')}>
+      <span className={cn('flex min-w-0 items-baseline gap-2', wrap ? 'flex-wrap break-all' : 'truncate')}>
         <span className={cn(!wrap && 'truncate', !line.fields && 'text-foreground/90')}>{p.event}</span>
         {p.outcome != null && (
           <>
-            <span className="shrink-0 text-muted-foreground">→</span>
+            <span className={cn('shrink-0', TONE[p.tone])}>→</span>
             <Pick
               k={p.outcomeKey}
               v={p.outcomeKey ? f[p.outcomeKey] : p.outcome}
@@ -198,9 +187,12 @@ const LogRow = memo(function LogRow({
             </Pick>
           </>
         )}
-        {p.extra.map((x) => (
-          <span key={x} className="shrink-0 text-muted-foreground">
-            · {x}
+        {p.extra.map((x, i) => (
+          <span
+            key={x}
+            className={cn('shrink-0', i === 0 && p.extraTone ? TONE[p.extraTone] : 'text-muted-foreground')}
+          >
+            <span className="text-muted-foreground">·</span> {x}
           </span>
         ))}
         {mutedBy && <MutedTag rule={mutedBy} />}
@@ -210,11 +202,10 @@ const LogRow = memo(function LogRow({
         k={line.display_id?.key}
         v={line.display_id?.value}
         onFilter={actions.onFilter}
-        className="text-muted-foreground"
+        className="text-muted-foreground text-xs"
       >
         {line.display_id?.value ?? ''}
       </Pick>
-      <StepSquares summary={line.display_id ? summary : undefined} />
       <span
         className={cn(
           'text-right tabular-nums',
@@ -234,6 +225,14 @@ const LogRow = memo(function LogRow({
   )
 })
 
+/** `request.headers` in the preview: how many were removed, else how many there are. */
+function HeadersSummary({ headers }: { headers: Record<string, unknown> }) {
+  const n = Object.keys(headers).length
+  const redacted = redactedCount(headers)
+  if (redacted > 0) return <span className="text-foreground">{redacted} redacted</span>
+  return <span className="text-muted-foreground">{n === 0 ? 'none' : `${n} ${n === 1 ? 'header' : 'headers'}`}</span>
+}
+
 /** The inline preview under a row: a 3-column field grid and the line's actions (design 03.5). */
 export function RowPreview({
   line,
@@ -252,14 +251,21 @@ export function RowPreview({
       className="border-border/60 border-b bg-row-selected/60 py-3 pr-3 pl-[192px] shadow-[inset_2px_0_0_var(--brand)]"
     >
       {fields.length > 0 ? (
-        <dl className="grid grid-cols-3 gap-x-6 gap-y-1 font-mono text-xs">
+        <dl
+          className="grid grid-flow-col grid-cols-3 gap-x-6 font-mono text-xs"
+          style={{ gridTemplateRows: `repeat(${Math.ceil(fields.length / 3)}, auto)` }}
+        >
           {fields.map(([k, sent]) => {
             // A string holding JSON previews as the structure it holds.
             const json = typeof sent === 'string' ? parseJsonString(sent) : undefined
             const v = json ?? sent
             return (
-              <div key={k} className="flex min-w-0 gap-2" title={json ? `${k}: JSON sent as a string` : undefined}>
-                <dt className="w-28 shrink-0 truncate text-syntax-key">
+              <div
+                key={k}
+                className="flex h-7 min-w-0 items-center gap-2 border-border/60 border-b"
+                title={json ? `${k}: JSON sent as a string` : undefined}
+              >
+                <dt className="w-44 shrink-0 truncate text-syntax-key">
                   {k}
                   {json && <span className="text-muted-foreground"> json</span>}
                   {Array.isArray(v) || (v && typeof v === 'object') ? (
@@ -278,6 +284,8 @@ export function RowPreview({
                     <span className="text-syntax-literal">{String(v)}</span>
                   ) : typeof v === 'string' ? (
                     <span className="text-syntax-string">{v}</span>
+                  ) : k.endsWith('.headers') && v && typeof v === 'object' ? (
+                    <HeadersSummary headers={v as Record<string, unknown>} />
                   ) : (
                     <span className="text-muted-foreground">{Array.isArray(v) ? `${v.length} items` : '{…}'}</span>
                   )}
@@ -329,12 +337,126 @@ export function RowPreview({
         )}
         <span className="ml-2 font-mono text-[11px] text-muted-foreground">
           {summary
-            ? `${summary.steps} ${summary.steps === 1 ? 'step' : 'steps'} across ${summary.sources.join(', ')} · `
+            ? `${summary.line_count} ${summary.line_count === 1 ? 'event' : 'events'}${summary.sources.length > 1 ? ` across ${summary.sources.join(', ')}` : ''} · `
             : ''}
           press space to collapse
         </span>
       </div>
     </div>
+  )
+}
+
+const clampCol = (w: number) => Math.round(Math.min(REQUEST_COL.max, Math.max(REQUEST_COL.min, w)))
+
+/** The REQUEST column's width, remembered in this browser. */
+export function useColumnWidth(): [number, (w: number) => void] {
+  const [w, setW] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem(REQUEST_COL.key))
+      return v ? clampCol(v) : REQUEST_COL.def
+    } catch {
+      return REQUEST_COL.def
+    }
+  })
+  const set = useCallback((next: number) => {
+    const c = clampCol(next)
+    setW(c)
+    try {
+      localStorage.setItem(REQUEST_COL.key, String(c))
+    } catch {
+      // private mode: the width just isn't remembered
+    }
+  }, [])
+  return [w, set]
+}
+
+/** Double-click to fit: the widest `METHOD /path` (or job name) among the rows, in 13px Geist Mono. */
+export function fitWidth(rows: LogLine[]): number {
+  let chars = 0
+  for (const l of rows.slice(-500)) {
+    const p = rowParts(l)
+    const n = p.path ? `${p.method ?? ''}  ${p.path}`.length : (p.name ?? '').length
+    if (n > chars) chars = n
+  }
+  return chars ? clampCol(chars * 7.9 + 12) : REQUEST_COL.def
+}
+
+/**
+ * Drag handle on the REQUEST column's right edge (resize review board): drag,
+ * ←/→ 16 px (Shift 64), double-click or Enter to fit, Home resets.
+ */
+function ColumnResize({
+  label,
+  width,
+  onWidth,
+  onFit,
+  onDrag,
+}: {
+  label: string
+  width: number
+  onWidth: (w: number) => void
+  onFit: () => void
+  onDrag?: (dragging: boolean) => void
+}) {
+  const [drag, setDragState] = useState(false)
+  const setDrag = (d: boolean) => {
+    setDragState(d)
+    onDrag?.(d)
+  }
+  const start = useRef<{ x: number; w: number } | null>(null)
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: a focusable splitter; <hr> can't take pointer or key handlers
+    <span
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={`Resize ${label} column`}
+      aria-valuenow={width}
+      aria-valuemin={REQUEST_COL.min}
+      aria-valuemax={REQUEST_COL.max}
+      tabIndex={0}
+      data-dragging={drag || undefined}
+      onPointerDown={(e) => {
+        e.preventDefault()
+        e.currentTarget.setPointerCapture(e.pointerId)
+        start.current = { x: e.clientX, w: width }
+        setDrag(true)
+      }}
+      onPointerMove={(e) => {
+        if (start.current) onWidth(start.current.w + e.clientX - start.current.x)
+      }}
+      onPointerUp={() => {
+        start.current = null
+        setDrag(false)
+      }}
+      onDoubleClick={onFit}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 64 : 16
+        if (e.key === 'ArrowLeft') onWidth(width - step)
+        else if (e.key === 'ArrowRight') onWidth(width + step)
+        else if (e.key === 'Enter') onFit()
+        else if (e.key === 'Home') onWidth(REQUEST_COL.def)
+        else return
+        e.preventDefault()
+      }}
+      className="group/resize absolute top-0 -right-2.5 z-10 flex h-7 w-2 cursor-col-resize touch-none justify-center outline-none"
+    >
+      <span
+        className={cn(
+          'h-full w-px bg-transparent group-hover/resize:bg-brand group-focus-visible/resize:bg-brand',
+          drag && 'w-0.5 bg-brand',
+        )}
+      />
+      <span
+        role="tooltip"
+        className={cn(
+          'pointer-events-none absolute bottom-8 left-1/2 hidden -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 font-mono text-[11px] text-foreground normal-case tracking-normal shadow-sm',
+          'group-hover/resize:block group-focus-visible/resize:block',
+          drag && 'block',
+        )}
+      >
+        {width} px · double-click to fit
+      </span>
+    </span>
   )
 }
 
@@ -364,7 +486,6 @@ function SkeletonRows() {
           <Skeleton className="h-3" style={{ width: `${50 + ((i * 29) % 45)}%` }} />
           <Skeleton className="h-3" style={{ width: `${30 + ((i * 17) % 50)}%` }} />
           <Skeleton className="h-3 w-20" />
-          <Skeleton className="h-3 w-8" />
           <Skeleton className="ml-auto h-3 w-10" />
         </div>
       ))}
@@ -394,7 +515,16 @@ export function LogTable({
   onUnseen,
   jump = null,
   flash = null,
+  banner,
+  footer,
+  onResizing,
 }: {
+  /** A row under the column titles (filtered: "98 of 1,284 lines match · Clear filters", 03.3). */
+  banner?: ReactNode
+  /** The status line at the bottom of the table card (03.x). */
+  footer?: ReactNode
+  /** The column being resized and its width, for the footer; `null` when done. */
+  onResizing?: (r: { label: string; width: number } | null) => void
   /** Oldest first, as the stream keeps them. */
   lines: LogLine[]
   selectedId: number | null
@@ -426,10 +556,28 @@ export function LogTable({
   const lastSeen = useRef(0)
   const top = direction === 'top'
   const rows = useMemo(() => (top ? [...lines].reverse() : lines), [lines, top])
+  const [colWidth, setColWidth] = useColumnWidth()
+  // A worker source reads JOB: most recent rows have a job name and no HTTP request.
+  const jobs = useMemo(() => {
+    let job = 0
+    let req = 0
+    for (const l of lines.slice(-200)) {
+      const p = rowParts(l)
+      if (p.path) req++
+      else if (p.name) job++
+    }
+    return job > req
+  }, [lines])
+  const [resizing, setResizing] = useState(false)
+  useEffect(() => {
+    onResizing?.(resizing ? { label: jobs ? 'Job' : 'Request', width: colWidth } : null)
+  }, [resizing, colWidth, jobs, onResizing])
+  // Row density from Appearance (07.9): 32 / 28 / 24 px.
+  const rowH = DENSITY_ROW[readAppearance().density]
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => ref.current,
-    estimateSize: (i) => (rows[i]?.id === expandedId ? ROW + 120 : ROW),
+    estimateSize: (i) => (rows[i]?.id === expandedId ? rowH + 120 : rowH),
     overscan: 20,
     getItemKey: (i) => rows[i].id,
   })
@@ -463,11 +611,11 @@ export function LogTable({
     if (i >= 0 && !follow) v.scrollToIndex(i, { align: 'auto' })
   }, [selectedId, rows, follow, v])
 
-  // Steps column: summaries for the rows on screen, once scrolling settles.
+  // The open preview says how many events its flow has.
   const items = v.getVirtualItems()
-  const visibleIds = items.map((it) => rows[it.index]?.display_id?.value).filter((x): x is string => Boolean(x))
-  const settled = useDebounced(visibleIds.join('\n'), 400)
-  const summaries = useFlowSummaries(useMemo(() => (settled ? settled.split('\n') : []), [settled]))
+  const expandedFlow = rows.find((l) => l.id === expandedId)?.display_id?.value
+  const settled = useDebounced(expandedFlow ?? '', 150)
+  const summaries = useFlowSummaries(useMemo(() => (settled ? [settled] : []), [settled]))
 
   const unseen = useMemo(() => (follow ? 0 : lines.filter((l) => l.id > lastSeen.current).length), [lines, follow])
   const scrolledUp = useMemo(() => {
@@ -488,23 +636,44 @@ export function LogTable({
     <section
       aria-label="Log lines"
       aria-busy={loading || refreshing || undefined}
-      className="relative flex min-h-0 min-w-0 flex-1 flex-col border"
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col border bg-card"
+      style={{ '--col-request': `${colWidth}px` } as CSSProperties}
     >
       <div
-        aria-hidden
         className={cn(
           COLS,
-          'h-8 shrink-0 border-b font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]',
+          'h-7 shrink-0 border-b font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]',
+          // 1×12px dividers between the column titles (03.x).
+          '[&>*:not(:first-child)]:relative [&>*:not(:first-child)]:before:absolute [&>*:not(:first-child)]:before:top-1/2 [&>*:not(:first-child)]:before:-left-1.5 [&>*:not(:first-child)]:before:h-3 [&>*:not(:first-child)]:before:w-px [&>*:not(:first-child)]:before:-translate-y-1/2 [&>*:not(:first-child)]:before:bg-input',
         )}
       >
-        <span>Time</span>
-        <span>Lvl</span>
-        <span>Flow</span>
-        <span>Summary</span>
-        <span>Id</span>
-        <span>Steps</span>
-        <span className="text-right">Duration</span>
+        <span aria-hidden>Time</span>
+        <span aria-hidden>Lvl</span>
+        <span className="relative" aria-hidden={false}>
+          <span aria-hidden>{jobs ? 'Job' : 'Request'}</span>
+          <ColumnResize
+            label={jobs ? 'Job' : 'Request'}
+            width={colWidth}
+            onWidth={setColWidth}
+            onFit={() => setColWidth(fitWidth(rows))}
+            onDrag={setResizing}
+          />
+        </span>
+        <span aria-hidden>Flow · Result</span>
+        <span aria-hidden>Id</span>
+        <span aria-hidden className="text-right">
+          Duration
+        </span>
       </div>
+      {/* While dragging, the divider runs the full table height (03 resize review). */}
+      {resizing && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute top-0 bottom-0 z-20 w-0.5 bg-brand"
+          style={{ left: colWidth + 185 }}
+        />
+      )}
+      {banner}
       {refreshing && lines.length > 0 && <Refreshing />}
       <div
         ref={ref}
@@ -536,7 +705,6 @@ export function LogTable({
                   line={l}
                   selected={l.id === selectedId}
                   expanded={l.id === expandedId}
-                  summary={summary}
                   actions={actions}
                   wrap={wrap}
                   flash={flash != null && inSpan(l.ts, flash)}
@@ -552,16 +720,16 @@ export function LogTable({
           <div
             aria-hidden
             className={cn(
-              'pointer-events-none absolute inset-x-px h-16 from-background to-transparent',
-              top ? 'top-8 bg-gradient-to-b' : 'bottom-px bg-gradient-to-t',
+              'pointer-events-none absolute inset-x-px h-16 from-card to-transparent',
+              top ? 'top-7 bg-gradient-to-b' : footer ? 'bottom-8 bg-gradient-to-t' : 'bottom-px bg-gradient-to-t',
             )}
           />
           <button
             type="button"
             onClick={() => onFollow(true)}
             className={cn(
-              'absolute left-1/2 flex -translate-x-1/2 items-center gap-2 border border-brand/40 bg-popover px-3 py-1.5 font-mono text-brand text-xs shadow-lg hover:bg-accent',
-              top ? 'top-11' : 'bottom-3',
+              'absolute left-1/2 flex -translate-x-1/2 items-center gap-2 bg-foreground px-3 py-1.5 font-medium text-background text-xs shadow-lg hover:bg-foreground/90',
+              top ? 'top-10' : footer ? 'bottom-11' : 'bottom-3',
             )}
           >
             {unseen > 0 ? `${unseen.toLocaleString()} new ${unseen === 1 ? 'line' : 'lines'}` : 'Jump to latest'}
@@ -570,6 +738,7 @@ export function LogTable({
           </button>
         </>
       )}
+      {footer}
     </section>
   )
 }

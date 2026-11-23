@@ -201,12 +201,12 @@ describe('search route', () => {
     expect(Number(url.searchParams.get('until')) - Number(url.searchParams.get('since'))).toBe(6 * 3_600_000)
 
     // Two flows: req_1 (worker + api) and req_2.
-    expect(screen.getByText(/3 lines in 2 flows/)).toBeInTheDocument()
+    expect(screen.getByText(/3 events in 2 flows/)).toBeInTheDocument()
     // Group by flow is the stitched flow: its title, how many of its lines matched, its steps.
-    expect(await screen.findByText(/failed · 2 of 5 lines match · 6 steps · 9.6s/)).toBeInTheDocument()
+    expect(await screen.findByText('failed · 2 events match')).toBeInTheDocument()
     expect(screen.getByText('settle_dealer_payout')).toBeInTheDocument()
     expect(screen.getByText('api → worker')).toBeInTheDocument()
-    expect(screen.getByText(/1 line match/)).toBeInTheDocument() // req_2 has no flow summary
+    expect(screen.getByText(/1 event matches/)).toBeInTheDocument() // req_2 has no flow summary
     expect(calls.filter((c) => c === '/api/flow-summaries')).toHaveLength(1)
     expect(screen.getAllByRole('link', { name: /Open flow/ })[0]).toHaveAttribute('href', '/flow/req_1')
     expect(screen.getByRole('figure', { name: 'Matches over time' })).toBeInTheDocument()
@@ -230,7 +230,7 @@ describe('search route', () => {
   it('lines view and the no-results state', async () => {
     const user = userEvent.setup()
     const router = renderAt('/search?q=nothing&source=worker&range=1h')
-    expect(await screen.findByText('No lines match in the last 1h')).toBeInTheDocument()
+    expect(await screen.findByText('No events match in the last 1h')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /Search last 24h/ }))
     await waitFor(() => expect(router.state.location.search).toMatchObject({ range: '24h' }))
     expect(router.state.location.search.source).toBeUndefined()
@@ -264,7 +264,7 @@ describe('search route', () => {
     await waitFor(() => expect(held).toBe(true))
     await new Promise((r) => setTimeout(r, 50))
     // In flight: the old rows stay (dimmed, busy) and no empty state or skeleton replaces them.
-    expect(screen.queryByText(/No lines match/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/No events match/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('search-loading')).not.toBeInTheDocument()
     expect(screen.getByText('GET /health', { exact: false })).toBeInTheDocument()
     expect(screen.getByRole('list', { name: 'Search results' }).parentElement).toHaveAttribute('aria-busy', 'true')
@@ -272,7 +272,7 @@ describe('search route', () => {
     expect(screen.getByText('Searching…')).toBeInTheDocument()
 
     release()
-    expect(await screen.findByText('No lines match in the last 6h')).toBeInTheDocument()
+    expect(await screen.findByText('No events match in the last 6h')).toBeInTheDocument()
     expect(screen.queryByText('GET /health', { exact: false })).not.toBeInTheDocument()
     expect(screen.queryByTestId('search-refreshing')).not.toBeInTheDocument()
   })
@@ -295,20 +295,20 @@ describe('search route', () => {
       }),
     )
     const router = renderAt('/search?q=nothing&range=1h')
-    expect(await screen.findByText('No lines match in the last 1h', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByText('No events match in the last 1h', {}, { timeout: 5000 })).toBeInTheDocument()
     await router.navigate({ to: '/search', search: (s) => ({ ...s, q: 'nothing_else' }) })
     await waitFor(() => expect(held).toBe(true))
     await new Promise((r) => setTimeout(r, 50))
-    expect(screen.queryByText(/No lines match/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/No events match/)).not.toBeInTheDocument()
     expect(screen.getByTestId('search-loading')).toBeInTheDocument()
     release()
-    expect(await screen.findByText('No lines match in the last 1h')).toBeInTheDocument()
+    expect(await screen.findByText('No events match in the last 1h')).toBeInTheDocument()
   })
 
   it('no results suggests similar values seen in the window (05.3)', async () => {
     const user = userEvent.setup()
     const router = renderAt('/search?q=nothing_settled&range=1h')
-    expect(await screen.findByText('No lines match in the last 1h')).toBeInTheDocument()
+    expect(await screen.findByText('No events match in the last 1h')).toBeInTheDocument()
     const chip = await screen.findByRole('button', { name: 'operation:settle_payout' }, { timeout: 5000 })
     await user.click(chip)
     await waitFor(() => expect(router.state.location.search.q).toBe('operation:settle_payout'))
@@ -317,7 +317,7 @@ describe('search route', () => {
   it('the time picker shows the whole window; dragging across it picks a range (05.2)', async () => {
     const user = userEvent.setup()
     const router = renderAt('/search?q=dealer')
-    await screen.findByText(/3 lines in 2 flows/)
+    await screen.findByText(/3 events in 2 flows/)
     await user.click(screen.getByRole('button', { name: /Last 6h/ }))
     expect(await screen.findByText('24h window')).toBeInTheDocument()
     const bars = await screen.findAllByTestId('brush-bar')
@@ -335,7 +335,7 @@ describe('search route', () => {
   it('time range picker (Popover) and source select (Select) open and change the URL', async () => {
     const user = userEvent.setup()
     const router = renderAt('/search?q=dealer')
-    await screen.findByText(/3 lines in 2 flows/)
+    await screen.findByText(/3 events in 2 flows/)
     await user.click(screen.getByRole('button', { name: /Last 6h/ }))
     await user.click(await screen.findByRole('option', { name: /Last 24 hours/ }))
     await waitFor(() => expect(router.state.location.search.range).toBe('24h'))
@@ -431,7 +431,7 @@ describe('muted lines in search (06.3)', () => {
     expect(within(row).getByText('muted')).toBeInTheDocument()
     // Other rows are not dimmed.
     expect(document.querySelector('[data-line-id="1"]')).not.toHaveAttribute('data-muted')
-    expect(screen.getByTestId('muted-note')).toHaveTextContent('1 muted line included')
+    expect(screen.getByTestId('muted-note')).toHaveTextContent('1 muted event included · from 1 mute rule on api')
     ex = await downloadHref(user)
     expect(ex.href).not.toContain('muted=')
     expect(ex.row).toBe('included, as in this view')
@@ -448,7 +448,7 @@ describe('muted lines in search (06.3)', () => {
     settingsBody = settingsWith(true)
     renderAt('/search?q=dealer&view=lines')
     const note = await screen.findByTestId('muted-note')
-    expect(note).toHaveTextContent('1 muted line included')
+    expect(note).toHaveTextContent('1 muted event included · from 1 mute rule on api')
     expect(await screen.findByText('GET /health')).toBeInTheDocument()
     expect(within(note).getByRole('button', { name: 'Hide' })).toHaveAttribute('aria-pressed', 'true')
   })
@@ -465,11 +465,11 @@ describe('export dialog', () => {
   it('builds the download URL from the search and copies a qx_ curl', async () => {
     const user = userEvent.setup()
     renderAt('/search?q=dealer&source=api')
-    await screen.findByText(/3 lines in 2 flows/)
+    await screen.findByText(/3 events in 2 flows/)
     await user.click(screen.getByRole('button', { name: 'Export' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Export search results')).toBeInTheDocument()
-    expect(await within(dialog).findByText(/≈ 3 lines · ~4 KB raw/)).toBeInTheDocument()
+    expect(await within(dialog).findByText(/≈ 3 stored events · ~4 KB/)).toBeInTheDocument()
 
     // NDJSON by default, gzip + mask on.
     let href = within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? ''
@@ -487,7 +487,7 @@ describe('export dialog', () => {
     await user.click(within(dialog).getByRole('switch', { name: 'Gzip' }))
     href = within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? ''
     expect(decodeURIComponent(href)).toContain(
-      'columns=timestamp,level,source,request_id,msg,status,duration_ms,job_id',
+      'columns=timestamp,level,source,request_id,flow,status_code,duration_ms,job_id',
     )
     expect(href).toContain('format=csv')
     expect(href).not.toContain('gzip')
@@ -514,7 +514,7 @@ describe('export dialog', () => {
     renderAt('/search?q=huge&source=api')
     await user.click(await screen.findByRole('button', { name: 'Export' }))
     const dialog = await screen.findByRole('dialog')
-    expect(await within(dialog).findByText(/≈ 250k lines/)).toBeInTheDocument()
+    expect(await within(dialog).findByText(/≈ 250k stored events/)).toBeInTheDocument()
 
     // Large: Download is a button that starts a server job (no direct href).
     let download = within(dialog).getByRole('button', { name: 'Download' })
@@ -522,8 +522,8 @@ describe('export dialog', () => {
     await user.click(download)
     const progress = await within(dialog).findByRole('region', { name: 'Export progress' })
     expect(JSON.parse(bodies['/api/export/jobs']).query).toContain('q=huge')
-    expect(within(progress).getByText(/prepares the file on the server first/)).toBeInTheDocument()
-    expect(await within(progress).findByText('Preparing 250k lines · 40%')).toBeInTheDocument()
+    expect(within(progress).getByText(/Export uses a saved snapshot/)).toBeInTheDocument()
+    expect(await within(progress).findByText('Preparing 250k events · 40%')).toBeInTheDocument()
     expect(progress).toHaveTextContent('100k / 250k · ~6s left')
     expect(within(dialog).getByRole('button', { name: 'Download' })).toBeDisabled()
 
@@ -535,7 +535,7 @@ describe('export dialog', () => {
 
     // Again, to the end: a toast with the file and its size, and Download works.
     await user.click(within(dialog).getByRole('button', { name: 'Download' }))
-    await within(dialog).findByText('Preparing 250k lines · 40%')
+    await within(dialog).findByText('Preparing 250k events · 40%')
     jobReady = true
     await waitFor(() => expect(success).toHaveBeenCalledWith('Export ready', expect.anything()), { timeout: 3000 })
     const opts = success.mock.calls.find((c) => c[0] === 'Export ready')?.[1]

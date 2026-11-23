@@ -280,13 +280,13 @@ export default function DiagramView({ line, full, onFullChange, onExit, parsed }
     return () => ro.disconnect()
   }, [])
 
-  // First paint: top-left at 100%, or smaller (not under 60%) when the line is big.
+  // First paint: top-left at 100% (04.8); a large line starts smaller (not under 60%).
   const placed = useRef(false)
   useEffect(() => {
     if (placed.current || size.w === 0) return
     placed.current = true
     const f = fitView(layout.width, layout.height, size.w, size.h)
-    setView({ zoom: clampZoom(Math.max(0.6, f.zoom)), x: 24, y: stats.large ? 56 : 24 })
+    setView({ zoom: stats.large ? clampZoom(Math.max(0.6, f.zoom)) : 1, x: 24, y: stats.large ? 56 : 24 })
   }, [size, layout.width, layout.height, stats.large])
 
   const fitAll = useCallback(() => setView(fitView(layout.width, layout.height, size.w, size.h)), [layout, size])
@@ -535,7 +535,7 @@ export default function DiagramView({ line, full, onFullChange, onExit, parsed }
       return [
         graph.hidden.length > 0 && `${graph.hidden.join(', ')} hidden`,
         graph.collapsed > 0 && `${graph.collapsed} ${graph.collapsed === 1 ? 'branch' : 'branches'} collapsed`,
-        'nothing is dropped: Raw and JSON hold the whole line',
+        'JSON and Raw contain the received record',
       ]
         .filter(Boolean)
         .join(' · ')
@@ -633,7 +633,7 @@ export default function DiagramView({ line, full, onFullChange, onExit, parsed }
           >
             <InfoIcon className="size-3.5 text-muted-foreground" />
             <span>
-              Large line · {stats.keys} keys · {fmtSize(stats.bytes)}
+              Large event · {stats.keys} keys · {fmtSize(stats.bytes)}
             </span>
             <span className="text-muted-foreground">
               · past depth {settings.collapseDepth} starts collapsed · arrays show {settings.arrayCap} items

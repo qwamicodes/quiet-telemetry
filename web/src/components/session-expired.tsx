@@ -37,7 +37,8 @@ export function SessionExpired() {
       <DialogContent showCloseButton={false} className="sm:max-w-md">
         <DialogTitle className="font-semibold text-base">Your session expired</DialogTitle>
         <DialogDescription className="text-muted-foreground text-sm">
-          You were signed out after 30 days, or from another device. Sign in again and you'll land back here.
+          You were signed out after 30 days, or from another device. Sign in again and you'll land back here, where you
+          left it.
         </DialogDescription>
         {user && (
           <div className="flex items-center gap-3 border p-3">

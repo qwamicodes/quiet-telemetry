@@ -22,9 +22,10 @@ const GROUPS: { title: string; rows: [string, string[]][] }[] = [
     ],
   },
   {
-    title: 'Flow + field card',
+    title: 'Flow + card',
     rows: [
       ['previous / next step', ['J', 'K']],
+      ['Fields · JSON · Raw', ['tab']],
       ['copy line as JSON', ['C']],
       ['filter stream by value', ['F']],
       ['open in stream', ['O']],
@@ -41,9 +42,9 @@ const GROUPS: { title: string; rows: [string, string[]][] }[] = [
       ['sources', ['S']],
       ['toggle theme', ['T']],
       ['hide / show the sidebar', ['⌘', 'B']],
-      ['guide', ['G', 'H']],
-      ['check my logs', ['G', 'L']],
-      ['copy the agent prompt', ['⌘', '⇧', 'C']],
+      ['Open guide', ['G', 'H']],
+      ['Copy agent prompt', ['⌘', '⇧', 'C']],
+      ['Check my logs', ['G', 'L']],
       ['this sheet', ['?']],
     ],
   },
@@ -53,10 +54,12 @@ const GROUPS: { title: string; rows: [string, string[]][] }[] = [
 export function ShortcutsSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-4 p-6 sm:max-w-3xl">
-        <DialogHeader>
+      <DialogContent className="gap-4 p-6 sm:max-w-[840px]">
+        <DialogHeader className="flex-row items-center justify-between pr-8">
           <DialogTitle className="text-base">Keyboard shortcuts</DialogTitle>
-          <DialogDescription>press ? anytime</DialogDescription>
+          <DialogDescription className="flex items-center gap-1.5 text-xs">
+            press <Kbd className="border bg-transparent font-mono">?</Kbd> anytime
+          </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-3 gap-6">
           {GROUPS.map((g) => (
@@ -68,12 +71,14 @@ export function ShortcutsSheet({ open, onOpenChange }: { open: boolean; onOpenCh
                 {g.rows.map(([label, keys]) => (
                   <li
                     key={label}
-                    className="flex h-8 items-center justify-between gap-3 border-border/60 border-b text-sm"
+                    className="flex min-h-8 items-center justify-between gap-3 border-border/60 border-b py-1 text-[13px] leading-tight"
                   >
-                    <span className="text-muted-foreground">{label}</span>
+                    <span className="min-w-0 text-muted-foreground">{label}</span>
                     <span className="flex shrink-0 gap-1">
                       {keys.map((k) => (
-                        <Kbd key={k}>{k}</Kbd>
+                        <Kbd key={k} className="border bg-transparent font-mono">
+                          {k}
+                        </Kbd>
                       ))}
                     </span>
                   </li>

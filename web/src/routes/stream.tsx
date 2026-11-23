@@ -1,26 +1,30 @@
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { ClockIcon, FilterXIcon } from 'lucide-react'
+import { ClockIcon, FilterIcon, XIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TOGGLE_PAUSE } from '@/components/command-palette'
 import { ExportDialog } from '@/components/export-dialog'
+import { MobileStream } from '@/components/mobile/mobile-stream'
+import { useIsMobile } from '@/components/mobile/use-mobile'
 import { MutedNote } from '@/components/muted-note'
 import { ErrorRateBanner, GapBanner, SourceLostBanner } from '@/components/stream/connection-banner'
 import { FilterBar, FilterChip } from '@/components/stream/filter-bar'
 import { LogTable, type RowActions } from '@/components/stream/log-table'
-import { MuteContext, type MuteCtx, MuteMenu, useRowMute } from '@/components/stream/row-mute'
+import { MuteContext, type MuteCtx, MuteMenu, previewHits, useRowMute } from '@/components/stream/row-mute'
 import { StreamFooter } from '@/components/stream/stream-footer'
 import { StreamHistogram, withLive } from '@/components/stream/stream-histogram'
 import { liveState, TopBar } from '@/components/stream/top-bar'
 import { Button } from '@/components/ui/button'
 import type { LevelTally, LogLine } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
+import { readAppearance } from '@/lib/appearance'
 import { useConnection } from '@/lib/connection'
 import { fmtClock, fmtTime, fmtWindow } from '@/lib/format'
 import { bufferCovers, fetchHistory, historyQuery, mergeHistory, type Span } from '@/lib/histogram-jump'
 import { chipOf, isOn, type LevelChip, levelsFromParam, levelsToParam, toggleChip } from '@/lib/levels'
-import { useMuted } from '@/lib/mute'
+import { ruleText, useMuted } from '@/lib/mute'
 import { joinQuery, splitQuery } from '@/lib/query'
 import { rowParts } from '@/lib/row'
+import { useSessionLost } from '@/lib/session'
 import { useSettings } from '@/lib/settings-api'
 import { useStreamStats } from '@/lib/stream-api'
 import { toast } from '@/lib/toast'
@@ -90,7 +94,8 @@ export function StreamPage() {
   const setLevels = (next: LevelChip[]) =>
     navigate({ search: (s) => ({ ...s, level: levelsToParam(next, sourceDefault) }), replace: true })
   const [direction, setDirection] = useStreamDirection(settings?.general.stream_direction)
-  const [wrap, setWrap] = useState(false)
+  const [wrap, setWrap] = useState(() => readAppearance().wrap)
+  const mobile = useIsMobile()
 
   // Pick the first source when none is in the URL.
   useEffect(() => {
@@ -159,10 +164,19 @@ export function StreamPage() {
       canGlobal: rowMute.canGlobal,
       stateOf: rowMute.stateOf,
       hiding: rowMute.hiding,
+      previewing: rowMute.previewing,
       onMute: rowMute.onMute,
       onMenu: rowMute.onMenu,
     }),
-    [rowMute.owner, rowMute.canGlobal, rowMute.stateOf, rowMute.hiding, rowMute.onMute, rowMute.onMenu],
+    [
+      rowMute.owner,
+      rowMute.canGlobal,
+      rowMute.stateOf,
+      rowMute.hiding,
+      rowMute.previewing,
+      rowMute.onMute,
+      rowMute.onMenu,
+    ],
   )
   const settingsData = useSettings().data
   const ruleCounts = useMemo(() => {
@@ -288,24 +302,40 @@ export function StreamPage() {
   const tally: LevelTally | null = useMemo(() => {
     if (!snap) return null
     const t = { ...snap.levels }
-    for (const l of liveAfter) {
+    // Lines that streamed in after the snapshot aren't checked against `q` here,
+    // so with a query they stay out of both the tally and the total.
+    for (const l of search.q ? [] : liveAfter) {
       const c = chipOf(l.level)
       if (c) t[c]++
       else t.none++
     }
     return t
-  }, [snap, liveAfter])
+  }, [snap, liveAfter, search.q])
   const total = (snap?.total ?? 0) + (search.q ? 0 : liveAfter.length)
   const matched = tally
-    ? (['debug', 'info', 'warn', 'error'] as const).reduce((n, c) => n + (isOn(levels, c) ? tally[c] : 0), 0) +
-      (levels.length === 0 ? tally.none : 0)
+    ? Math.min(
+        total,
+        (['debug', 'info', 'warn', 'error'] as const).reduce((n, c) => n + (isOn(levels, c) ? tally[c] : 0), 0) +
+          (levels.length === 0 ? tally.none : 0),
+      )
     : null
   const buckets = useMemo(
     () => (snap ? withLive(snap.histogram, snap.hist_since, snap.hist_width, snap.until, liveAfter) : []),
     [snap, liveAfter],
   )
 
-  const live = liveState(state, !follow, everConnected)
+  // 01.5: the session ended; the stream holds what it has until sign-in.
+  const expired = useSessionLost()
+  const [resizingCol, setResizingCol] = useState<{ label: string; width: number } | null>(null)
+  // 03.6: "correlated by …" stays when a filter leaves no rows.
+  const stitchedRef = useRef<{ source: string | null; key: string | null | undefined }>({ source, key: undefined })
+  if (stitchedRef.current.source !== source) stitchedRef.current = { source, key: undefined }
+  if (lines.length) stitchedRef.current.key = stitchedBy(lines)
+  const lastStitched = stitchedRef.current.key
+  const [heldAt, setHeldAt] = useState<number | null>(null)
+  if (expired && heldAt == null) setHeldAt(Date.now())
+  if (!expired && heldAt != null) setHeldAt(null)
+  const live = expired ? 'paused' : liveState(state, !follow, everConnected)
   const filtered = levels.length > 0 || Boolean(search.q)
   const windowLabel = fmtWindow(health?.retention_ms ?? 86_400_000)
   const info = sources?.find((s) => s.name === source)
@@ -373,6 +403,13 @@ export function StreamPage() {
     splitQuery(search.q ?? '').text && `“${splitQuery(search.q ?? '').text}”`,
   ].filter(Boolean)
   const footer = (() => {
+    if (rowMute.previewing) {
+      const pv = rowMute.previewing
+      const onScreen = lines.filter((l) => previewHits(pv, l)).length
+      return `preview · ${pv.total != null ? `${pv.total.toLocaleString()} lines in 24h match ` : ''}${ruleText(pv.rule)}${pv.source ? ` on ${pv.source}` : ' on every source'} · ${onScreen.toLocaleString()} on screen highlighted`
+    }
+    if (resizingCol) return `resizing ${resizingCol.label} · ${resizingCol.width} px · release to save column width`
+    if (expired) return `paused · session expired · ${lines.length.toLocaleString()} lines kept on screen`
     if (conn.down)
       return `disconnected · showing ${lines.length.toLocaleString()} lines received before ${conn.since ? fmtTime(conn.since).slice(0, 8) : 'the drop'}`
     if (live === 'connecting') return 'loading recent lines · then streaming live'
@@ -391,7 +428,7 @@ export function StreamPage() {
       const errs = lines.filter((l) => (l.level === 'error' || l.level === 'fatal') && Date.now() - l.ts < 15 * 60_000)
       return `streaming · ${errs.length.toLocaleString()} errors in the last 15 min`
     }
-    return `streaming · newest at ${direction} · ${total.toLocaleString()} lines in ${windowLabel} window`
+    return `streaming · newest at ${direction} · ${total.toLocaleString()} ${total === 1 ? 'event' : 'events'} · last ${windowLabel}`
   })()
 
   const onUnseen = useCallback((u: number, up: number) => {
@@ -466,6 +503,34 @@ export function StreamPage() {
   // First run: nothing has sent a line yet.
   if (sources?.length === 0 && !source) return <Welcome />
   const sourceName = info?.display_name ?? source ?? ''
+  // Phone (10.1): the compact header and two-line cards; tapping opens the flow.
+  if (mobile)
+    return (
+      <MobileStream
+        name={source ?? ''}
+        sources={sources ?? []}
+        onSource={(name) => navigate({ search: (s) => ({ ...s, source: name }) })}
+        state={sourceLost && live === 'live' ? 'offline' : live}
+        rate={conn.down ? null : rate}
+        levels={levels}
+        filters={chips.length + (text.trim() ? 1 : 0)}
+        buckets={buckets}
+        lines={shown}
+        follow={follow}
+        onFollow={setFollow}
+        direction={direction}
+        onOpen={openFlow}
+        empty={
+          <span className="text-muted-foreground">
+            {quiet
+              ? `${sourceName} has been quiet for 5 minutes.`
+              : filtered
+                ? 'No lines match these filters.'
+                : 'No lines yet. New lines appear here as they arrive.'}
+          </span>
+        }
+      />
+    )
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <TopBar
@@ -475,11 +540,14 @@ export function StreamPage() {
         rate={conn.down ? null : rate}
         matchRate={matchRate}
         buffered={unseen}
-        stitchedBy={lines.length ? stitchedBy(lines) : undefined}
+        heldAt={heldAt}
+        stitchedBy={lastStitched}
         offlineReason={conn.down ? 'server unreachable' : 'reconnecting'}
         onTogglePause={() => setFollow((f) => !f)}
         onExport={source ? () => setExporting(true) : undefined}
       />
+      {/* 03.7: full width under the top bar. */}
+      {sourceLost && source && <SourceLostBanner source={sourceName} lastTs={newest} onRetry={retryNow} />}
       <FilterBar
         chips={chips}
         text={text}
@@ -495,7 +563,17 @@ export function StreamPage() {
         wrap={wrap}
         onWrap={setWrap}
       />
-      {sourceLost && source && <SourceLostBanner source={sourceName} lastTs={newest} onRetry={retryNow} />}
+      {dropped > 0 && <GapBanner dropped={dropped} />}
+      <StreamHistogram
+        buckets={buckets}
+        since={snap?.hist_since ?? Date.now() - 3_600_000}
+        width={snap?.hist_width ?? 60_000}
+        levels={levels}
+        loading={!snap}
+        dim={offline || conn.down}
+        selected={jump?.span.from ?? null}
+        onJump={source ? jumpTo : undefined}
+      />
       {spike && (
         <ErrorRateBanner
           share={spike.share}
@@ -510,29 +588,6 @@ export function StreamPage() {
           }
         />
       )}
-      {dropped > 0 && <GapBanner dropped={dropped} />}
-      <StreamHistogram
-        buckets={buckets}
-        since={snap?.hist_since ?? Date.now() - 3_600_000}
-        width={snap?.hist_width ?? 60_000}
-        levels={levels}
-        loading={!snap}
-        dim={offline || conn.down}
-        selected={jump?.span.from ?? null}
-        onJump={source ? jumpTo : undefined}
-      />
-      {filtered && countsFresh && matched != null && matched > 0 && (
-        <div className="mx-6 mb-2 flex items-center gap-2 font-mono text-muted-foreground text-xs">
-          <span>
-            <span className="text-foreground">{matched.toLocaleString()}</span> of {total.toLocaleString()} lines match
-            · still streaming, matches appear live
-          </span>
-          <Button variant="ghost" size="xs" onClick={clearFilters}>
-            <FilterXIcon />
-            Clear filters
-          </Button>
-        </div>
-      )}
       {(muted > 0 || rowMute.canUndo) && source && (
         <MutedNote
           count={muted}
@@ -544,10 +599,11 @@ export function StreamPage() {
         />
       )}
       <MuteMenu api={rowMute} />
-      <div className="flex min-h-0 flex-1 gap-3 px-6 pb-3">
+      <div className="flex min-h-0 flex-1 gap-3 px-5 pb-5">
         <MuteContext.Provider value={muteCtx}>
           <LogTable
             lines={shown}
+            onResizing={setResizingCol}
             selectedId={selectedId}
             expandedId={expandedId}
             follow={follow}
@@ -561,6 +617,38 @@ export function StreamPage() {
             onUnseen={onUnseen}
             jump={readyJump}
             flash={flash}
+            banner={
+              filtered && countsFresh && matched != null && matched > 0 ? (
+                <div className="flex h-8 shrink-0 items-center gap-2 border-b px-3 font-mono text-muted-foreground text-xs">
+                  <span className="flex-1 truncate">
+                    <span className="text-foreground">{matched.toLocaleString()}</span> of {total.toLocaleString()}{' '}
+                    lines match · still streaming, matches appear live
+                  </span>
+                  <Button variant="ghost" size="xs" onClick={clearFilters}>
+                    <XIcon />
+                    Clear filters
+                  </Button>
+                </div>
+              ) : undefined
+            }
+            footer={
+              <StreamFooter
+                state={
+                  conn.down || offline
+                    ? 'offline'
+                    : pending && live === 'live'
+                      ? 'connecting'
+                      : live === 'live' && filtered
+                        ? 'filtered'
+                        : quiet
+                          ? 'quiet'
+                          : live === 'live' && spike
+                            ? 'errors'
+                            : live
+                }
+                text={footer}
+              />
+            }
             empty={
               !source ? (
                 <span className="text-muted-foreground">Waiting for the first source…</span>
@@ -570,7 +658,7 @@ export function StreamPage() {
                   source={source ?? ''}
                   last={newest}
                   onShow={() => setShowOld(true)}
-                  hasLines={lines.length > 0}
+                  count={lines.length}
                 />
               ) : filtered ? (
                 <NoMatches
@@ -594,26 +682,12 @@ export function StreamPage() {
           />
         </MuteContext.Provider>
       </div>
-      <StreamFooter
-        state={
-          conn.down || offline
-            ? 'offline'
-            : pending && live === 'live'
-              ? 'connecting'
-              : live === 'live' && filtered
-                ? 'filtered'
-                : quiet
-                  ? 'quiet'
-                  : live
-        }
-        text={footer}
-      />
       {source && exporting && (
         <ExportDialog
           open={exporting}
           onOpenChange={setExporting}
-          title="Export lines"
-          description="What you see in the stream: this source, these filters, this time range."
+          title="Export events"
+          description="Export stored events for this source, these filters and this time range."
           params={{
             source,
             levels: levelsCsv || undefined,
@@ -678,25 +752,26 @@ function NoMatches({
     <div className="flex w-full max-w-lg flex-col items-center gap-4">
       <div className="flex w-full flex-col items-center gap-3 border border-dashed p-8 text-center">
         <span className="border p-1.5">
-          <FilterXIcon className="size-4 text-muted-foreground" />
+          <FilterIcon className="size-4 text-muted-foreground" />
         </span>
         <h2 className="font-medium">No lines match</h2>
         <p className="text-muted-foreground">
           Nothing in {source} has {what || 'these filters'} in the last {window}. New matches will appear here live.
         </p>
         <Button size="sm" onClick={onClear}>
+          <XIcon />
           Clear filters
         </Button>
       </div>
       {chips.length > 0 && (
         <p className="flex flex-wrap items-center justify-center gap-1.5 font-mono text-muted-foreground text-xs">
-          Try removing:
+          Try:
           {chips.map((c) => (
-            <button key={c} type="button" onClick={() => onRemove(c)} className="hover:opacity-80">
-              <FilterChip chip={c} />
-            </button>
+            <span key={c} className="flex items-center bg-secondary">
+              <FilterChip chip={c} onRemove={() => onRemove(c)} />
+            </span>
           ))}
-          or{' '}
+          <span className="whitespace-nowrap">or</span>
           <Link
             to="/search"
             search={{ q: [text, ...chips].filter(Boolean).join(' ') || undefined }}
@@ -715,13 +790,13 @@ function QuietState({
   name,
   source,
   last,
-  hasLines,
+  count,
   onShow,
 }: {
   name: string
   source: string
   last: number | null
-  hasLines: boolean
+  count: number
   onShow: () => void
 }) {
   return (
@@ -736,11 +811,11 @@ function QuietState({
       <p className="font-mono text-muted-foreground text-xs">
         <span className="text-status-ok">●</span> still listening
         {last ? ` · last line ${fmtTime(last).slice(0, 8)}` : ''}
-        {hasLines && (
+        {count > 0 && (
           <>
             {' · '}
             <button type="button" onClick={onShow} className="text-brand hover:underline">
-              show the last lines
+              show the last {count.toLocaleString()} {count === 1 ? 'line' : 'lines'}
             </button>
           </>
         )}

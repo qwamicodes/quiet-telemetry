@@ -15,7 +15,7 @@ export const KIND_INFO: Record<ConnectKind, { letter: string; title: string; blu
   vector: { letter: 'V', title: 'Vector', blurb: 'add an http sink to vector.toml' },
   fluentbit: { letter: 'F', title: 'Fluent Bit', blurb: 'forward with the http output' },
   otlp: { letter: 'O', title: 'OpenTelemetry', blurb: 'OTLP logs + traces over HTTP' },
-  file: { letter: 'S', title: 'File / stdin', blurb: 'curl a file or pipe a process' },
+  file: { letter: 'S', title: 'File / stdin', blurb: 'pipe or tail anything' },
 }
 
 /** How a source kind reads in lists (`fluentbit` → `fluent bit`). */
@@ -178,3 +178,8 @@ export function firstArrival(
   if (bindsSource(kind)) return null
   return grew.find((s) => s.kind === RECEIVER[kind]) ?? null
 }
+
+const README = 'https://github.com/qwamicodes/quiet-telemetry#'
+
+/** The "Docs ↗" link in a connect panel (02.2–02.8). */
+export const docsFor = (k: ConnectKind) => README + (k === 'docker' ? '4-point-your-own-apps-at-it' : 'ingest')

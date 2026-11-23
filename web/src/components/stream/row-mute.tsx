@@ -18,6 +18,7 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -37,6 +38,7 @@ import {
 } from '@/components/mute/rule-bits'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { LogLine, MutePreview, MuteRule, MuteScope } from '@/gen'
 import { isOwner, useMe } from '@/lib/auth-api'
 import {
@@ -90,11 +92,25 @@ export interface MuteCtx {
   stateOf: (l: LogLine) => RowMuteState
   /** Rows matching this rule fade out while it is saved. */
   hiding: MuteRule | null
+  /** The option picked in the open mute menu: matching rows are tinted (03.16). */
+  previewing?: MutePreviewing | null
   /** `M` / the button: mute with the default option, or Unmute a muted row. */
   onMute: (l: LogLine) => void
   /** The caret / `⇧M`: open the menu at `anchor`. */
   onMenu: (l: LogLine, anchor: Element) => void
 }
+
+export interface MutePreviewing {
+  rule: MuteRule
+  /** Only this source, or every source for a global rule. */
+  source: string | null
+  /** Lines in 24h the rule would hide, once counted. */
+  total?: number
+}
+
+/** Does the previewed rule hit this row? */
+export const previewHits = (p: MutePreviewing | null | undefined, l: LogLine) =>
+  p != null && (p.source == null || p.source === l.source) && matchesMute(l, p.rule)
 
 export const MuteContext = createContext<MuteCtx | null>(null)
 export const useMuteCtx = () => useContext(MuteContext)
@@ -129,7 +145,7 @@ export function RowToolbar({
     f()
   }
   const btn =
-    'flex h-6 items-center gap-1 border bg-popover px-1.5 text-muted-foreground text-xs outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3.5'
+    'flex h-6 items-center gap-1 border bg-popover px-1.5 font-sans text-foreground text-xs outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3.5'
   return (
     <span
       className={cn(
@@ -149,19 +165,34 @@ export function RowToolbar({
       <span role="toolbar" aria-label="Row actions" className="pointer-events-auto flex gap-1">
         {ctx && (
           <span className="flex">
-            <button
-              type="button"
-              tabIndex={-1}
-              title={tip}
-              aria-label={ctx.owner ? tip.replace(/ · M$/, '') : `${label} (${OWNERS_ONLY})`}
-              aria-keyshortcuts="M"
-              aria-disabled={!ctx.owner || undefined}
-              onClick={stop(() => ctx.onMute(line))}
-              className={cn(btn, !ctx.owner && 'cursor-not-allowed opacity-60')}
-            >
-              {!ctx.owner ? <LockIcon /> : st?.mutedBy ? <EyeIcon /> : <EyeOffIcon />}
-              {label}
-            </button>
+            {/* 03.15: a styled tooltip, the rule in bold, its scope muted, then M. */}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label={ctx.owner ? tip.replace(/ · M$/, '') : `${label} (${OWNERS_ONLY})`}
+                    aria-keyshortcuts="M"
+                    aria-disabled={!ctx.owner || undefined}
+                    onClick={stop(() => ctx.onMute(line))}
+                    className={cn(btn, !ctx.owner && 'cursor-not-allowed opacity-60')}
+                  />
+                }
+              >
+                {!ctx.owner ? <LockIcon /> : st?.mutedBy ? <EyeIcon /> : <EyeOffIcon />}
+                {label}
+              </TooltipTrigger>
+              <TooltipContent side="top" className="flex items-center gap-2">
+                <span className="flex flex-col gap-0.5">
+                  <span className="font-semibold">{tip.replace(/ · M$/, '').split(' · ')[0]}</span>
+                  {tip.replace(/ · M$/, '').split(' · ').length > 1 && (
+                    <span className="opacity-70">{tip.replace(/ · M$/, '').split(' · ').slice(1).join(' · ')}</span>
+                  )}
+                </span>
+                {ctx.owner && <Kbd className="h-4 min-w-4 text-[10px]">M</Kbd>}
+              </TooltipContent>
+            </Tooltip>
             <button
               ref={caret}
               type="button"
@@ -226,7 +257,12 @@ export function MutedTag({ rule }: { rule: MuteRule }) {
 
 export interface MenuState {
   line: LogLine
-  anchor: Element
+  /**
+   * Where the caret was when the menu opened. A snapshot, not the element: on a
+   * live stream the virtualised row re-renders and its element detaches, which
+   * dropped the menu in the top-left corner (09.6).
+   */
+  anchor: { getBoundingClientRect: () => DOMRect }
 }
 
 /**
@@ -407,6 +443,13 @@ function ScopeMenu({ line, api, onClose }: { line: LogLine; api: RowMuteApi; onC
   const pv = (i: number): MutePreview | undefined => (options[i].disabled ? undefined : preview.data?.[i])
   const chosen = options[pick]
   const p = pv(pick)
+  const setPreviewing = api.setPreviewing
+  useEffect(() => {
+    setPreviewing(
+      chosen.disabled ? null : { rule: chosen.rule, source: scope === 'global' ? null : line.source, total: p?.total },
+    )
+  }, [chosen, scope, line.source, p?.total, setPreviewing])
+  useEffect(() => () => setPreviewing(null), [setPreviewing])
   const nSources = p ? Object.keys(p.per_source).length : 0
   const known = Object.keys(api.allSources()).length
   const switchScope = () => api.canGlobal && setScope((s) => (s === 'source' ? 'global' : 'source'))
@@ -431,14 +474,17 @@ function ScopeMenu({ line, api, onClose }: { line: LogLine; api: RowMuteApi; onC
       e.preventDefault()
       switchScope()
     } else if (e.key === 'Enter') {
+      // The stream's own Enter opens the flow; this one saves the rule only.
       e.preventDefault()
+      e.stopPropagation()
       confirm()
     } else if (/^[123]$/.test(e.key)) {
       const i = Number(e.key) - 1
       if (!options[i].disabled) setPick(i)
     }
   }
-  const verb = chosen.key === 'message' ? 'Mute message' : 'Mute route'
+  // 03.20: the primary says where the rule applies.
+  const verb = `Mute on ${line.source}`
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the menu's own keys (↑↓ 1 2 3 tab ↵)
@@ -534,7 +580,7 @@ function ScopeMenu({ line, api, onClose }: { line: LogLine; api: RowMuteApi; onC
         )}
       </section>
       <div className="flex items-center gap-2 px-3 py-2">
-        <span className="flex items-center gap-1 font-mono text-[11px] text-muted-foreground">
+        <span className="flex min-w-0 items-center gap-1 overflow-hidden font-mono text-[11px] text-muted-foreground">
           <Kbd>↑</Kbd>
           <Kbd>↓</Kbd> choose
           {api.canGlobal && (
@@ -546,10 +592,10 @@ function ScopeMenu({ line, api, onClose }: { line: LogLine; api: RowMuteApi; onC
           <Kbd>esc</Kbd> close
         </span>
         <span className="flex-1" />
-        <Button size="sm" variant="ghost" onClick={onClose}>
+        <Button size="sm" variant="ghost" className="shrink-0" onClick={onClose}>
           Cancel
         </Button>
-        <Button size="sm" onClick={confirm} disabled={Boolean(chosen.disabled)}>
+        <Button size="sm" className="shrink-0" onClick={confirm} disabled={Boolean(chosen.disabled)}>
           {scope === 'global' ? 'Mute everywhere' : verb} <Kbd>↵</Kbd>
         </Button>
       </div>
@@ -640,6 +686,7 @@ export interface RowMuteApi extends MuteCtx {
   canUndo: boolean
   menu: MenuState | null
   closeMenu: () => void
+  setPreviewing: (p: MutePreviewing | null) => void
 }
 
 const UNDO_MS = 8000
@@ -654,6 +701,7 @@ export function useRowMute(): RowMuteApi {
   const apply = useSetGlobalApply()
   const navigate = useNavigate()
   const [hiding, setHiding] = useState<MuteRule | null>(null)
+  const [previewing, setPreviewing] = useState<MutePreviewing | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const undoRef = useRef<{ fn: () => void; until: number } | null>(null)
   const [undoUntil, setUndoUntil] = useState(0)
@@ -700,6 +748,7 @@ export function useRowMute(): RowMuteApi {
             ? `${fmtN(preview.total)} lines hidden${global ? ` on ${Object.keys(preview.per_source).length} sources` : ''} · `
             : ''
         toast.success(`Muted ${ruleTarget(res.rule)} ${global ? 'everywhere' : `on ${l.source}`}`, {
+          icon: <EyeOffIcon />,
           description: (
             <span className="flex flex-col gap-1">
               <span className="font-mono text-[11px]">
@@ -799,7 +848,8 @@ export function useRowMute(): RowMuteApi {
         toast.info(OWNERS_ONLY)
         return
       }
-      setMenu({ line: l, anchor })
+      const rect = anchor.getBoundingClientRect()
+      setMenu({ line: l, anchor: { getBoundingClientRect: () => rect } })
     },
     [owner],
   )
@@ -809,6 +859,8 @@ export function useRowMute(): RowMuteApi {
     canGlobal: owner,
     stateOf,
     hiding,
+    previewing,
+    setPreviewing,
     onMute,
     onMenu,
     mute,

@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import {
-  BookOpenIcon,
+  BotIcon,
   CopyIcon,
   CornerDownLeftIcon,
   GaugeIcon,
   GitForkIcon,
   KeyboardIcon,
+  ListIcon,
   MoonIcon,
   PauseIcon,
   PlusIcon,
@@ -33,13 +34,40 @@ import { fetchJson, useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, isRecent } from '@/lib/format'
-import { copyPrompt, stackNow } from '@/lib/guide'
+import { copyPrompt, STACKS, stackNow } from '@/lib/guide'
 import { searchResponse } from '@/lib/schemas'
 import { groupSources, KIND_TAG } from '@/lib/source-groups'
 import { useCustomGroups } from '@/lib/source-groups-api'
 import { useTheme } from '@/lib/theme'
 import { useDebounced } from '@/lib/use-debounced'
 import { useRates } from '@/lib/use-rates'
+
+const stackLabel = (id: string) => STACKS.find((x) => x.id === id)?.label ?? id
+
+/** Shortcut keys as keycaps ("⌘ ⇧ C" → three boxes). */
+function Keys({ k }: { k: string }) {
+  return (
+    <CommandShortcut className="tracking-normal">
+      {k.split(' ').map((x) => (
+        <Kbd key={x} className="h-[18px] min-w-[18px] border bg-transparent font-mono text-[10px]">
+          {x}
+        </Kbd>
+      ))}
+    </CommandShortcut>
+  )
+}
+
+/** ↵ on the highlighted row (03.9). */
+function Enter() {
+  return (
+    <Kbd
+      data-slot="command-shortcut"
+      className="ml-auto hidden h-[18px] min-w-[18px] border bg-transparent group-data-selected/command-item:inline-flex"
+    >
+      <CornerDownLeftIcon />
+    </Kbd>
+  )
+}
 
 /** The stream listens for this to pause/resume from the palette. */
 export const TOGGLE_PAUSE = 'quiet:toggle-pause'
@@ -82,6 +110,7 @@ export function CommandPalette({
   const matches = useIdMatches(open ? settled : '').data ?? []
   const summaries = useFlowSummaries(matches.map((m) => m.id.value))
   const onStream = typeof window !== 'undefined' && window.location.pathname === '/'
+  const currentSource = onStream ? new URLSearchParams(window.location.search).get('source') : null
 
   // Sources under their group (board v0.1-03.9); a group opens Sources filtered, it never streams.
   const custom = useCustomGroups()
@@ -98,9 +127,10 @@ export function CommandPalette({
         <StatusDot status={s.paused ? 'warn' : live ? 'ok' : 'idle'} />
         <span className="font-mono">{s.display_name ?? s.name}</span>
         <span className="font-mono text-muted-foreground text-xs">
-          {kindLabel(s.kind)} ·{' '}
-          {s.paused ? 'paused' : live && rate ? `${rate < 10 ? rate.toFixed(1) : Math.round(rate)} lines/s` : 'idle'}
+          {kindLabel(s.kind).toLowerCase()} ·{' '}
+          {s.paused ? 'paused' : live && rate ? `${rate < 10 ? Number(rate.toFixed(1)) : Math.round(rate)}/s` : 'idle'}
         </span>
+        <Enter />
       </CommandItem>
     )
   }
@@ -118,9 +148,9 @@ export function CommandPalette({
       onOpenChange={onOpenChange}
       title="Jump to"
       description="Sources, flow ids and actions"
-      className="sm:max-w-xl"
+      className="top-[120px] translate-y-0 sm:max-w-[640px]"
     >
-      <Command>
+      <Command data-slot="palette">
         <div className="relative">
           <CommandInput
             placeholder="Jump to a source, paste an id…"
@@ -134,7 +164,7 @@ export function CommandPalette({
             }}
           />
           <span className="pointer-events-none absolute top-1/2 right-3 flex -translate-y-1/2 items-center gap-2 font-mono text-[11px] text-muted-foreground">
-            sources, flow ids, actions <Kbd>esc</Kbd>
+            sources, groups, flow ids, actions <Kbd className="border bg-transparent font-mono">esc</Kbd>
           </span>
         </div>
         <CommandList className="max-h-[28rem]">
@@ -170,6 +200,7 @@ export function CommandPalette({
                     {KIND_TAG[g.kind]} · {g.sending}/{g.total} sending
                   </span>
                   <CommandShortcut className="tracking-normal">show on Sources</CommandShortcut>
+                  <Enter />
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -214,7 +245,7 @@ export function CommandPalette({
             <CommandItem value={`search last 24h ${id}`} forceMount={id.length > 0} onSelect={searchAll}>
               <SearchIcon />
               {id ? <>Search last 24h for “{id}”</> : 'Search last 24h'}
-              <CommandShortcut>⌘↵</CommandShortcut>
+              <Keys k="⌘ ↵" />
             </CommandItem>
             {id.length > 0 &&
               grouped
@@ -246,65 +277,82 @@ export function CommandPalette({
               >
                 <PauseIcon />
                 Pause stream
-                <CommandShortcut>space</CommandShortcut>
+                <Keys k="space" />
               </CommandItem>
             )}
             <CommandItem value="connect a source" onSelect={() => run(() => navigate({ to: '/connect' }))}>
               <PlusIcon />
               Connect a source
+              <Enter />
             </CommandItem>
             <CommandItem value="switch theme light dark" onSelect={() => run(toggle)}>
               {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
               Switch to {theme === 'dark' ? 'light' : 'dark'} theme
-              <CommandShortcut>T</CommandShortcut>
+              <Keys k="T" />
             </CommandItem>
             {onOpenShortcuts && (
               <CommandItem value="keyboard shortcuts help" onSelect={() => run(onOpenShortcuts)}>
                 <KeyboardIcon />
                 Keyboard shortcuts
-                <CommandShortcut>?</CommandShortcut>
+                <Keys k="?" />
               </CommandItem>
             )}
-            <CommandItem
-              value="guide how to use quiet help docs"
-              onSelect={() => run(() => navigate({ to: '/guide' }))}
-            >
-              <BookOpenIcon />
-              Guide · how to use quiet
-              <CommandShortcut>G H</CommandShortcut>
+            <CommandItem value="settings" onSelect={() => run(() => navigate({ to: '/settings' }))}>
+              <SettingsIcon />
+              Settings
+              <Enter />
             </CommandItem>
-            <CommandItem
-              value="check my logs lint scorecard guide"
-              onSelect={() => run(() => navigate({ to: '/guide', search: { tab: 'check' } }))}
-            >
-              <GaugeIcon />
-              Check my logs
-              <CommandShortcut>G L</CommandShortcut>
-            </CommandItem>
+          </CommandGroup>
+          {/* Guide entry points (11.6 B). */}
+          <CommandGroup heading="Guide">
             <CommandItem
               value="copy agent prompt logging instrument"
               onSelect={() => run(() => void copyPrompt(stackNow()))}
             >
               <CopyIcon />
-              Copy the agent logging prompt
-              <CommandShortcut>⌘⇧C</CommandShortcut>
+              Copy agent prompt
+              <span className="font-mono text-muted-foreground text-xs">{stackLabel(stackNow())} notes</span>
+              <Keys k="⌘ ⇧ C" />
             </CommandItem>
-            <CommandItem value="settings" onSelect={() => run(() => navigate({ to: '/settings' }))}>
-              <SettingsIcon />
-              Settings
+            <CommandItem
+              value="open guide instrument with an agent"
+              onSelect={() => run(() => navigate({ to: '/guide', search: { tab: 'agent' } }))}
+            >
+              <BotIcon />
+              Open guide · Instrument with an agent
+              <Enter />
+            </CommandItem>
+            <CommandItem
+              value="check my logs lint scorecard guide"
+              onSelect={() =>
+                run(() => navigate({ to: '/guide', search: { tab: 'check', source: currentSource ?? undefined } }))
+              }
+            >
+              <GaugeIcon />
+              Check my logs
+              {currentSource && <span className="font-mono text-muted-foreground text-xs">{currentSource}</span>}
+              <Keys k="G L" />
+            </CommandItem>
+            <CommandItem
+              value="open guide the canonical line how to use quiet help docs"
+              onSelect={() => run(() => navigate({ to: '/guide', search: { tab: 'canonical' } }))}
+            >
+              <ListIcon />
+              Open guide · The canonical line
+              <Keys k="G H" />
             </CommandItem>
           </CommandGroup>
         </CommandList>
         <div className="flex items-center justify-between border-t px-3 py-2 text-[11px] text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <Kbd>↑</Kbd>
-            <Kbd>↓</Kbd> move{' '}
-            <Kbd className="ml-2">
+            <Kbd className="border bg-transparent">↑</Kbd>
+            <Kbd className="border bg-transparent">↓</Kbd> move{' '}
+            <Kbd className="ml-2 border bg-transparent">
               <CornerDownLeftIcon />
             </Kbd>{' '}
-            open
+            stream source
           </span>
-          <span>tip: paste any id to jump straight to its flow</span>
+          <span>a group opens Sources filtered to it; it never streams</span>
         </div>
       </Command>
     </CommandDialog>

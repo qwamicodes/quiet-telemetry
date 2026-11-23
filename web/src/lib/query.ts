@@ -14,6 +14,20 @@ export function splitQuery(q: string): { chips: string[]; text: string } {
   return { chips, text: text.join(' ') }
 }
 
+/** Search filters that aren't fields of the line (level, source, id…). */
+const NOT_FIELD = new Set(['level', 'source', 'id', 'is', 'has', 'muted'])
+
+/** `key:value` filters on fields (not negated), as `[key, value]`: what a result row shows it matched. */
+export function fieldFilters(q: string): [string, string][] {
+  return splitQuery(q)
+    .chips.filter((c) => !c.startsWith('-'))
+    .map((c) => {
+      const i = c.indexOf(':')
+      return [c.slice(0, i), c.slice(i + 1).replace(/"/g, '')] as [string, string]
+    })
+    .filter(([k]) => !NOT_FIELD.has(k))
+}
+
 export function joinQuery(chips: string[], text: string): string {
   return [...chips, text.trim()].filter(Boolean).join(' ')
 }

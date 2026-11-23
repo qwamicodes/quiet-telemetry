@@ -10,6 +10,7 @@ export type LintReport = { source: string,
  */
 sampled: number, 
 /**
- * Checks that pass, out of those that apply.
+ * Checks that pass, out of those that pass, warn or fail (`review`,
+ * `optional` and `na` are not scored).
  */
 passed: number, applicable: number, checks: Array<LintCheck>, };

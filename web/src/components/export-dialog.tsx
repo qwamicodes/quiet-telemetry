@@ -26,7 +26,7 @@ import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
 /** CSV columns on by default, and the ones offered to add (design 05.5). */
-export const DEFAULT_COLUMNS = ['timestamp', 'level', 'source', 'request_id', 'msg', 'status', 'duration_ms']
+export const DEFAULT_COLUMNS = ['timestamp', 'level', 'source', 'request_id', 'flow', 'status_code', 'duration_ms']
 const SUGGESTED = ['job_id', 'method', 'path', 'user_id', 'error.message']
 /** Over this many lines the server prepares the file first, with progress (design 05.7). */
 export const LARGE = 100_000
@@ -34,7 +34,7 @@ export const LARGE = 100_000
 const FORMATS: { value: ExportFormat; title: string; hint: string }[] = [
   { value: 'ndjson', title: 'NDJSON', hint: 'Raw lines exactly as received, one per line.' },
   { value: 'json', title: 'JSON array', hint: 'One array of parsed lines with their fields.' },
-  { value: 'csv', title: 'CSV', hint: 'Pick columns. Opens in any spreadsheet.' },
+  { value: 'csv', title: 'CSV', hint: 'Nested values stay JSON. Missing fields stay empty.' },
 ]
 
 // ---- server-side preparing (05.7 / 05.8; survives closing the dialog) ------------------
@@ -163,7 +163,7 @@ function Progress({ j }: { j: Job }) {
       <div className="flex items-center gap-3 font-mono text-xs">
         <StatusDot status={j.ready ? 'ok' : 'warn'} />
         <span className="font-sans font-medium text-sm">
-          {j.ready ? `Ready · ${fmtCount(j.total)} lines` : `Preparing ${fmtCount(j.total)} lines · ${pct}%`}
+          {j.ready ? `Ready · ${fmtCount(j.total)} events` : `Preparing ${fmtCount(j.total)} events · ${pct}%`}
         </span>
         {!j.ready && (
           <span className="text-muted-foreground">
@@ -183,8 +183,8 @@ function Progress({ j }: { j: Job }) {
         <div className="h-full bg-brand transition-[width]" style={{ width: `${pct}%` }} />
       </div>
       <p className="text-muted-foreground text-xs">
-        Over ~{fmtCount(LARGE)} lines quiet prepares the file on the server first. You can close this; a toast tells you
-        when it is ready. Lines that expire meanwhile are still included.
+        Export uses a saved snapshot. You can close this and download when ready. Sampled-out or expired events cannot
+        be recovered.
       </p>
     </section>
   )
@@ -395,7 +395,7 @@ export function ExportDialog({
               ? footnote({ total, bytes })
               : total == null
                 ? 'Counting…'
-                : `≈ ${fmtCount(total)} lines · ~${fmtBytes(bytes ?? 0)} raw${opts.gzip ? ` · ~${fmtBytes(Math.round((bytes ?? 0) / 12))} gzipped` : ''}`}
+                : `≈ ${fmtCount(total)} stored events · ~${fmtBytes(bytes ?? 0)}${opts.gzip ? ` · ~${fmtBytes(Math.round((bytes ?? 0) / 12))} gzipped` : ''}`}
           </div>
         </div>
 
@@ -441,7 +441,7 @@ export function ExportDialog({
                 Reset to default
               </Button>
             </div>
-            <ol className="flex flex-col border">
+            <ol className="flex flex-wrap gap-1.5">
               {opts.columns.map((c, i) => (
                 <li
                   key={c}
@@ -452,15 +452,15 @@ export function ExportDialog({
                     if (drag && drag !== c) moveColumn(drag, c)
                   }}
                   onDragEnd={() => setDrag(null)}
+                  title={`Column ${i + 1}`}
                   className={cn(
-                    'flex h-8 items-center gap-2 border-border/60 border-b px-2 last:border-b-0',
-                    drag === c && 'bg-brand/10',
+                    'flex h-7 items-center gap-1.5 border border-brand/40 bg-brand/5 px-1.5',
+                    drag === c && 'bg-brand/15',
                   )}
                 >
                   <GripVerticalIcon className="size-3.5 cursor-grab text-muted-foreground" aria-hidden />
-                  <span className="w-5 font-mono text-[11px] text-muted-foreground">{i + 1}</span>
                   <Checkbox checked onCheckedChange={(v) => toggleColumn(c, Boolean(v))} aria-label={c} />
-                  <span className="flex-1 font-mono text-xs">{c}</span>
+                  <span className="font-mono text-xs">{c}</span>
                 </li>
               ))}
             </ol>
@@ -468,7 +468,10 @@ export function ExportDialog({
               add:
               {SUGGESTED.filter((c) => !opts.columns.includes(c)).map((c) => (
                 // biome-ignore lint/a11y/noLabelWithoutControl: the checkbox inside is the control
-                <label key={c} className="flex cursor-pointer items-center gap-1.5 hover:text-foreground">
+                <label
+                  key={c}
+                  className="flex h-7 cursor-pointer items-center gap-1.5 border px-1.5 hover:text-foreground"
+                >
                   <Checkbox checked={false} onCheckedChange={() => toggleColumn(c, true)} aria-label={`Add ${c}`} />
                   {c}
                 </label>
@@ -499,7 +502,7 @@ export function ExportDialog({
           />
           <Option
             title="Gzip"
-            hint="Usually 10–20× smaller. The file ends in .gz."
+            hint="Compress the download. The file ends in .gz."
             checked={opts.gzip}
             onChange={(gzip) => set({ gzip })}
           />
@@ -509,9 +512,7 @@ export function ExportDialog({
           <section className="flex flex-col gap-2">
             <p className="flex items-center gap-1.5 font-mono text-status-ok text-xs">
               <CheckIcon className="size-3.5" /> curl copied
-              <span className="text-muted-foreground">
-                · qx_ token: read-only, this query only, reusable, expires in 15 min
-              </span>
+              <span className="text-muted-foreground">· read-only · this export only · expires in 15 min</span>
             </p>
             <pre
               data-testid="curl"

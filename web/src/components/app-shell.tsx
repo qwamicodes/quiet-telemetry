@@ -1,6 +1,8 @@
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { type CSSProperties, useState } from 'react'
 import { CommandPalette } from '@/components/command-palette'
+import { MobileTabBar } from '@/components/mobile/tab-bar'
+import { useIsMobile } from '@/components/mobile/use-mobile'
 import { SessionExpired } from '@/components/session-expired'
 import { ShortcutsSheet } from '@/components/shortcuts-sheet'
 import { Sidebar } from '@/components/sidebar'
@@ -37,7 +39,9 @@ export function AppShell() {
   const navigate = useNavigate()
   const { toggle } = useTheme()
   const sidebar = useSidebarPrefs()
-  const floatToggle = sidebar.hidden && sidebar.inlineToggles === 0
+  const mobile = useIsMobile()
+  // Phone (10.x): no sidebar; a tab bar at the bottom instead.
+  const floatToggle = !mobile && sidebar.hidden && sidebar.inlineToggles === 0
   const source = useRouterState({
     select: (s) => (s.location.search as { source?: string }).source ?? null,
   })
@@ -47,7 +51,7 @@ export function AppShell() {
     'mod+/': () => navigate({ to: '/search' }),
     s: () => navigate({ to: '/sources' }),
     t: toggle,
-    // ⌘B hides / shows the sidebar (desktop; on mobile it is a fixed column).
+    // ⌘B hides / shows the sidebar (desktop; a phone uses the tab bar).
     'mod+b': () => {
       if (window.innerWidth >= SIDEBAR_DESKTOP) sidebar.toggle()
     },
@@ -69,7 +73,13 @@ export function AppShell() {
           data-sidebar-root
           style={{ '--sidebar-w': `${sidebar.width}px` } as CSSProperties}
         >
-          <Sidebar activeSource={source} onOpenPalette={() => setPalette(true)} onOpenShortcuts={() => setKeys(true)} />
+          {!mobile && (
+            <Sidebar
+              activeSource={source}
+              onOpenPalette={() => setPalette(true)}
+              onOpenShortcuts={() => setKeys(true)}
+            />
+          )}
           <main
             className={cn(
               'relative flex min-w-0 flex-1 flex-col',
@@ -82,6 +92,7 @@ export function AppShell() {
             <Outlet />
           </main>
         </div>
+        {mobile && <MobileTabBar />}
         <CommandPalette open={palette} onOpenChange={setPalette} onOpenShortcuts={() => setKeys(true)} />
         <ShortcutsSheet open={keys} onOpenChange={setKeys} />
         <SessionExpired />

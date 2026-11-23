@@ -1,5 +1,6 @@
 import { CopyIcon, ExternalLinkIcon, RefreshCwIcon } from 'lucide-react'
 import { CopyButton } from '@/components/copy-button'
+import { zoneLabel } from '@/components/settings/general'
 import { Caps, PageHeader } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -156,7 +157,7 @@ export function About() {
   const tz = getDisplayTimeZone()
 
   return (
-    <div className="flex max-w-3xl flex-col gap-5">
+    <div className="flex max-w-190 flex-col gap-5">
       <PageHeader title="About" sub="quiet · a calm realtime log viewer" />
       <div className="flex gap-3">
         <Stat
@@ -195,7 +196,7 @@ export function About() {
               ['public url', general?.public_url ?? `${publicOrigin()} (browser address)`, !general?.public_url],
               ['docker', a ? dockerLine(a.docker) : '…', true],
               ['data dir', a?.data_dir ?? 'in memory (no data dir)', !a?.data_dir],
-              ['timezone', tz === 'local' ? `local · ${Intl.DateTimeFormat().resolvedOptions().timeZone}` : tz, true],
+              ['timezone', zoneLabel(tz), true],
             ] as const
           ).map(([k, v, muted]) => (
             <div key={k} className="contents">
@@ -206,14 +207,13 @@ export function About() {
         </dl>
       </section>
 
-      <div className="flex items-start justify-between gap-6 border-b pb-4">
-        <div className="flex flex-col gap-0.5">
-          <label htmlFor="check-updates" className="font-medium">
+      <div className="flex items-center justify-between gap-6 border-b pb-4">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="check-updates" className="font-medium text-sm">
             Check for updates daily
           </label>
           <span className="text-muted-foreground text-xs">
-            Each browser that opens this page asks GitHub for the latest release, at most once a day. Nothing about your
-            logs is sent, and the server never calls out.
+            This browser asks GitHub for the latest release number. Nothing about your logs; the server never calls out.
           </span>
         </div>
         <Switch

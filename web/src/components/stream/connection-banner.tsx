@@ -1,5 +1,6 @@
 import { CableIcon, RefreshCwIcon, TriangleAlertIcon, UnplugIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { useConnection } from '@/lib/connection'
 import { fmtTime } from '@/lib/format'
@@ -36,6 +37,7 @@ export function ServerUnreachableBanner() {
         {c.attempt > 1 && ` (attempt ${c.attempt})`} · lines keep arriving on the server, you'll get them on reconnect
       </span>
       <span className="flex-1" />
+      <StatusDot status="warn" pulse />
       <Button variant="outline" size="xs" onClick={c.retry}>
         <RefreshCwIcon />
         Retry now
@@ -57,7 +59,7 @@ export function SourceLostBanner({
   return (
     <div
       role="alert"
-      className="mx-6 mb-3 flex items-center gap-3 border border-status-warn/30 bg-status-warn/10 px-3 py-2 text-xs"
+      className="flex items-center gap-3 border-status-warn/30 border-b bg-status-warn/10 px-6 py-2 text-xs"
     >
       <CableIcon className="size-3.5 text-status-warn" />
       <span>
@@ -69,7 +71,7 @@ export function SourceLostBanner({
         </span>
       </span>
       <span className="flex-1" />
-      <Button variant="ghost" size="xs" onClick={onRetry}>
+      <Button variant="outline" size="xs" onClick={onRetry}>
         <RefreshCwIcon />
         Retry now
       </Button>
@@ -95,11 +97,11 @@ export function ErrorRateBanner({
   return (
     <div
       role="status"
-      className="mx-6 mb-3 flex items-center gap-3 border border-status-err/30 bg-status-err/10 px-3 py-2 text-xs"
+      className="mx-5 mb-3 flex items-center gap-3 border border-status-err/30 bg-status-err/10 px-3 py-2 text-xs"
     >
       <TriangleAlertIcon className="size-3.5 text-status-err" />
       <span className="min-w-0 truncate">
-        <span className="font-medium text-status-err">Errors are {pct(share)} of lines in the last 5 min</span>
+        <span className="font-medium text-foreground">Errors are {pct(share)} of lines in the last 5 min</span>
         <span className="text-muted-foreground"> (usually {pct(usual)})</span>
         {top && (
           <span className="font-mono text-muted-foreground">
@@ -123,7 +125,7 @@ export function GapBanner({ dropped }: { dropped: number }) {
   return (
     <div
       role="status"
-      className="mx-6 mb-3 border border-status-warn/30 bg-status-warn/10 px-3 py-2 text-status-warn text-xs"
+      className="mx-5 mb-3 border border-status-warn/30 bg-status-warn/10 px-3 py-2 text-status-warn text-xs"
     >
       {dropped.toLocaleString()} lines skipped while the view caught up.
     </div>

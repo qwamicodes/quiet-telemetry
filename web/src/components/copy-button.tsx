@@ -9,12 +9,15 @@ export function CopyButton({
   label = 'Copy',
   what,
   variant = 'outline',
+  iconOnly = false,
 }: {
   text: string
   label?: string
   /** For the toast: `Token copied`. */
   what?: string
   variant?: 'outline' | 'ghost' | 'default'
+  /** Just the icon; the label stays as the accessible name. */
+  iconOnly?: boolean
 }) {
   const [done, setDone] = useState(false)
   const copy = async () => {
@@ -30,13 +33,13 @@ export function CopyButton({
   return (
     <Button
       type="button"
-      size="sm"
+      size={iconOnly ? 'icon-sm' : 'sm'}
       variant={variant}
       onClick={copy}
       aria-label={what ? `Copy ${what.toLowerCase()}` : label}
     >
       {done ? <CheckIcon /> : <CopyIcon />}
-      {done ? 'Copied' : label}
+      {!iconOnly && (done ? 'Copied' : label)}
     </Button>
   )
 }

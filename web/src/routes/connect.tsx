@@ -1,17 +1,19 @@
 import { getRouteApi, Link } from '@tanstack/react-router'
 import {
   ArrowRightIcon,
-  BookOpenIcon,
+  BoxIcon,
   CheckIcon,
   ClockIcon,
+  ExternalLinkIcon,
   EyeIcon,
   EyeOffIcon,
+  GripVerticalIcon,
   KeyRoundIcon,
-  PlusIcon,
   RefreshCwIcon,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { CodeBlock } from '@/components/connect/code-block'
+import { Live } from '@/components/connect/live'
 import { CopyButton } from '@/components/copy-button'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -25,6 +27,7 @@ import {
   bindsSource,
   CONNECT_KINDS,
   type ConnectKind,
+  docsFor,
   firstArrival,
   KIND_INFO,
   maskIn,
@@ -127,6 +130,7 @@ function DockerSocket({ health, onCheck }: { health: Health | undefined; onCheck
           : ['checking…', 'text-muted-foreground']
   return (
     <div className="flex h-10 items-center gap-2.5 border bg-muted/40 pr-1.5 pl-3">
+      <BoxIcon className="size-3.5 text-muted-foreground" />
       <span className="text-muted-foreground text-xs">Docker socket</span>
       <span className="font-mono text-[13px]">/var/run/docker.sock · read-only</span>
       <span className="flex-1" />
@@ -156,48 +160,40 @@ function TokenRow({ token, revealed, onReveal }: { token: string; revealed: bool
 
 type Waiting = { since: number; baseline: Record<string, number> }
 
+/** A finished check in the waiting box, with when it was seen. */
+function CheckRow({ at, children }: { at: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-2">
+      <CheckIcon className="size-3 text-status-ok" />
+      <span className="flex-1">{children}</span>
+      <span className="text-muted-foreground">{at}</span>
+    </div>
+  )
+}
+
 function Wait({
   kind,
   waiting,
-  arrived,
+  health,
   name,
   token,
   origin,
 }: {
   kind: ConnectKind
   waiting: Waiting
-  arrived: { source: SourceInfo; at: number } | null
+  health: Health | undefined
   name: string
   token: string | null
   origin: string
 }) {
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
-    if (arrived) return
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
-  }, [arrived])
-  if (arrived) {
-    const s = arrived.source
-    return (
-      <div className="flex items-center gap-3 border border-status-ok/50 bg-status-ok/5 p-3.5" role="status">
-        <CheckIcon className="size-4 text-status-ok" />
-        <div className="flex flex-1 flex-col gap-0.5">
-          <span className="font-medium text-[13px]">{s.name} is connected</span>
-          <span className="font-mono text-[11px] text-muted-foreground">
-            first line {fmtTime(s.last_ts ?? arrived.at)} · {s.lines - (waiting.baseline[s.name] ?? 0)} lines so far
-          </span>
-        </div>
-        <Button size="sm" variant="outline" nativeButton={false} render={<Link to="/connect" />}>
-          <PlusIcon /> Connect another
-        </Button>
-        <Button size="sm" nativeButton={false} render={<Link to="/" search={{ source: s.name }} />}>
-          Open stream <ArrowRightIcon />
-        </Button>
-      </div>
-    )
-  }
+  }, [])
   const elapsed = now - waiting.since
+  const seen = fmtTime(waiting.since).slice(0, 8)
+  const d = health?.docker
   const hint =
     kind === 'docker'
       ? 'no lines yet · is the container writing to stdout?'
@@ -215,25 +211,52 @@ function Wait({
         <Skeleton className="h-2 w-[58%]" />
         <Skeleton className="h-2 w-[64%]" />
       </div>
+      {kind === 'docker' && d?.state === 'connected' && (
+        <>
+          <CheckRow at={seen}>/var/run/docker.sock readable</CheckRow>
+          <CheckRow at={seen}>
+            {d.containers} {d.containers === 1 ? 'container' : 'containers'} found on this host
+          </CheckRow>
+        </>
+      )}
       {token && (
-        <div className="flex items-center gap-2">
-          <CheckIcon className="size-3 text-status-ok" /> token {maskToken(token)} ready
+        <CheckRow at={seen}>
+          token {maskToken(token)} ready
           {bindsSource(kind) && ` · sends to ${name}`}
-        </div>
+        </CheckRow>
       )}
       {elapsed > 20_000 && (
         <div className="flex items-center gap-2 text-level-warn">
-          <ClockIcon className="size-3" /> {hint}
+          <ClockIcon className="size-3" />
+          <span className="flex-1">{hint}</span>
+          <span>{fmtElapsed(elapsed)}</span>
         </div>
       )}
       <p className="font-sans text-muted-foreground">
-        Tip: health checks usually arrive first. Lines show up here about a second after they are sent.
+        Tip: health checks usually arrive first. You can mute noisy paths like /api/v1/health with one click once lines
+        arrive.
       </p>
     </div>
   )
 }
 
-function Panel({ kind }: { kind: ConnectKind }) {
+type Arrival = { source: SourceInfo; at: number; baseline: number }
+
+/** A finished step folded to one line; click to open it again (02.3). */
+function Summary({ children, onOpen }: { children: ReactNode; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="pl-7.5 text-left font-mono text-muted-foreground text-xs hover:text-foreground"
+      aria-label="Show this step"
+    >
+      {children}
+    </button>
+  )
+}
+
+function Panel({ kind, onArrived }: { kind: ConnectKind; onArrived: (a: Arrival) => void }) {
   const healthQ = useHealth()
   const health = healthQ.data
   const sources = useSources().data
@@ -246,7 +269,9 @@ function Panel({ kind }: { kind: ConnectKind }) {
   const [revealed, setRevealed] = useState(false)
   const [tab, setTab] = useState(0)
   const [waiting, setWaiting] = useState<Waiting | null>(null)
-  const [arrived, setArrived] = useState<{ source: SourceInfo; at: number } | null>(null)
+  const [arrived, setArrived] = useState<Arrival | null>(null)
+  const [open1, setOpen1] = useState(false)
+  const [open2, setOpen2] = useState(false)
 
   const startWaiting = () =>
     setWaiting({ since: Date.now(), baseline: Object.fromEntries((sources ?? []).map((s) => [s.name, s.lines])) })
@@ -261,10 +286,12 @@ function Panel({ kind }: { kind: ConnectKind }) {
     if (!waiting || arrived || !sources) return
     const s = firstArrival(kind, sources, waiting.baseline, asksName(kind) ? name : undefined)
     if (s) {
-      setArrived({ source: s, at: Date.now() })
+      const a = { source: s, at: Date.now(), baseline: waiting.baseline[s.name] ?? 0 }
+      setArrived(a)
+      onArrived(a)
       toast.success(`${s.name} is connected`, { description: 'Lines are flowing.' })
     }
-  }, [sources, waiting, arrived, kind, name])
+  }, [sources, waiting, arrived, kind, name, onArrived])
 
   const generate = async () => {
     const source = name.trim()
@@ -292,7 +319,12 @@ function Panel({ kind }: { kind: ConnectKind }) {
     [kind, origin, token, name, health?.version],
   )
   const snip = snips[Math.min(tab, snips.length - 1)]
-  const shipped = kind === 'docker' || token != null
+  // Docker is "shipped" once the socket is readable; the rest once there is a token.
+  const dockerOk = health?.docker.state === 'connected'
+  const shipped = kind === 'docker' ? dockerOk : token != null
+  // Docker needs nothing more from step 1 or 2 once the socket reads: fold them (02.3).
+  const fold1 = kind === 'docker' && dockerOk && !open1
+  const fold2 = kind === 'docker' && dockerOk && !open2
 
   return (
     <section
@@ -301,99 +333,127 @@ function Panel({ kind }: { kind: ConnectKind }) {
     >
       <div className="flex items-center justify-between">
         <h2 className="font-semibold text-xl tracking-tight">{info.title}</h2>
-        <span className="font-mono text-[11px] text-muted-foreground">about 2 min</span>
+        <span className="flex items-center gap-4">
+          <span className="font-mono text-[11px] text-muted-foreground">about 2 min</span>
+          <a
+            href={docsFor(kind)}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 font-medium text-[13px] hover:underline"
+          >
+            Docs <ExternalLinkIcon className="size-3.5" />
+          </a>
+        </span>
       </div>
 
       <div className="flex flex-col gap-2.5">
         <StepHead
           n={1}
           title={kind === 'docker' ? 'Give quiet read access to Docker' : 'Ship lines to quiet'}
-          state={arrived ? 'done' : 'active'}
+          state={arrived || (kind === 'docker' && dockerOk) ? 'done' : 'active'}
         />
-        {asksName(kind) && !token && (
-          <div className="flex flex-col gap-1.5 text-xs">
-            <label htmlFor="connect-name" className="text-muted-foreground">
-              {kind === 'otlp' ? 'Service name (becomes the source)' : 'Source name'}
-            </label>
-            <Input
-              id="connect-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="max-w-80 font-mono"
-              aria-label={kind === 'otlp' ? 'Service name' : 'Source name'}
-            />
-          </div>
-        )}
-        {kind !== 'docker' && !token ? (
-          <div className="flex flex-col gap-2">
-            <p className="text-muted-foreground text-xs">
-              {owner
-                ? 'quiet makes a send-only ingest token for this shipper and fills it into the config below.'
-                : 'Shippers need an ingest token, and only an owner can create one. Ask an owner to connect this source, or to create a token in Settings → Ingest tokens.'}
-            </p>
-            {owner && (
-              <div>
-                <Button onClick={generate} disabled={create.isPending || (asksName(kind) && !name.trim())}>
-                  <KeyRoundIcon /> {create.isPending ? 'Creating…' : 'Generate token'}
-                </Button>
-              </div>
-            )}
-          </div>
+        {fold1 ? (
+          <Summary onOpen={() => setOpen1(true)}>compose.yaml · /var/run/docker.sock:ro</Summary>
         ) : (
           <>
-            {snips.length > 1 && (
-              <div className="flex gap-1" role="tablist">
-                {snips.map((s, i) => (
-                  <Button
-                    key={s.file}
-                    role="tab"
-                    aria-selected={i === tab}
-                    size="xs"
-                    variant={i === tab ? 'secondary' : 'ghost'}
-                    onClick={() => setTab(i)}
-                  >
-                    {s.file}
-                  </Button>
-                ))}
+            {asksName(kind) && !token && (
+              <div className="flex flex-col gap-1.5 text-xs">
+                <label htmlFor="connect-name" className="text-muted-foreground">
+                  {kind === 'otlp' ? 'Service name (becomes the source)' : 'Source name'}
+                </label>
+                <Input
+                  id="connect-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="max-w-80 font-mono"
+                  aria-label={kind === 'otlp' ? 'Service name' : 'Source name'}
+                />
               </div>
             )}
-            <CodeBlock
-              file={snip.file}
-              shown={revealed || !token ? snip.code : maskIn(snip.code, token)}
-              copy={snip.code}
-            />
-            <p className="text-muted-foreground text-xs">{snip.note}</p>
-            {kind === 'docker' ? (
-              <DockerSocket health={health} onCheck={() => healthQ.refetch()} />
+            {kind !== 'docker' && !token ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-muted-foreground text-xs">
+                  {owner
+                    ? 'quiet makes a send-only ingest token for this shipper and fills it into the config below.'
+                    : 'Shippers need an ingest token, and only an owner can create one. Ask an owner to connect this source, or to create a token in Settings → Ingest tokens.'}
+                </p>
+                {owner && (
+                  <div>
+                    <Button onClick={generate} disabled={create.isPending || (asksName(kind) && !name.trim())}>
+                      <KeyRoundIcon /> {create.isPending ? 'Creating…' : 'Generate token'}
+                    </Button>
+                  </div>
+                )}
+              </div>
             ) : (
-              token && <TokenRow token={token} revealed={revealed} onReveal={() => setRevealed((r) => !r)} />
+              <>
+                {snips.length > 1 && (
+                  <div className="flex gap-1" role="tablist">
+                    {snips.map((s, i) => (
+                      <Button
+                        key={s.file}
+                        role="tab"
+                        aria-selected={i === tab}
+                        size="xs"
+                        variant={i === tab ? 'secondary' : 'ghost'}
+                        onClick={() => setTab(i)}
+                      >
+                        {s.file}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                <CodeBlock
+                  file={snip.file}
+                  shown={revealed || !token ? snip.code : maskIn(snip.code, token)}
+                  copy={snip.code}
+                />
+                <p className="text-muted-foreground text-xs">{snip.note}</p>
+                {kind === 'docker' ? (
+                  <DockerSocket health={health} onCheck={() => healthQ.refetch()} />
+                ) : (
+                  token && <TokenRow token={token} revealed={revealed} onReveal={() => setRevealed((r) => !r)} />
+                )}
+                {kind !== 'docker' && <Reachability health={health} />}
+              </>
             )}
-            {kind !== 'docker' && <Reachability health={health} />}
           </>
         )}
       </div>
 
       <hr />
       <div className="flex flex-col gap-2.5">
-        <StepHead n={2} title="Pick what counts as one flow" state={shipped ? 'done' : 'todo'} />
-        <p className="text-muted-foreground text-xs">
-          quiet stitches lines that share an id, checked in this order. You can change it per source later.
-        </p>
-        <div className="flex flex-wrap items-center gap-2.5">
-          {ID_ORDER.map((id, i) => (
-            <span key={id} className="flex items-center gap-1">
-              <span className="font-mono text-[11px] text-muted-foreground">{i + 1}</span>
-              <span className="bg-brand/15 px-1.5 py-0.5 font-mono text-[11px] text-brand">{id}</span>
-            </span>
-          ))}
-        </div>
+        <StepHead n={2} title="Pick what counts as one flow" state={kind === 'docker' && dockerOk ? 'done' : 'todo'} />
+        {fold2 ? (
+          <Summary onOpen={() => setOpen2(true)}>{ID_ORDER.join(' → ')}</Summary>
+        ) : (
+          <>
+            <p className="text-muted-foreground text-xs">
+              quiet stitches lines that share an id, checked in this order. You can change it per source later.
+            </p>
+            <div className="flex flex-wrap items-center gap-2.5">
+              {ID_ORDER.map((id, i) => (
+                <span key={id} className="flex items-center gap-1">
+                  <span className="font-mono text-[11px] text-muted-foreground">{i + 1}</span>
+                  <span className="bg-brand/15 px-1.5 py-0.5 font-mono text-[11px] text-brand">{id}</span>
+                </span>
+              ))}
+              <Link
+                to="/settings/flow-id-order"
+                className="flex items-center gap-1 text-[13px] hover:underline [&_svg]:size-3.5"
+              >
+                <GripVerticalIcon className="text-muted-foreground" /> Reorder
+              </Link>
+            </div>
+          </>
+        )}
       </div>
 
       <hr />
       <div className="flex flex-col gap-2.5">
         <StepHead n={3} title="Wait for the first line" state={arrived ? 'done' : shipped ? 'active' : 'todo'} />
-        {waiting && (
-          <Wait kind={kind} waiting={waiting} arrived={arrived} name={name.trim()} token={token} origin={origin} />
+        {waiting && shipped && !arrived && (
+          <Wait kind={kind} waiting={waiting} health={health} name={name.trim()} token={token} origin={origin} />
         )}
       </div>
     </section>
@@ -404,10 +464,27 @@ function Panel({ kind }: { kind: ConnectKind }) {
 export function ConnectPage() {
   const { kind } = route.useSearch()
   const selected = kind ?? 'docker'
+  const [live, setLive] = useState<(Arrival & { kind: ConnectKind }) | null>(null)
+  const [round, setRound] = useState(0)
+  const onArrived = useCallback((a: Arrival) => setLive({ ...a, kind: selected }), [selected])
+  if (live) {
+    return (
+      <Live
+        kind={live.kind}
+        source={live.source}
+        since={live.at}
+        baseline={live.baseline}
+        onAnother={() => {
+          setLive(null)
+          setRound((n) => n + 1)
+        }}
+      />
+    )
+  }
   return (
-    <div className="flex flex-1 flex-col gap-6 overflow-y-auto p-8">
-      <header className="flex flex-col gap-1.5">
-        <h1 className="font-semibold text-[28px] tracking-tight">Connect a source</h1>
+    <div className="flex flex-1 flex-col gap-6 overflow-y-auto px-8 pt-7 pb-8">
+      <header className="flex flex-col gap-1">
+        <h1 className="font-semibold text-[28px] leading-[34px] tracking-tight">Connect a source</h1>
         <p className="text-muted-foreground text-sm">
           Anything that already ships logs. Lines show up here in about a second.
         </p>
@@ -423,13 +500,10 @@ export function ConnectPage() {
               Running on Dokploy, Coolify or plain compose? Pick Docker. Already have a log pipeline? Point Vector or
               Fluent Bit at quiet.
             </p>
-            <Link to="/guide" className="text-brand text-xs hover:underline">
-              How quiet works · get your app's logs flow-ready →
-            </Link>
           </div>
         </div>
         {/* A new kind starts a fresh panel (its own token, its own wait). */}
-        <Panel key={selected} kind={selected} />
+        <Panel key={`${selected}-${round}`} kind={selected} onArrived={onArrived} />
       </div>
     </div>
   )
@@ -440,65 +514,62 @@ export function Welcome() {
   const health = useHealth().data
   const pipe = 'bun run start | quiet pipe --name my-app'
   return (
-    <div className="flex flex-1 flex-col justify-center gap-10 overflow-y-auto px-18 pb-10">
-      <div className="flex flex-col gap-5">
-        <span aria-hidden className="size-11 rounded-full border-[3px] border-brand" />
-        <h1 className="font-semibold text-[40px] leading-11 tracking-tight">Nothing is sending lines yet.</h1>
-        <p className="max-w-155 text-base text-muted-foreground">
-          quiet reads anything that already ships logs. Pick how yours leave the box, choose one source, and watch it
-          stream. Open any line to see its whole flow.
+    <div className="flex flex-1 flex-col overflow-y-auto px-18">
+      <div className="flex flex-1 flex-col justify-center gap-10 py-10">
+        <div className="flex flex-col gap-5">
+          <span aria-hidden className="size-11 rounded-full border-[3px] border-brand" />
+          <h1 className="font-semibold text-[40px] leading-11 tracking-tight">Nothing is sending lines yet.</h1>
+          <p className="max-w-155 text-base text-muted-foreground">
+            quiet reads anything that already ships logs. Pick how yours leave the box, choose one source, and watch it
+            stream. Open any line to see its whole flow.
+          </p>
+        </div>
+        <div className="flex flex-col gap-3">
+          <span className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
+            Connect your first source
+          </span>
+          <div className="flex flex-wrap gap-3">
+            {CONNECT_KINDS.map((k) => (
+              <Link
+                key={k}
+                to="/connect"
+                search={{ kind: k }}
+                className="flex w-49 flex-col gap-3.5 border bg-card p-4 outline-none hover:bg-muted/50 focus-visible:border-ring"
+              >
+                <span className="flex items-center justify-between">
+                  <span className="flex size-8 items-center justify-center border bg-secondary font-mono font-semibold text-[13px]">
+                    {KIND_INFO[k].letter}
+                  </span>
+                  <ArrowRightIcon className="size-3.5 text-muted-foreground" />
+                </span>
+                <span className="flex flex-col gap-1">
+                  <span className="font-semibold text-sm">{KIND_INFO[k].title}</span>
+                  <span className="text-muted-foreground text-xs">{KIND_INFO[k].blurb}</span>
+                </span>
+              </Link>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-col gap-2.5">
+          <span className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
+            Or just pipe it
+          </span>
+          <div className="flex h-11 w-155 max-w-full items-center gap-3 border bg-code pr-1.5 pl-3.5 font-mono text-[13px]">
+            <span className="text-muted-foreground">$</span>
+            <span className="flex-1 truncate">{pipe}</span>
+            <CopyButton text={pipe} variant="ghost" what="Command" />
+          </div>
+        </div>
+        <p className="text-muted-foreground text-xs">
+          Logs are plain text or have no ids?{' '}
+          <Link to="/guide" search={{ tab: 'agent' }} className="text-brand hover:underline">
+            Instrument your app →
+          </Link>
         </p>
       </div>
-      <div className="flex flex-col gap-3">
-        <span className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
-          Connect your first source
-        </span>
-        <div className="flex flex-wrap gap-3">
-          {CONNECT_KINDS.map((k) => (
-            <Link
-              key={k}
-              to="/connect"
-              search={{ kind: k }}
-              className="flex w-49 flex-col gap-3.5 border bg-card p-4 outline-none hover:bg-muted/50 focus-visible:border-ring"
-            >
-              <span className="flex items-center justify-between">
-                <span className="flex size-8 items-center justify-center border bg-secondary font-mono font-semibold text-[13px]">
-                  {KIND_INFO[k].letter}
-                </span>
-                <ArrowRightIcon className="size-3.5 text-muted-foreground" />
-              </span>
-              <span className="flex flex-col gap-1">
-                <span className="font-semibold text-sm">{KIND_INFO[k].title}</span>
-                <span className="text-muted-foreground text-xs">{KIND_INFO[k].blurb}</span>
-              </span>
-            </Link>
-          ))}
-        </div>
-      </div>
-      <div className="flex flex-col gap-2.5">
-        <span className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">Or just pipe it</span>
-        <div className="flex h-11 w-155 max-w-full items-center gap-3 border bg-code pr-1.5 pl-3.5 font-mono text-[13px]">
-          <span className="text-muted-foreground">$</span>
-          <span className="flex-1 truncate">{pipe}</span>
-          <CopyButton text={pipe} variant="ghost" what="Command" />
-        </div>
-      </div>
-      <Link
-        to="/guide"
-        className="flex max-w-155 items-center gap-3 border border-brand/60 bg-brand/5 px-4 py-3 text-sm hover:bg-brand/10"
-      >
-        <BookOpenIcon className="size-4 text-brand" />
-        <span className="flex-1">
-          New to quiet?{' '}
-          <span className="text-muted-foreground">
-            How it works, and one prompt that makes your app's logs flow-ready.
-          </span>
-        </span>
-        <span className="text-brand">Read the guide →</span>
-      </Link>
-      <p className="font-mono text-[11px] text-muted-foreground">
+      <p className="h-12 shrink-0 font-mono text-[11px] text-muted-foreground">
         self-hosted · {window.location.host} · {health ? `${Math.round(health.retention_ms / 3_600_000)}h` : '24h'}{' '}
-        searchable window
+        searchable window · no query language, promise
       </p>
     </div>
   )

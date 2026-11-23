@@ -24,14 +24,25 @@ export function AuthFrame({ children, footer }: { children: ReactNode; footer?: 
           {footer ?? 'self-hosted · single host'}
           {version ? ` · v${version}` : ''}
         </span>
-        <a
-          href="https://github.com/qwamicodes/quiet-telemetry"
-          className="hover:text-foreground"
-          target="_blank"
-          rel="noreferrer"
-        >
-          github
-        </a>
+        <span className="flex items-center gap-1.5">
+          <a
+            href="https://github.com/qwamicodes/quiet-telemetry/tree/main/docs"
+            className="hover:text-foreground"
+            target="_blank"
+            rel="noreferrer"
+          >
+            docs
+          </a>
+          <span aria-hidden>·</span>
+          <a
+            href="https://github.com/qwamicodes/quiet-telemetry"
+            className="hover:text-foreground"
+            target="_blank"
+            rel="noreferrer"
+          >
+            github
+          </a>
+        </span>
       </footer>
     </div>
   )

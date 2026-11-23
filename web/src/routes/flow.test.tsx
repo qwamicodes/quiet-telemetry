@@ -299,19 +299,39 @@ describe('flow route', () => {
   it('a trace reads as a span tree: child edges name the parent span', async () => {
     renderAt('/flow/trace_1')
     expect(await screen.findByText(/span tree/)).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Timing' }))
     expect(screen.getByText('in POST /api/v1/payouts')).toBeInTheDocument()
     expect(screen.getByText('in picked_up')).toBeInTheDocument()
     const deepest = screen.getByRole('button', { name: 'Step settle' }).parentElement as HTMLElement
     expect(deepest.style.paddingLeft).toBe('32px')
   })
 
+  it('opens on the activity list: the request, its job and attempts (v0.1.1-04.1)', async () => {
+    const user = userEvent.setup()
+    const router = renderAt('/flow/req_1')
+    const activity = await screen.findByRole('region', { name: 'Activity' })
+    expect(within(activity).getByText(/Activity · 1 request · 1 job/)).toBeInTheDocument()
+    const req = within(activity).getByRole('button', { name: 'POST /api/v1/payouts' })
+    expect(req.parentElement).toHaveTextContent('201 · Created')
+    const job = within(activity).getByRole('button', { name: 'settle job payout:1' })
+    // One failed attempt without queue evidence of retry or a final failure.
+    expect(job.parentElement).toHaveTextContent('Completion not observed')
+    expect(job.parentElement).toHaveTextContent('Exec 800ms · #0')
+    expect(within(activity).getByRole('button', { name: 'Attempt 0' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(activity).getByText(/Related by request_id req_1/)).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Flow steps' })).not.toBeInTheDocument()
+    await user.click(req)
+    await waitFor(() => expect(router.state.location.search).toEqual({ line: 1 }))
+    expect(within(screen.getByRole('region', { name: 'Line details' })).getByText('1 / 3')).toBeInTheDocument()
+  })
+
   it('shows the stitched steps, timeline and the field card of the failing step', async () => {
     renderAt('/flow/req_1')
     expect(await screen.findByRole('heading', { name: 'POST /api/v1/payouts' })).toBeInTheDocument()
     expect(screen.getByText('201 · failed')).toBeInTheDocument()
-    expect(screen.getByText(/4 steps · 3 lines · 2 sources · 1.1s/)).toBeInTheDocument()
-    expect(screen.getByText(/stitched by request_id → job_id/)).toBeInTheDocument()
+    expect(screen.getByText(/1 request · 1 job · 2 completion events · correlated by request_id/)).toBeInTheDocument()
     expect(calls).toContain('/api/flow?id=req_1')
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Timing' }))
 
     const timeline = screen.getByRole('region', { name: 'Timeline' })
     expect(within(timeline).getByText('db.insert')).toBeInTheDocument()
@@ -328,6 +348,7 @@ describe('flow route', () => {
   it('clicking a node opens its line in the card and puts it in the URL; j/k move', async () => {
     const user = userEvent.setup()
     const router = renderAt('/flow/req_1')
+    await user.click(await screen.findByRole('button', { name: 'Timing' }))
     const graph = await screen.findByRole('region', { name: 'Flow steps' })
     await user.click(within(graph).getByRole('button', { name: 'Step POST /api/v1/payouts' }))
     await waitFor(() => expect(router.state.location.search).toEqual({ line: 1 }))
@@ -350,27 +371,27 @@ describe('flow route', () => {
 
   it('a bad ?line= falls back to the default step; ?line= picks one', async () => {
     renderAt('/flow/req_1?line=abc')
-    const graph = await screen.findByRole('region', { name: 'Flow steps' })
-    expect(within(graph).getByRole('button', { name: 'Step settle' })).toHaveAttribute('aria-pressed', 'true')
+    const activity = await screen.findByRole('region', { name: 'Activity' })
+    expect(within(activity).getByRole('button', { name: 'Attempt 0' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('a one-node flow is just the card', async () => {
     renderAt('/flow/req_9')
-    expect(await screen.findByText('A one-node flow is just the card')).toBeInTheDocument()
-    expect(screen.getByText('200 · 1 line')).toBeInTheDocument()
+    expect(await screen.findByText('Only one event observed')).toBeInTheDocument()
+    expect(screen.getByText('200 · 1 event')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Flow steps' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Line details' })).toBeInTheDocument()
   })
 
   it('an unknown id says so and offers close matches', async () => {
     renderAt('/flow/req_7c19e0')
-    expect(await screen.findByText('No lines with this id')).toBeInTheDocument()
+    expect(await screen.findByText('No events with this ID')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /req_7c19e6/ })).toHaveAttribute('href', '/flow/req_7c19e6')
     expect(screen.getByRole('button', { name: /Search all sources/ })).toHaveAttribute(
       'href',
       expect.stringContaining('/search?'),
     )
-    expect(screen.getByRole('link', { name: 'Settings → Storage' })).toHaveAttribute('href', '/settings/storage')
+    expect(screen.getByText(/Retention settings cannot restore expired events/)).toBeInTheDocument()
   })
 
   it('Export flow (05.6) exports every id of the flow over its whole span, gzip off', async () => {
@@ -385,10 +406,10 @@ describe('flow route', () => {
     await user.click(screen.getByRole('button', { name: 'Export flow' }))
     const dialog = await screen.findByRole('dialog')
     expect(
-      within(dialog).getByText('Every line stitched into this flow, from both sources, in time order.'),
+      within(dialog).getByText('Linked, stored events in completion-time order. Missing events stay missing.'),
     ).toBeInTheDocument()
-    expect(within(dialog).getByText(/whole flow/)).toBeInTheDocument()
-    expect(within(dialog).getByText(/3 lines · 4 steps/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/stored completions/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/2 completion events · 1 request \+ 1 job/)).toBeInTheDocument()
     expect(within(dialog).getByText('quiet-flow-req_1.ndjson')).toBeInTheDocument()
     const href = decodeURIComponent(within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? '')
     expect(href).toContain('id=req_1,payout:1')
@@ -414,32 +435,28 @@ describe('flow route', () => {
   it('a one-node flow card can open its line in the stream', async () => {
     const user = userEvent.setup()
     const router = renderAt('/flow/req_9')
-    await screen.findByText('A one-node flow is just the card')
+    await screen.findByText('Only one event observed')
     const card = screen.getByRole('region', { name: 'Line details' })
     await user.click(within(card).getByRole('button', { name: /Open in stream/ }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))
   })
 
-  it('an id with no close matches gets the 404 page (08.6)', async () => {
+  it('an id with no close matches keeps the flow layout (v0.1.1-04.5)', async () => {
     renderAt('/flow/req_gone')
-    expect(await screen.findByText('This flow is no longer in the window.')).toBeInTheDocument()
-    expect(screen.getByText('Searchable window')).toBeInTheDocument()
-    expect(screen.getByText('request_id, job_id, trace_id, correlation_id')).toBeInTheDocument()
-    expect(screen.getByText(/all 2 · none paused/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Back to stream' })).toHaveAttribute('href', '/')
-    expect(screen.getByRole('button', { name: /Search 24h for req_gone/ })).toHaveAttribute(
+    expect(await screen.findByText('No events with this ID')).toBeInTheDocument()
+    expect(screen.queryByText('Close matches')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Search all sources/ })).toHaveAttribute(
       'href',
       expect.stringContaining('/search?'),
     )
-    expect(screen.getByRole('button', { name: 'Storage settings' })).toHaveAttribute('href', '/settings/storage')
   })
 
   it('/line/$lineId opens a line as its flow; a non-numeric line id is a broken link', async () => {
     renderAt('/line/3')
     expect(await screen.findByRole('heading', { name: 'POST /api/v1/payouts' })).toBeInTheDocument()
     expect(calls).toContain('/api/flow?line=3')
-    const graph = screen.getByRole('region', { name: 'Flow steps' })
-    expect(within(graph).getByRole('button', { name: 'Step settle' })).toHaveAttribute('aria-pressed', 'true')
+    const activity = screen.getByRole('region', { name: 'Activity' })
+    expect(within(activity).getByRole('button', { name: 'Attempt 0' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('a broken line link never reaches the server', async () => {
@@ -450,18 +467,19 @@ describe('flow route', () => {
 })
 
 describe('stream → flow', () => {
-  it('shows each row’s flow steps and opens the selected line as a flow with Enter', async () => {
+  it('the row preview counts its flow’s events; Enter opens the selected line as a flow', async () => {
     const user = userEvent.setup()
     const router = renderAt('/?source=api')
     const row = await screen.findByText('create_payout', {}, { timeout: 5000 })
-    // Steps column: one square per step, once the batched summaries land.
-    await waitFor(() => expect(screen.getAllByTitle('4 steps · 3 lines').length).toBeGreaterThan(0), {
-      timeout: 3000,
-    })
-    expect(calls.filter((c) => c === '/api/flow-summaries')).toHaveLength(1)
+    expect(screen.queryByText('Steps')).not.toBeInTheDocument() // no STEPS column (v0.1.1-03.x)
     expect(screen.getByText('120ms')).toBeInTheDocument() // duration column
 
     await user.click(row)
+    // The open preview asks for its flow's summary: 3 events across both sources.
+    await waitFor(() => expect(screen.getByTestId('row-preview')).toHaveTextContent('3 events across api, worker'), {
+      timeout: 3000,
+    })
+    expect(calls.filter((c) => c === '/api/flow-summaries')).toHaveLength(1)
     await user.keyboard('{Enter}')
     await waitFor(() => expect(router.state.location.pathname).toBe('/flow/req_1'))
     expect(router.state.location.search).toEqual({ line: 1 })

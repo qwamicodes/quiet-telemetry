@@ -10,14 +10,15 @@ import { TimeRange } from '@/components/search/time-range'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import type { MutedMode, SearchParams } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, fmtCount, fmtWindow } from '@/lib/format'
 import { anchoredBounds, anchorFor, barAt, barWidth, loadedSpan, type Span } from '@/lib/histogram-jump'
-import { useSearchMuted } from '@/lib/mute'
-import { displayIds, groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
+import { ruleText, useSearchMuted } from '@/lib/mute'
+import { displayIds, fieldFilters, groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
 import { useSearchLines, useSearchOverview } from '@/lib/search-api'
 import { searchBounds } from '@/lib/search-params'
 import { useSimilarValues } from '@/lib/similar'
@@ -93,7 +94,16 @@ export function SearchPage() {
   // Muted lines (06.3): hidden unless the source (or Settings → General)
   // includes them in search, or `muted=include|hide` overrides it for this
   // search. Included ones are shown dimmed and tagged; all are counted.
-  const { visible: lines, muted, hidden, mutedIds, included } = useSearchMuted(found, search.muted)
+  const {
+    visible: lines,
+    muted,
+    hidden,
+    mutedIds,
+    included,
+    ruleOf,
+    ruleCount,
+    mutedSources,
+  } = useSearchMuted(found, search.muted)
   const toggleMuted = () => navigate({ search: (s) => ({ ...s, muted: included ? 'hide' : 'include' }), replace: true })
   // Exports follow what this search shows.
   const exportMuted: MutedMode = search.muted ?? 'auto'
@@ -102,6 +112,7 @@ export function SearchPage() {
   const summaries = useFlowSummaries(ids)
   const flows = useMemo(() => groupByFlow(lines, summaries).length, [lines, summaries])
   const words = useMemo(() => terms(q), [q])
+  const matchKeys = useMemo(() => fieldFilters(q), [q])
   const head = at != null ? overview.data : first
   const total = (at != null ? head?.total : first?.total) ?? lines.length
 
@@ -147,22 +158,20 @@ export function SearchPage() {
 
   const rangeLabel = search.from ? 'this range' : `the last ${search.range}`
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 px-8 pt-6 pb-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 px-8 pt-6 pb-4 max-md:gap-3 max-md:px-4 max-md:pt-4">
       <header>
-        <h1 className="font-medium text-xl">Search</h1>
-        <p className="text-muted-foreground">
-          Last {fmtWindow(retentionMs)} across every source. Type anything, then click a value to narrow it.
-        </p>
+        <h1 className="font-semibold text-xl tracking-tight">Search</h1>
+        <p className="text-muted-foreground">Search stored events. Sampled-out and expired events are not included.</p>
       </header>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 max-md:flex-wrap">
         <Select
           value={search.source ?? ALL}
           onValueChange={(v) =>
             navigate({ search: (s) => ({ ...s, source: v === ALL ? undefined : String(v), at: undefined }) })
           }
         >
-          <SelectTrigger aria-label="Source" className="h-9 w-44">
+          <SelectTrigger aria-label="Source" className="h-9 w-44 max-md:flex-1">
             <SelectValue>{(v: string) => (v === ALL ? 'All sources' : v)}</SelectValue>
           </SelectTrigger>
           <SelectContent>
@@ -200,13 +209,13 @@ export function SearchPage() {
         </Button>
       </div>
 
-      <div className="flex items-center gap-3">
-        <p className="font-mono text-muted-foreground text-xs" aria-live="polite">
+      <div className="flex items-center gap-3 max-md:flex-wrap max-md:gap-2">
+        <p className="font-mono text-muted-foreground text-xs max-md:basis-full" aria-live="polite">
           <span className="font-medium font-sans text-foreground text-sm">
             {loading || refreshing
               ? 'Searching…'
               : search.view === 'flows'
-                ? `${fmtCount(total)} ${total === 1 ? 'line' : 'lines'}${lines.length ? ` in ${flows}${res.hasNextPage ? '+' : ''} ${flows === 1 ? 'flow' : 'flows'}` : ''}`
+                ? `${fmtCount(total)} ${total === 1 ? 'event' : 'events'}${lines.length ? ` in ${flows}${res.hasNextPage ? '+' : ''} ${flows === 1 ? 'flow' : 'flows'}` : ''}${included ? ` · ${fmtCount(total - muted)} + ${fmtCount(muted)} muted` : ''}`
                 : `${fmtCount(total)} ${total === 1 ? 'line' : 'lines'}`}
           </span>
           {refreshing && (
@@ -218,7 +227,7 @@ export function SearchPage() {
           )}
           {head &&
             !refreshing &&
-            ` · ${fmtClock(head.since)}–${fmtClock(head.until)} · searched ${fmtCount(head.searched)} lines in ${head.took_ms}ms`}
+            ` · ${fmtClock(head.since)}–${fmtClock(head.until)} · searched ${fmtCount(head.searched)} events in ${head.took_ms}ms`}
         </p>
         {at != null && (
           <span className="flex items-center gap-1.5 border border-brand/40 px-1.5 py-0.5 font-mono text-xs">
@@ -235,36 +244,47 @@ export function SearchPage() {
           </span>
         )}
         <span className="flex-1" />
-        <ToggleGroup
-          aria-label="View"
-          value={[search.view]}
-          onValueChange={(v: string[]) =>
-            v[0] && navigate({ search: (s) => ({ ...s, view: v[0] as 'flows' | 'lines' }), replace: true })
-          }
-          variant="outline"
-          size="sm"
-        >
-          <ToggleGroupItem value="flows">Group by flow</ToggleGroupItem>
-          <ToggleGroupItem value="lines">Lines</ToggleGroupItem>
-        </ToggleGroup>
-        <Select
-          value={search.order}
-          onValueChange={(v) =>
-            navigate({ search: (s) => ({ ...s, order: v as 'newest' | 'oldest', at: undefined }), replace: true })
-          }
-        >
-          <SelectTrigger aria-label="Order" size="sm" className="w-36">
-            <SelectValue>{(v: string) => (v === 'oldest' ? 'Oldest first' : 'Newest first')}</SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="newest">Newest first</SelectItem>
-            <SelectItem value="oldest">Oldest first</SelectItem>
-          </SelectContent>
-        </Select>
-        <Button variant="outline" size="sm" onClick={() => setExporting(true)} disabled={!total || refreshing}>
-          <FileDownIcon />
-          Export
-        </Button>
+        {/* 05.9: muted events stay out unless switched on here (or by the source / Settings). */}
+        {muted > 0 && (
+          <span className="flex items-center gap-2 text-muted-foreground text-xs">
+            <Switch size="sm" checked={included} onCheckedChange={toggleMuted} aria-label="Show muted" />
+            <span aria-hidden>Show muted</span>
+          </span>
+        )}
+        {!empty && (
+          <>
+            <ToggleGroup
+              aria-label="View"
+              value={[search.view]}
+              onValueChange={(v: string[]) =>
+                v[0] && navigate({ search: (s) => ({ ...s, view: v[0] as 'flows' | 'lines' }), replace: true })
+              }
+              variant="outline"
+              size="sm"
+            >
+              <ToggleGroupItem value="flows">Group by flow</ToggleGroupItem>
+              <ToggleGroupItem value="lines">Events</ToggleGroupItem>
+            </ToggleGroup>
+            <Select
+              value={search.order}
+              onValueChange={(v) =>
+                navigate({ search: (s) => ({ ...s, order: v as 'newest' | 'oldest', at: undefined }), replace: true })
+              }
+            >
+              <SelectTrigger aria-label="Order" size="sm" className="w-36">
+                <SelectValue>{(v: string) => (v === 'oldest' ? 'Oldest first' : 'Newest first')}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="newest">Newest first</SelectItem>
+                <SelectItem value="oldest">Oldest first</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="outline" size="sm" onClick={() => setExporting(true)} disabled={!total || refreshing}>
+              <FileDownIcon />
+              Export
+            </Button>
+          </>
+        )}
       </div>
 
       {head && histogram && total > 0 && (
@@ -284,12 +304,12 @@ export function SearchPage() {
           {res.error.message}
         </p>
       ) : empty ? (
-        <div className="flex flex-1 items-start justify-center pt-24">
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 pb-24">
           <div className="flex max-w-md flex-col items-center gap-3 border border-dashed p-10 text-center">
             <span className="border p-1.5">
               <SearchIcon className="size-4 text-muted-foreground" />
             </span>
-            <h2 className="font-medium">No lines match in {rangeLabel}</h2>
+            <h2 className="font-medium">No events match in {rangeLabel}</h2>
             <p className="text-muted-foreground">
               Nothing in {search.source ?? 'any source'}
               {q ? <> contains “{q}”</> : ' in this range'}. Try the whole {fmtWindow(retentionMs)} window, all sources,
@@ -297,7 +317,6 @@ export function SearchPage() {
             </p>
             {(search.range !== '24h' || search.from || search.source) && (
               <Button
-                variant="secondary"
                 size="sm"
                 onClick={() =>
                   navigate({
@@ -316,23 +335,23 @@ export function SearchPage() {
                 Search last {fmtWindow(retentionMs)}
               </Button>
             )}
-            {similar.data && similar.data.length > 0 && (
-              <p className="flex flex-wrap items-center justify-center gap-1.5 font-mono text-muted-foreground text-xs">
-                Similar values seen:
-                {similar.data.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setQ(joinQuery([...chips, c], ''))}
-                    className="flex items-center gap-1 border px-1.5 py-0.5 text-foreground hover:border-brand"
-                  >
-                    {c}
-                    <XIcon className="size-3 text-muted-foreground" aria-hidden />
-                  </button>
-                ))}
-              </p>
-            )}
           </div>
+          {similar.data && similar.data.length > 0 && (
+            <p className="flex flex-wrap items-center justify-center gap-1.5 font-mono text-muted-foreground text-xs">
+              Similar values seen:
+              {similar.data.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setQ(joinQuery([...chips, c], ''))}
+                  className="flex items-center gap-1 border px-1.5 py-0.5 text-foreground hover:border-brand"
+                >
+                  {c}
+                  <XIcon className="size-3 text-muted-foreground" aria-hidden />
+                </button>
+              ))}
+            </p>
+          )}
         </div>
       ) : (
         <>
@@ -341,6 +360,8 @@ export function SearchPage() {
               count={included ? muted : hidden}
               shown={false}
               included={included}
+              ruleCount={ruleCount}
+              sources={mutedSources}
               onToggle={toggleMuted}
               source={search.source}
               className="-mt-2 flex items-center gap-2 font-mono text-muted-foreground text-xs"
@@ -350,12 +371,17 @@ export function SearchPage() {
             lines={lines}
             view={search.view}
             words={words}
+            matchKeys={matchKeys}
             hasMore={Boolean(res.hasNextPage) && !refreshing}
             loadingMore={res.isFetchingNextPage}
             onMore={() => res.fetchNextPage()}
             onPick={addChip}
             summaries={summaries}
             mutedIds={mutedIds}
+            mutedRule={(id) => {
+              const r = ruleOf.get(id)
+              return r ? ruleText(r) : undefined
+            }}
             refreshing={refreshing}
             jump={curJump}
             flash={flash}
@@ -367,7 +393,7 @@ export function SearchPage() {
         open={exporting}
         onOpenChange={setExporting}
         title="Export search results"
-        description="Exports the matching lines, not whole flows. Open a flow to export it."
+        description="Exports matching stored events. Use Export flow to include related events."
         params={params}
         muted={exportMuted}
         summary={

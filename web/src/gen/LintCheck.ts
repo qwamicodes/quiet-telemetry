@@ -6,16 +6,18 @@ import type { LintStatus } from "./LintStatus";
  */
 export type LintCheck = { 
 /**
- * Stable id (`json`, `timestamp`, `level`, `service`, `msg`, `canonical`,
- * `request_id`, `job_id`, `job_request_id`, `error_object`, `calls`, `pii`).
+ * Stable id (`json`, `timestamp`, `level`, `deployment`, `canonical`,
+ * `request_id`, `job_id`, `job_scope`, `job_request_id`, `attempt`,
+ * `error_object`, `completion`, `capture`, `secrets`).
  */
 id: string, title: string, status: LintStatus, 
 /**
- * Share of the lines the check looked at that passed, 0–1 (null for `na`).
+ * Share of the records the check looked at that passed, 0–1 (null for
+ * `na` and for a secret scan that found nothing).
  */
 share: number | null, 
 /**
- * What was seen, e.g. `412 of 420 lines` or `email, phone`.
+ * What was seen, e.g. `412 of 420 records`.
  */
 detail: string, 
 /**

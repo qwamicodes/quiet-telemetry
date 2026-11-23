@@ -113,6 +113,7 @@ export function Segmented<T extends string>({
   label,
   className,
   size = 'md',
+  pack = false,
 }: {
   value: T
   onChange: (v: T) => void
@@ -120,6 +121,8 @@ export function Segmented<T extends string>({
   label: string
   className?: string
   size?: 'sm' | 'md'
+  /** Items sized to their labels, packed left in the track (06.14 rule shapes), not spread equal-width. */
+  pack?: boolean
 }) {
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
@@ -134,7 +137,7 @@ export function Segmented<T extends string>({
       role="radiogroup"
       aria-label={label}
       onKeyDown={onKey}
-      className={cn('flex w-full gap-px bg-muted/60 p-0.5', className)}
+      className={cn('flex gap-px bg-secondary p-0.5', pack ? 'w-fit' : 'w-full', className)}
     >
       {options.map((o) => {
         const on = o.value === value
@@ -150,8 +153,9 @@ export function Segmented<T extends string>({
             tabIndex={on ? 0 : -1}
             onClick={() => !o.disabled && onChange(o.value)}
             className={cn(
-              'flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-3 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3.5',
+              'flex items-center justify-center gap-1.5 whitespace-nowrap px-3 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3.5',
               size === 'sm' ? 'h-7 text-xs' : 'h-8 text-sm',
+              !pack && 'flex-1',
               on && 'bg-background text-foreground shadow-[inset_0_0_0_1px_var(--border)]',
               o.disabled && 'cursor-not-allowed opacity-50 hover:text-muted-foreground',
             )}
@@ -197,7 +201,7 @@ export function SampleLine({ line }: { line: LogLine }) {
   const f = (line.fields ?? {}) as Record<string, unknown>
   const route = pickRoute(line)
   const method = methodOf(line)
-  const status = f.status ?? f.statusCode ?? (f.res as Record<string, unknown> | undefined)?.statusCode
+  const status = f.status_code ?? f.status ?? f.statusCode ?? (f.res as Record<string, unknown> | undefined)?.statusCode
   const dur = f.duration_ms ?? f.responseTime ?? f.duration
   return (
     <div className="flex min-w-0 gap-3 font-mono text-[11px] text-muted-foreground">
@@ -219,11 +223,20 @@ export function SampleLine({ line }: { line: LogLine }) {
   )
 }
 
-/** `GET 1,270 · HEAD 14 · ?v=2 ignored` under a route preview. */
-export function MethodSplit({ p, from }: { p: MutePreview; from?: string | null }) {
+/**
+ * `GET 1,270 · HEAD 14 · ?v=2 ignored` under a route preview; with `method`
+ * (a method + route rule, 06.15) `GET only · HEAD 14 stay visible`.
+ */
+export function MethodSplit({ p, from, method }: { p: MutePreview; from?: string | null; method?: string }) {
   const parts: string[] = []
   if (from) parts.push(`from ${from}`)
   if (p.query_ignored > 0) parts.push('?query ignored')
+  if (method) {
+    const others = p.by_method.filter((m) => m.method !== method).slice(0, 3)
+    parts.push(`${method} only`)
+    if (others.length) parts.push(`${others.map((m) => `${m.method} ${fmtN(m.count)}`).join(' · ')} stay visible`)
+    return <div className="font-mono text-[11px] text-muted-foreground">{parts.join(' · ')}</div>
+  }
   for (const m of p.by_method.slice(0, 4)) parts.push(`${m.method} ${fmtN(m.count)}`)
   if (!parts.length) return null
   return <div className="font-mono text-[11px] text-muted-foreground">{parts.join(' · ')}</div>

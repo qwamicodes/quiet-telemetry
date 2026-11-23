@@ -51,7 +51,7 @@ function hms(ts: number, tz: string): [number, number, number] {
 // ---- row timestamps and public URL (Settings → General) ---------------------------
 
 export type TimestampStyle = 'seconds' | 'millis' | 'relative'
-let rowStyle: TimestampStyle = 'millis'
+let rowStyle: TimestampStyle = 'seconds'
 export function setTimestampStyle(s: TimestampStyle) {
   rowStyle = s
 }

@@ -1,5 +1,4 @@
-import { Link } from '@tanstack/react-router'
-import { ArrowRightIcon, FolderIcon, LockIcon, TerminalIcon } from 'lucide-react'
+import { FolderIcon, LockIcon, TerminalIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { GroupIcon } from '@/components/source-group-header'
 import { Input } from '@/components/ui/input'
@@ -47,6 +46,21 @@ function Choice({
   )
 }
 
+/** "You can also make your own groups from Sources · N custom groups" (07.10). */
+export function CustomGroupsRow({ off }: { off: boolean }) {
+  const custom = useCustomGroups().length
+  return (
+    <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="custom-groups-row">
+      <FolderIcon className="size-3.5 shrink-0 text-brand" />
+      <span className="text-foreground">You can also make your own groups from Sources</span>
+      <span className="whitespace-nowrap font-mono text-[11px] text-muted-foreground">
+        · {custom} custom {custom === 1 ? 'group' : 'groups'}
+        {custom > 0 && off ? ' · kept while grouping is off' : ''}
+      </span>
+    </span>
+  )
+}
+
 /**
  * Settings → General → Source grouping (board v0.1-07.11): Auto · Custom label ·
  * Off, with a live preview of the groups. QUIET_GROUP_BY / QUIET_GROUP_LABEL
@@ -68,12 +82,11 @@ export function SourceGrouping({
   const label = useDebounced(draft.label.trim(), 250)
   const preview = useGroupingPreview(draft.mode, validLabel(label) ? label : saved.label, true).data
   const labelOk = draft.mode !== 'label' || validLabel(draft.label)
-  const custom = useCustomGroups().length
 
   return (
-    <section aria-label="Source grouping" className="flex flex-col gap-3 border-b py-5">
+    <section aria-label="Source grouping" className="flex flex-col gap-3 pb-5">
       <div className="flex flex-col gap-1">
-        <h3 className="flex items-center gap-2 font-medium">
+        <h3 className="flex items-center gap-2 font-semibold text-sm">
           Source grouping
           {locked && (
             <span className="flex items-center gap-1 border px-1.5 font-mono text-[10px] text-muted-foreground">
@@ -85,18 +98,6 @@ export function SourceGrouping({
           How the Sources page, the sidebar and the source picker fold sources. HTTP, OTLP, Vector and Fluent Bit pushes
           always sit under Ingest. Streaming stays one source at a time.
         </p>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="custom-groups-row">
-          <FolderIcon className="size-3.5 shrink-0 text-brand" />
-          <span>You can also make your own groups from Sources</span>
-          <span className="whitespace-nowrap font-mono text-[11px] text-muted-foreground">
-            · {custom} custom {custom === 1 ? 'group' : 'groups'}
-            {custom > 0 && draft.mode === 'off' ? ' · kept while grouping is off' : ''}
-          </span>
-          <span className="flex-1" />
-          <Link to="/sources" className="flex shrink-0 items-center gap-1 text-foreground hover:underline">
-            Sources <ArrowRightIcon className="size-3.5" />
-          </Link>
-        </div>
         {locked && (
           <p className="text-[11px] text-muted-foreground">
             The environment locks the mode only; custom groups stay editable on Sources.
@@ -114,7 +115,7 @@ export function SourceGrouping({
           value="auto"
           selected={draft.mode === 'auto'}
           title="Auto"
-          sub="Compose project (com.docker.compose.project) → Swarm stack (com.docker.stack.namespace) → Standalone. A quiet.group label on a container overrides both."
+          sub="Compose project (com.docker.compose.project) → Swarm stack (com.docker.stack.namespace) → Standalone."
           aside={<span className="border px-1.5 font-mono text-[10px] text-muted-foreground">default</span>}
         />
         <Choice
@@ -177,7 +178,9 @@ export function SourceGrouping({
         <section className="border" aria-label="Grouping preview">
           <div className="flex items-center justify-between border-b px-3 py-2 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
             <span>Preview · {preview.total} sources on this host</span>
-            <span className="normal-case tracking-normal">{preview.groups.length} groups · updates as you type</span>
+            <span className="normal-case tracking-normal">
+              {preview.groups.length} {preview.groups.length === 1 ? 'group' : 'groups'} · updates as you type
+            </span>
           </div>
           {preview.groups.map((g) => (
             <div

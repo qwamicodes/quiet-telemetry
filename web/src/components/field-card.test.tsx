@@ -119,3 +119,53 @@ describe('FieldCard value copy', () => {
     expect(toast.success).not.toHaveBeenCalled()
   })
 })
+
+describe('FieldCard sections (v0.1.1-04.x)', () => {
+  const event: LogLine = {
+    ...line,
+    id: 2,
+    fields: {
+      timestamp: '2026-10-21T14:07:34.412Z',
+      level: 'info',
+      service: 'api',
+      flow: 'create_order',
+      request_id: 'req_8f2a8c',
+      method: 'POST',
+      path: '/api/v1/orders',
+      status_code: 201,
+      duration_ms: 142,
+      user: { email: 'ama@example.com' },
+      request: {
+        headers: { 'content-type': 'application/json', authorization: '[REDACTED]' },
+        body_capture: 'disabled',
+      },
+      response: { headers: { 'set-cookie': '[REDACTED]' }, body: { order_id: 1182 }, body_capture: 'truncated' },
+    },
+  }
+
+  it('groups Identity · Request · Response · Context · Event and counts redactions', () => {
+    render(<FieldCard line={event} />)
+    const names = screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'))
+    expect(names).toEqual(['identity', 'request', 'response', 'context', 'event'])
+    const ctx = screen.getByRole('group', { name: 'context' })
+    expect(ctx).toHaveTextContent('flow')
+    expect(ctx).toHaveTextContent('user.email')
+    expect(screen.getByRole('group', { name: 'request' })).toHaveTextContent('Disabled')
+    expect(screen.getByText(/· 2 redacted/)).toBeInTheDocument()
+    expect(screen.getByTestId('redaction-note')).toHaveTextContent('original values are unavailable')
+  })
+
+  it('collapses headers with their redaction count and expands to Redacted values', async () => {
+    const user = userEvent.setup()
+    render(<FieldCard line={event} />)
+    const req = screen.getByRole('group', { name: 'request' })
+    const headers = within(req).getByRole('button', { name: /headers/, expanded: false })
+    expect(headers).toHaveTextContent('{…} · 1 redacted')
+    await user.click(headers)
+    expect(within(req).getByRole('button', { name: /headers/, expanded: true })).toHaveTextContent('2 fields')
+    expect(within(req).getByText('authorization')).toBeInTheDocument()
+    expect(within(req).getByText('Redacted')).toBeInTheDocument()
+    const res = screen.getByRole('group', { name: 'response' })
+    expect(within(res).getByText('Truncated')).toBeInTheDocument()
+  })
+})

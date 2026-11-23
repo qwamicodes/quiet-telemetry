@@ -1,13 +1,16 @@
 import { useNavigate } from '@tanstack/react-router'
 import {
   BracesIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
   FilterIcon,
   GitForkIcon,
+  InfoIcon,
   ListIcon,
+  LockIcon,
   MaximizeIcon,
   MinimizeIcon,
   WaypointsIcon,
@@ -29,6 +32,7 @@ import { copy, copyText } from '@/lib/copy'
 import { lineStats, STRUCTURED_ONLY, statsLabel } from '@/lib/diagram-stats'
 import { bytes, fmtTime } from '@/lib/format'
 import { expandJsonStrings, parsedRoot, textQuery } from '@/lib/json-string'
+import { REDACTED, redactedCount, rowParts } from '@/lib/row'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { cn } from '@/lib/utils'
 
@@ -41,57 +45,88 @@ export type DiagramMode = 'off' | 'wide' | 'full'
 /** The Diagram tab is its own chunk: it loads the first time a line is opened as a diagram. */
 const DiagramView = lazy(() => import('@/components/diagram/diagram-view'))
 
-/** Flatten nested objects to dotted keys (3 levels), keeping arrays and deeper objects as JSON. */
+/** Captured bodies stay one value (`{ order_id: 1182 }`), not dotted rows. */
+const WHOLE = /^(request|response)\.body$/
+
+/** Flatten nested objects to dotted keys (3 levels), keeping arrays, bodies and deeper objects as JSON. */
 export function flatten(obj: Record<string, unknown>, prefix = '', depth = 0, out: [string, unknown][] = []) {
   for (const [k, v] of Object.entries(obj)) {
     const key = prefix ? `${prefix}.${k}` : k
-    if (v && typeof v === 'object' && !Array.isArray(v) && depth < 2)
+    if (v && typeof v === 'object' && !Array.isArray(v) && depth < 2 && !WHOLE.test(key))
       flatten(v as Record<string, unknown>, key, depth + 1, out)
     else out.push([key, v])
   }
   return out
 }
 
-/** Card sections, in order; a field goes to the first whose test matches, else "other". */
+/**
+ * Card sections (v0.1.1-04.x), in order; a field goes to the first whose test
+ * matches, else Context (flow and business fields). Context is a group in the
+ * card, not a JSON wrapper.
+ */
 const SECTIONS: [string, (k: string) => boolean][] = [
   [
     'identity',
     (k) =>
-      /(^|\.)(request_id|requestId|req_id|job_id|jobId|trace_id|traceId|span_id|correlation_id|user_id|device_id|session_id|account_id)$/.test(
+      /^(request_id|requestId|req_id|job_id|jobId|trace_id|traceId|span_id|spanId|correlation_id|session_id|device_id)$/.test(
         k,
       ),
   ],
-  ['request', (k) => /^(method|path|route|url|query|status|status_code|statusCode|duration_ms|bytes)$/.test(k)],
+  ['request', (k) => /^(method|path|route|url|query|bytes)$/.test(k) || k.startsWith('request.')],
+  ['response', (k) => /^(status|status_code|statusCode)$/.test(k) || k.startsWith('response.')],
   [
     'job',
     (k) =>
-      /^(queue|operation|phase|step|outcome|attempt|retry_attempt|attemptsMade|delivery_count|flow|backoff_ms|retries_left|row|field|reason)$/.test(
+      /^(queue|queue_wait_ms|attempt|retry_attempt|attemptsMade|delivery_count|backoff_ms|retries_left|outcome|operation|phase|step)$/.test(
         k,
-      ),
+      ) || k.startsWith('retry.'),
   ],
   ['error', (k) => /^(err|error)(\.|$)/.test(k)],
   ['client', (k) => /^(ip|ip_address|client_ip|user_agent|userAgent|x-forwarded-for)$/.test(k)],
   ['sampling', (k) => /^(should_sample|sample_reason|sampled)$/.test(k)],
   [
-    'host',
+    'event',
     (k) =>
-      /^(service|source|hostname|host|pid|instance_id|commit_sha|version|env|time|timestamp|ts|@timestamp|level|msg|message)$/.test(
+      /^(service|source|hostname|host|pid|instance_id|commit_sha|version|env|duration_ms|time|timestamp|ts|@timestamp|level|msg|message)$/.test(
         k,
       ),
   ],
 ]
-const ORDER = ['identity', 'request', 'job', 'error', 'client', 'sampling', 'other', 'host']
+const ORDER = ['identity', 'request', 'response', 'job', 'error', 'context', 'client', 'sampling', 'event']
 
+/**
+ * Field-card sections. In Request / Response, `body_capture` becomes the body
+ * row's value (Disabled) or a marker on it (Truncated); a missing body with
+ * no marker isn't shown, since it is unknown, not empty.
+ */
 export function sections(fields: Record<string, unknown>): { name: string; rows: [string, unknown][] }[] {
   const by = new Map<string, [string, unknown][]>()
   for (const row of flatten(fields)) {
-    const name = SECTIONS.find(([, test]) => test(row[0]))?.[0] ?? 'other'
+    if (/^(request|response)\.body_capture$/.test(row[0])) continue
+    const name = SECTIONS.find(([, test]) => test(row[0]))?.[0] ?? 'context'
     by.set(name, [...(by.get(name) ?? []), row])
+  }
+  for (const side of ['request', 'response'] as const) {
+    const capture = (fields[side] as Record<string, unknown> | undefined)?.body_capture
+    if (capture === 'disabled' && !by.get(side)?.some(([k]) => k === `${side}.body`))
+      by.set(side, [...(by.get(side) ?? []), [`${side}.body`, BODY_DISABLED]])
   }
   return ORDER.filter((n) => by.has(n)).map((name) => ({ name, rows: by.get(name) ?? [] }))
 }
 
+/** The body row's value when capture was switched off. */
+export const BODY_DISABLED = Symbol('body disabled')
+
+/** A row's label in its section: `request.headers.authorization` reads `authorization` under `headers`. */
+export function rowLabel(section: string, key: string): { label: string; group?: string } {
+  const prefix = `${section}.`
+  const k = (section === 'request' || section === 'response') && key.startsWith(prefix) ? key.slice(prefix.length) : key
+  const m = /^(headers|params|query)\.(.+)$/.exec(k)
+  return m ? { label: m[2], group: m[1] } : { label: k }
+}
+
 function kind(v: unknown): string {
+  if (v === BODY_DISABLED) return '–'
   if (v === null) return 'null'
   if (Array.isArray(v)) return 'arr'
   if (typeof v === 'number') return 'num'
@@ -101,6 +136,14 @@ function kind(v: unknown): string {
 }
 
 function Value({ v }: { v: unknown }) {
+  if (v === BODY_DISABLED) return <span className="text-muted-foreground">Disabled</span>
+  if (v === REDACTED)
+    return (
+      <span className="inline-flex items-center gap-1 text-muted-foreground">
+        <LockIcon className="size-3" aria-hidden />
+        Redacted
+      </span>
+    )
   if (v === null) return <span className="text-syntax-literal">null</span>
   if (typeof v === 'number') return <span className="text-syntax-number">{v}</span>
   if (typeof v === 'boolean') return <span className="text-syntax-literal">{String(v)}</span>
@@ -110,6 +153,7 @@ function Value({ v }: { v: unknown }) {
 
 /** A Fields-tab value: underlined on hover, click (or Enter/Space) copies the full value. */
 function ValueCopy({ k, v }: { k: string; v: unknown }) {
+  if (v === BODY_DISABLED) return <Value v={v} />
   return (
     <button
       type="button"
@@ -240,6 +284,60 @@ function save(text: string, file: string, type = 'application/json') {
 }
 
 /** `· level 50 → error` when the line's level came from a number. */
+/** A heading that is never a JSON blob: method + path, else the flow or job name. */
+export function headline(text: string | undefined, line: LogLine): string {
+  const t = (text ?? '').trim()
+  if (t && !t.startsWith('{') && !t.startsWith('[')) return t
+  const p = rowParts(line)
+  if (p.path) return `${p.method ? `${p.method} ` : ''}${p.path}`
+  return p.name ?? (p.event && !p.event.trim().startsWith('{') ? p.event : 'event')
+}
+
+const HTTP_LINE = /\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\/\S*)/
+/**
+ * What quiet could read from a plain-text line (04.13): level, time, and an
+ * access-log status and path when the text has them.
+ */
+export function plainRead(line: LogLine): [string, string][] {
+  const rows: [string, string][] = []
+  if (line.level) rows.push(['level', line.level])
+  rows.push(['time', new Date(line.ts).toISOString()])
+  const http = HTTP_LINE.exec(line.raw)
+  const rest = http ? line.raw.slice(http.index + http[0].length) : line.raw
+  const status = /(?:^|[\s"])([1-5]\d{2})(?=[\s"]|$)/.exec(rest)?.[1]
+  if (status) rows.push(['status', status])
+  if (http) {
+    rows.push(['method', http[1]])
+    rows.push(['path', http[2].split('?')[0]])
+  }
+  return rows
+}
+
+/** 11.6 E: the opened line carries none of the flow ids, so it can't join a flow. */
+function NoIds() {
+  const navigate = useNavigate()
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-2 border border-brand/40 bg-brand/5 px-3 py-2.5">
+        <InfoIcon className="mt-0.5 size-3.5 shrink-0 text-brand" />
+        <div className="flex flex-col gap-0.5">
+          <span className="font-medium text-[13px]">No request_id or job_id on this line</span>
+          <span className="text-muted-foreground text-xs">
+            so it can't join a flow. Add ids at the edge and it will.
+          </span>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => navigate({ to: '/guide', search: { tab: 'ids' } })}
+        className="flex w-fit items-center gap-1 text-brand text-xs hover:underline"
+      >
+        How ids work <ChevronRightIcon className="size-3" />
+      </button>
+    </div>
+  )
+}
+
 function levelNote(l: LogLine): string {
   const v = l.fields?.level ?? l.fields?.severity ?? l.fields?.lvl
   return l.level && v != null && String(v) !== l.level ? ` · level ${String(v)} → ${l.level}` : ''
@@ -322,11 +420,20 @@ export function FieldCard({
   const parsedCount = expanded?.parsed.size ?? 0
   const fields = expanded && !asSent ? expanded.fields : line.fields
   const parsed = useMemo(() => (expanded && !asSent ? expanded.parsed : new Map<string, string>()), [expanded, asSent])
-  const active: Tab = diagram !== 'off' ? 'diagram' : !line.fields && tab !== 'raw' ? 'raw' : tab
+  const active: Tab = diagram !== 'off' ? 'diagram' : !line.fields && tab === 'json' ? 'raw' : tab
   const json = useMemo(() => (fields ? JSON.stringify(fields, null, 2) : ''), [fields])
   const bad = line.level === 'error' || line.level === 'fatal'
   const groups = useMemo(() => (fields ? sections(fields) : []), [fields])
   const count = groups.reduce((n, g) => n + g.rows.length, 0)
+  const redacted = useMemo(() => redactedCount(fields), [fields])
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set())
+  const toggleGroup = (k: string) =>
+    setExpandedGroups((s) => {
+      const n = new Set(s)
+      if (n.has(k)) n.delete(k)
+      else n.add(k)
+      return n
+    })
   const pickedValue = picked != null ? groups.flatMap((g) => g.rows).find(([k]) => k === picked)?.[1] : undefined
   const pickedRoot = picked != null ? parsedRoot(picked, parsed) : undefined
   const stats = useMemo(() => (fields ? lineStats(fields, line.raw) : null), [fields, line.raw])
@@ -361,9 +468,7 @@ export function FieldCard({
 
   const tabs = (
     <TabsList>
-      <TabsTrigger value="fields" disabled={!line.fields}>
-        Fields
-      </TabsTrigger>
+      <TabsTrigger value="fields">Fields</TabsTrigger>
       <GatedTab value="json" enabled={structured}>
         JSON
       </GatedTab>
@@ -406,7 +511,7 @@ export function FieldCard({
         {full ? (
           <header className="flex h-12 shrink-0 items-center gap-3 border-b px-4">
             <StatusDot status={bad ? 'err' : line.level === 'warn' ? 'warn' : 'ok'} />
-            <h2 className="truncate font-medium font-mono text-[13px]">{title ?? line.msg}</h2>
+            <h2 className="truncate font-medium font-mono text-[13px]">{headline(title ?? line.msg, line)}</h2>
             <LevelBadge level={line.level} />
             <span className="shrink-0 font-mono text-muted-foreground text-xs">
               {fmtTime(line.ts)} · {subtitle ?? line.source}
@@ -429,18 +534,22 @@ export function FieldCard({
           </header>
         ) : (
           <>
-            <header className="flex flex-col gap-2 border-b p-4">
+            <header className="flex flex-col gap-2 border-b p-4 max-md:border-b-0 max-md:py-1.5">
               <div className="flex items-start gap-2">
                 <StatusDot status={bad ? 'err' : line.level === 'warn' ? 'warn' : 'ok'} className="mt-1.5" />
-                <h2 className="line-clamp-2 flex-1 break-all font-medium font-mono text-[13px]">{title ?? line.msg}</h2>
+                <h2 className="line-clamp-2 flex-1 break-all font-medium font-mono text-[13px]">
+                  {headline(title ?? line.msg, line)}
+                </h2>
                 {onOpenFlow && (
                   <IconButton label="Open flow (enter)" onClick={onOpenFlow}>
                     <GitForkIcon />
                   </IconButton>
                 )}
-                <IconButton label="Copy raw line" onClick={() => copy(line.raw, 'raw line')}>
+                {/* A phone has Copy as JSON in the sheet's footer (10.2). */}
+                <Button variant="outline" size="xs" onClick={copyJson} className="max-md:hidden">
                   <CopyIcon />
-                </IconButton>
+                  Copy event JSON
+                </Button>
                 {onClose && (
                   <IconButton label="Close (esc)" onClick={onClose}>
                     <XIcon />
@@ -473,6 +582,7 @@ export function FieldCard({
               {line.flags && line.flags.length > 0 && (
                 <div className="font-mono text-[11px] text-status-warn">{line.flags.join(' · ')}</div>
               )}
+              {line.fields && line.ids.length === 0 && <NoIds />}
             </header>
             <div
               className={cn(
@@ -490,7 +600,16 @@ export function FieldCard({
                 </span>
               ) : (
                 <span className="font-mono text-[11px] text-muted-foreground">
-                  {line.fields ? `${count} fields` : `${bytes(line.raw)} B`}
+                  {line.fields
+                    ? `${count} fields${redacted ? ` · ${redacted} redacted` : ''}${
+                        (['request', 'response'] as const).some(
+                          (side) =>
+                            (fields?.[side] as Record<string, unknown> | undefined)?.body_capture === 'truncated',
+                        )
+                          ? ' · truncated'
+                          : ''
+                      }`
+                    : `${bytes(line.raw)} B`}
                 </span>
               )}
             </div>
@@ -500,44 +619,129 @@ export function FieldCard({
           </>
         )}
         <TabsContent value="fields" className="min-h-0 overflow-y-auto px-4 pb-4">
-          {groups.map((g) => (
-            <div key={g.name} className="font-mono text-xs">
-              <div className="flex justify-between pt-3 pb-1 text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
-                <span>{g.name}</span>
-                <span>{g.rows.length}</span>
-              </div>
-              <fieldset aria-label={g.name} className="m-0 min-w-0 border-0 p-0">
-                {g.rows.map(([k, v]) => {
-                  const root = parsedRoot(k, parsed)
-                  return (
-                    <div
-                      key={k}
-                      className={cn(
-                        'relative grid w-full grid-cols-[minmax(0,2fr)_minmax(0,3fr)_32px] gap-3 border-border/60 border-b py-1.5 text-left hover:bg-row-hover',
-                        picked === k && 'bg-row-selected',
-                      )}
-                    >
-                      {/* The whole row picks the field (for "Filter by value"); the value copies. */}
-                      <button
-                        type="button"
-                        aria-label={k}
-                        aria-pressed={picked === k}
-                        title={k}
-                        onClick={() => setPicked(picked === k ? null : k)}
-                        className="absolute inset-0 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
-                      />
-                      <span className="truncate text-syntax-key">{k}</span>
-                      <span className="break-all">
-                        {root && <ParsedBadge root={root} />}
-                        <ValueCopy k={k} v={v} />
+          {!line.fields && (
+            <section aria-label="Read from the text">
+              <h3 className="flex h-8 items-center font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
+                Read from the text
+              </h3>
+              <dl className="font-mono text-[13px]">
+                {plainRead(line).map(([k, v]) => (
+                  <div key={k} className="flex h-7 items-center gap-3 border-border/60 border-b">
+                    <dt className="w-32 shrink-0 text-syntax-key">{k}</dt>
+                    <dd className="min-w-0 truncate">{v}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
+          {groups.map((g) => {
+            // headers / params / query collapse under one row in Request and Response.
+            const rows: ReactNode[] = []
+            let open: string | null = null
+            g.rows.forEach(([k, v], i) => {
+              const { label, group } = rowLabel(g.name, k)
+              const groupKey = group ? `${g.name}.${group}` : null
+              if (groupKey && groupKey !== open) {
+                open = groupKey
+                const members = g.rows.filter(([x]) => x.startsWith(`${groupKey}.`))
+                const red = members.filter(([, x]) => x === REDACTED).length
+                const isOpen = expandedGroups.has(groupKey)
+                rows.push(
+                  <button
+                    key={groupKey}
+                    type="button"
+                    aria-expanded={isOpen}
+                    onClick={() => toggleGroup(groupKey)}
+                    className="grid w-full grid-cols-[minmax(0,2fr)_minmax(0,3fr)_32px] gap-3 border-border/60 border-b py-1.5 text-left hover:bg-row-hover"
+                  >
+                    <span className="flex items-center gap-1 truncate text-syntax-key">
+                      {isOpen ? <ChevronDownIcon className="size-3" /> : <ChevronRightIcon className="size-3" />}
+                      {group}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {isOpen
+                        ? `${members.length} ${members.length === 1 ? 'field' : 'fields'}`
+                        : `{…}${red ? ` · ${red} redacted` : ''}`}
+                    </span>
+                    <span className="text-right text-[11px] text-muted-foreground">obj</span>
+                  </button>,
+                )
+              }
+              if (!groupKey) open = null
+              if (groupKey && !expandedGroups.has(groupKey)) return
+              const root = parsedRoot(k, parsed)
+              const side = k === 'request.body' ? 'request' : k === 'response.body' ? 'response' : null
+              const truncated =
+                side != null &&
+                v !== BODY_DISABLED &&
+                (fields?.[side] as Record<string, unknown> | undefined)?.body_capture === 'truncated'
+              rows.push(
+                <div
+                  key={k}
+                  data-row={i}
+                  className={cn(
+                    'relative grid w-full grid-cols-[minmax(0,2fr)_minmax(0,3fr)_32px] gap-3 border-border/60 border-b py-1.5 text-left hover:bg-row-hover',
+                    picked === k && 'bg-row-selected',
+                  )}
+                >
+                  {/* The whole row picks the field (for "Filter by value"); the value copies. */}
+                  <button
+                    type="button"
+                    aria-label={k}
+                    aria-pressed={picked === k}
+                    title={k}
+                    onClick={() => setPicked(picked === k ? null : k)}
+                    className="absolute inset-0 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                  />
+                  <span className={cn('truncate text-syntax-key', groupKey && 'pl-2')}>{label}</span>
+                  <span className="break-all">
+                    {root && <ParsedBadge root={root} />}
+                    {truncated ? (
+                      <span className="text-status-warn" title="Shortened to fit its capture limit">
+                        Truncated
                       </span>
-                      <span className="text-right text-[11px] text-muted-foreground">{kind(v)}</span>
+                    ) : (
+                      <ValueCopy k={k} v={v} />
+                    )}
+                  </span>
+                  <span className="text-right text-[11px] text-muted-foreground">{kind(v)}</span>
+                </div>,
+              )
+              // 04.16: the received preview, then the capture marker and what it means.
+              if (truncated)
+                rows.push(
+                  <div key={`${k}:preview`} className="flex flex-col gap-2 border-border/60 border-b py-2">
+                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all border bg-code p-2 text-[11px]">
+                      {typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
+                    </pre>
+                    <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_32px] gap-3">
+                      <span className="text-syntax-key">body_capture</span>
+                      <span className="text-status-warn">truncated</span>
+                      <span className="text-right text-[11px] text-muted-foreground">str</span>
                     </div>
-                  )
-                })}
-              </fieldset>
-            </div>
-          ))}
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Capture limit reached. Only this preview was received; the full body is unavailable.
+                    </p>
+                  </div>,
+                )
+            })
+            return (
+              <div key={g.name} className="font-mono text-xs">
+                <div className="flex justify-between pt-3 pb-1 text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
+                  <span>{g.name}</span>
+                  <span>{g.rows.length}</span>
+                </div>
+                <fieldset aria-label={g.name} className="m-0 min-w-0 border-0 p-0">
+                  {rows}
+                </fieldset>
+              </div>
+            )
+          })}
+          {redacted > 0 && (
+            <p data-testid="redaction-note" className="pt-3 text-[11px] text-muted-foreground leading-relaxed">
+              Credentials removed before storage. Copy contains [REDACTED]; original values are unavailable.
+            </p>
+          )}
         </TabsContent>
         <TabsContent value="json" className="min-h-0 overflow-auto px-4 pb-4">
           <JsonView json={json} />

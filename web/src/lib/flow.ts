@@ -20,7 +20,7 @@ export function flowTone(s: Pick<FlowSummary, 'status'>): DotTone {
 
 /** The badge next to the title: `201 · ok`, `failed after 2 retries`, `ok · 2 warnings`. */
 export function statusLabel(f: FlowSummary, first?: LogLine): string {
-  const http = first?.fields?.status
+  const http = first?.fields?.status_code ?? first?.fields?.status
   const code = typeof http === 'number' ? `${http} · ` : ''
   if (f.status === 'error')
     return f.retries > 0 ? `failed after ${f.retries} ${f.retries === 1 ? 'retry' : 'retries'}` : `${code}failed`

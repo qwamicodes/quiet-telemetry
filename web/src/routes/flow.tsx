@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import {
   ArrowLeftIcon,
-  BoxesIcon,
   ChevronRightIcon,
   ClockIcon,
   CopyIcon,
@@ -10,25 +9,28 @@ import {
   GitForkIcon,
   ListIcon,
   SearchIcon,
-  SettingsIcon,
   WaypointsIcon,
-  WorkflowIcon,
 } from 'lucide-react'
-import { useState } from 'react'
+import { type CSSProperties, useMemo, useState } from 'react'
 import { ExportDialog } from '@/components/export-dialog'
-import { type DiagramMode, FieldCard } from '@/components/field-card'
+import { type DiagramMode, FieldCard, plainRead } from '@/components/field-card'
+import { ActivityList } from '@/components/flow/activity-list'
 import { FlowGraph } from '@/components/flow/flow-graph'
 import { Timeline } from '@/components/flow/timeline'
 import { LevelBadge } from '@/components/level-badge'
+import { MobileFlow } from '@/components/mobile/mobile-flow'
+import { useIsMobile } from '@/components/mobile/use-mobile'
+import { INSPECTOR, INSPECTOR_SINGLE, PanelResize, usePanelWidth } from '@/components/panel-resize'
 import { SidebarToggle } from '@/components/sidebar-resize'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { Flow, FlowNotFound, LogLine } from '@/gen'
+import { activityCounts, buildActivity, JOB_EVIDENCE, type JobRow, jobBadge } from '@/lib/activity'
 import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
-import { flowTone, fmtDuration, statusLabel, stitchedBy } from '@/lib/flow'
+import { flowTone, fmtDuration, statusLabel } from '@/lib/flow'
 import { type FlowTarget, useFlow } from '@/lib/flow-api'
-import { fmtBytes, fmtClock, fmtDay, fmtTime, fmtWindow, publicHost } from '@/lib/format'
+import { fmtBytes, fmtClock, fmtTime, fmtWindow } from '@/lib/format'
 import { searchResponse } from '@/lib/schemas'
 import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
@@ -72,7 +74,7 @@ function Crumbs({
   actions?: React.ReactNode
 }) {
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 font-mono text-[13px]">
+    <header className="flex h-14 shrink-0 items-center gap-3 text-[13px]">
       <SidebarToggle />
       <Button variant="ghost" size="sm" nativeButton={false} render={<Link to="/" search={{ source }} />}>
         <ArrowLeftIcon />
@@ -81,11 +83,11 @@ function Crumbs({
       {source && (
         <>
           <span className="text-muted-foreground">/</span>
-          <span className="text-muted-foreground">{source}</span>
+          <span className="font-mono text-muted-foreground">{source}</span>
         </>
       )}
       <span className="text-muted-foreground">/</span>
-      <span>
+      <span className="font-mono">
         {label && <span className="text-muted-foreground">{label} </span>}
         {value}
       </span>
@@ -149,7 +151,11 @@ function FlowView({
   const opened = flow.opened ?? first.display_id
   // The breadcrumb's source: where the opened id was logged first.
   const home = flow.lines.find((l) => opened && l.ids.some((i) => i.value === opened.value)) ?? first
-  const fallback = flow.nodes.find((n) => n.error) ?? flow.nodes[0]
+  const activity = useMemo(() => buildActivity(flow.lines, opened ?? null), [flow.lines, opened])
+  const openedJob = opened?.key === 'job_id' ? activity.main.find((r): r is JobRow => r.kind === 'job') : undefined
+  // Opened by a job id: its final attempt (04.2); else the first error, else the first event.
+  const lastAttempt = openedJob?.attempts[openedJob.attempts.length - 1]?.line.id
+  const fallback = flow.nodes.find((n) => n.line_id === lastAttempt) ?? flow.nodes.find((n) => n.error) ?? flow.nodes[0]
   const index = Math.max(
     0,
     flow.nodes.findIndex((n) => n.line_id === (selectedLine ?? fallback.line_id)),
@@ -163,6 +169,19 @@ function FlowView({
     select(next.line_id)
   }
   const [exporting, setExporting] = useState(false)
+  const mobile = useIsMobile()
+  const [cardW, setCardW] = usePanelWidth(INSPECTOR)
+  const [singleW, setSingleW] = usePanelWidth(INSPECTOR_SINGLE)
+  // Activity is the default (v0.1.1-04.x); Timing shows the timeline and graph.
+  const [timing, setTiming] = useState(false)
+  // Full screen (04.17): activity + inspector cover the app; Esc exits.
+  const [full, setFull] = useState(false)
+  // The inspector's × hides it until a row is picked again.
+  const [cardOpen, setCardOpen] = useState(true)
+  const pick = (lineId: number) => {
+    setCardOpen(true)
+    select(lineId)
+  }
   // Diagram grows the card over the flow column (04.8) and stays on while
   // J / K move between steps; the URL keeps it so a reload (or Stream's `D`)
   // opens straight on the diagram.
@@ -186,53 +205,92 @@ function FlowView({
     k: () => !exporting && move(-1),
     o: () => !exporting && openInStream(),
     // With the diagram open its own Esc (capture phase) shrinks it back first.
-    escape: () => !exporting && !wide && navigate({ to: '/', search: { source: home.source } }),
+    escape: () => {
+      if (exporting || wide) return
+      if (full) setFull(false)
+      else navigate({ to: '/', search: { source: home.source } })
+    },
   })
 
   const one = flow.line_count === 1
-  const tone = flowTone(flow)
-  const meta = [
-    `${flow.steps} ${flow.steps === 1 ? 'step' : 'steps'}`,
-    !one && `${flow.line_count} lines`,
-    flow.sources.length > 1 && `${flow.sources.length} sources`,
-    fmtDuration(flow.duration_ms),
-    `started ${fmtTime(flow.started)}`,
-    flow.stitched_by.length > 0 && `stitched by ${stitchedBy(flow)}`,
-    flow.span_tree && 'span tree',
-    one && `no other line shares this id in the last ${fmtWindow(until - since)}`,
-  ].filter(Boolean)
+  const tone = openedJob ? (openedJob.tone === 'muted' ? 'warn' : openedJob.tone) : flowTone(flow)
+  const correlated = flow.stitched_by.length > 0 && `correlated by ${flow.stitched_by[0]}`
+  // 04.1: "1 request · 1 job · 2 completion events · correlated by request_id";
+  // 04.2: "3 attempts · payouts · terminal failure confirmed by the queue";
+  // 04.4: "1 event · 38ms · correlated by request_id · last 24h".
+  const meta = (
+    one
+      ? ['1 event', fmtDuration(flow.duration_ms), correlated, `last ${fmtWindow(until - since)}`]
+      : openedJob
+        ? [
+            `${openedJob.attempts.length} ${openedJob.attempts.length === 1 ? 'attempt' : 'attempts'}`,
+            openedJob.queue,
+            JOB_EVIDENCE[openedJob.state],
+          ]
+        : [
+            activityCounts(activity, { related: true }),
+            `${activity.completions} completion ${activity.completions === 1 ? 'event' : 'events'}`,
+            correlated,
+            flow.span_tree && 'span tree',
+          ]
+  ).filter(Boolean)
+  const title = openedJob ? openedJob.flow : flow.title
+  // 04.13: a single plain-text line reads "404 · plain text" and has no flow actions.
+  const plain = one && !first.fields
+  const badge = plain
+    ? `${plainRead(first).find(([k]) => k === 'status')?.[1] ?? first.level ?? 'line'} · plain text`
+    : one
+      ? `${statusLabel(flow, first).replace(/ · ok$/, '')} · 1 event`
+      : openedJob
+        ? jobBadge(openedJob)
+        : statusLabel(flow, first)
+
+  const copyFlow = () =>
+    copy(
+      JSON.stringify(
+        flow.lines.map((l) => l.fields ?? { raw: l.raw }),
+        null,
+        2,
+      ),
+      'flow JSON',
+    )
+  // Phone (10.2): stacked steps and the card as a bottom sheet.
+  if (mobile)
+    return (
+      <MobileFlow
+        flow={flow}
+        title={title}
+        badge={badge}
+        tone={tone}
+        source={home.source}
+        index={index}
+        onSelect={select}
+        onPrev={() => move(-1)}
+        onNext={() => move(1)}
+        onCopy={copyFlow}
+      />
+    )
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-6 pb-4">
       <Crumbs
         source={home.source}
         label={opened?.key}
-        value={opened?.value ?? `line ${first.id}`}
+        value={opened?.value ?? `line ${first.id.toLocaleString('en-US')}`}
         actions={
           <>
-            {flow.ids.length > 0 && (
+            {flow.ids.length > 0 && !plain && (
               <Button variant="outline" size="sm" onClick={() => setExporting(true)}>
                 <FileDownIcon />
                 Export flow
               </Button>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                copy(
-                  JSON.stringify(
-                    flow.lines.map((l) => l.fields ?? { raw: l.raw }),
-                    null,
-                    2,
-                  ),
-                  'flow JSON',
-                )
-              }
-            >
-              <CopyIcon />
-              Copy flow JSON
-            </Button>
+            {!plain && (
+              <Button variant="outline" size="sm" onClick={copyFlow}>
+                <CopyIcon />
+                Copy flow JSON
+              </Button>
+            )}
             <Button variant="outline" size="sm" nativeButton={false} render={<Link to="/" search={streamSearch} />}>
               <ListIcon />
               Open in stream
@@ -241,7 +299,7 @@ function FlowView({
         }
       />
       <div className="flex items-center gap-3">
-        <h1 className="truncate font-medium font-mono text-2xl">{flow.title}</h1>
+        <h1 className="truncate font-mono font-semibold text-2xl tracking-tight">{title}</h1>
         <span
           className={cn(
             'shrink-0 border px-1.5 py-0.5 font-mono text-[11px]',
@@ -250,7 +308,7 @@ function FlowView({
             tone === 'ok' && 'border-status-ok/40 bg-status-ok/10 text-status-ok',
           )}
         >
-          {one ? `${statusLabel(flow, first).replace(/ · ok$/, '')} · 1 line` : statusLabel(flow, first)}
+          {badge}
         </span>
       </div>
       <p className="mt-1 mb-4 font-mono text-muted-foreground text-xs">
@@ -260,21 +318,55 @@ function FlowView({
       </p>
 
       {one ? (
-        <div className="flex min-h-0 flex-1 gap-6">
+        <div className="flex min-h-0 flex-1 gap-3" style={{ '--card-w': `${singleW}px` } as CSSProperties}>
           <FieldCard
             line={line}
-            className={cn('w-auto flex-1', !wide && 'max-w-3xl')}
+            className={cn(wide ? 'w-auto flex-1' : 'w-[var(--card-w)] max-w-[70%]')}
             onOpenInStream={openInStream}
             diagram={diagram}
             onDiagramChange={setDiagram}
           />
+          {!wide && (
+            <PanelResize
+              label="Resize inspector"
+              size={INSPECTOR_SINGLE}
+              width={singleW}
+              onWidth={(w) => setSingleW(w)}
+            />
+          )}
           {!wide && <OneNodeAside line={line} since={since} until={until} />}
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 gap-4">
+        <div
+          className={cn('flex min-h-0 flex-1 gap-1', full && 'fixed inset-0 z-40 bg-background p-4')}
+          style={{ '--card-w': `${cardW}px` } as CSSProperties}
+        >
           <div className={cn('flex min-w-0 flex-1 flex-col gap-3', wide && 'hidden')}>
-            <Timeline flow={flow} />
-            <FlowGraph flow={flow} selected={node.line_id} onSelect={select} />
+            {timing ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 text-[13px]">Timing · {flow.steps} steps</span>
+                  <Button variant="outline" size="xs" onClick={() => setTiming(false)}>
+                    <ListIcon />
+                    Activity
+                  </Button>
+                </div>
+                <Timeline flow={flow} />
+                <FlowGraph flow={flow} selected={node.line_id} onSelect={select} />
+              </>
+            ) : (
+              <ActivityList
+                lines={flow.lines}
+                opened={opened ?? null}
+                selected={node.line_id}
+                onSelect={pick}
+                timing={timing}
+                onTiming={setTiming}
+                full={full}
+                onFull={() => setFull((f) => !f)}
+                window={fmtWindow(until - since)}
+              />
+            )}
             {flow.missing_parent && (
               <p className="font-mono text-muted-foreground text-xs">
                 started by {flow.missing_parent.key} {flow.missing_parent.value} · its request line isn't in the window
@@ -289,18 +381,24 @@ function FlowView({
               </p>
             )}
           </div>
-          <FieldCard
-            key={line.id}
-            line={line}
-            position={{ index, total: flow.nodes.length }}
-            onPrev={() => move(-1)}
-            onNext={() => move(1)}
-            subtitle={node.attempt != null ? `attempt ${node.attempt}` : undefined}
-            title={node.name}
-            diagram={diagram}
-            onDiagramChange={setDiagram}
-            className={cn(wide && 'w-auto flex-1')}
-          />
+          {!wide && cardOpen && (
+            <PanelResize label="Resize inspector" size={INSPECTOR} width={cardW} onWidth={setCardW} />
+          )}
+          {cardOpen && (
+            <FieldCard
+              key={line.id}
+              onClose={() => setCardOpen(false)}
+              line={line}
+              position={{ index, total: flow.nodes.length }}
+              onPrev={() => move(-1)}
+              onNext={() => move(1)}
+              subtitle={node.attempt != null ? `attempt ${node.attempt}` : undefined}
+              title={node.name}
+              diagram={diagram}
+              onDiagramChange={setDiagram}
+              className={cn(wide ? 'w-auto flex-1' : 'w-[var(--card-w)]')}
+            />
+          )}
         </div>
       )}
       {exporting && (
@@ -308,9 +406,9 @@ function FlowView({
           open={exporting}
           onOpenChange={setExporting}
           title="Export flow"
-          description={`Every line stitched into this flow${flow.sources.length > 1 ? `, from ${flow.sources.length === 2 ? 'both' : `all ${flow.sources.length}`} sources` : ''}, in time order.`}
+          description="Linked, stored events in completion-time order. Missing events stay missing."
           params={{ id: flow.ids.map((i) => i.value).join(',') || undefined, since: flow.started, until: flow.ended }}
-          fixedRange={`${fmtTime(flow.started)} - ${fmtTime(flow.ended)} · whole flow`}
+          fixedRange={`${fmtTime(flow.started)} - ${fmtTime(flow.ended)} · stored completions`}
           fileName={`quiet-flow-${(opened?.value ?? `line-${first.id}`).replace(/[^A-Za-z0-9_-]/g, '-')}`}
           defaultGzip={false}
           summary={
@@ -337,7 +435,18 @@ function FlowView({
             </>
           }
           footnote={({ bytes }) =>
-            `${flow.line_count} ${flow.line_count === 1 ? 'line' : 'lines'} · ${flow.steps} ${flow.steps === 1 ? 'step' : 'steps'}${bytes != null ? ` · ${fmtBytes(bytes)}` : ''}`
+            [
+              `${activity.completions} completion ${activity.completions === 1 ? 'event' : 'events'}`,
+              [
+                activity.requests && `${activity.requests} ${activity.requests === 1 ? 'request' : 'requests'}`,
+                activity.jobs && `${activity.jobs} ${activity.jobs === 1 ? 'job' : 'jobs'}`,
+              ]
+                .filter(Boolean)
+                .join(' + '),
+              bytes != null && fmtBytes(bytes),
+            ]
+              .filter(Boolean)
+              .join(' · ')
           }
         />
       )}
@@ -363,13 +472,13 @@ function PlainTextNote({ source, kind }: { source: string; kind?: string }) {
         No diagram for plain text
       </h2>
       <p className="mt-2 text-muted-foreground">
-        The Diagram and JSON tabs stay visible but disabled, so the card keeps its shape from line to line. Raw shows
-        the line as it was sent.
+        The Diagram and JSON tabs stay visible but disabled, so the card keeps its shape from line to line. Fields shows
+        what quiet could read: level, time, status, path.
       </p>
       <p className="mt-3 text-muted-foreground">
         {hint
-          ? `To get Fields, Diagram and a flow for ${source}, ${hint.what}:`
-          : `To get Fields, Diagram and a flow for ${source}, log one JSON object per line (pino, zap, structlog, slog's JSON handler)${kind ? ` or switch the ${kind} shipper to JSON` : ''}.`}
+          ? 'For structured fields and Diagram, enable JSON access logs:'
+          : `For structured fields and Diagram, log one JSON object per line (pino, zap, structlog, slog's JSON handler)${kind ? ` or switch the ${kind} shipper to JSON` : ''}.`}
       </p>
       {hint && (
         <div className="mt-2 flex items-center gap-2 border bg-code px-3 py-2 font-mono text-xs">
@@ -399,7 +508,7 @@ function OneNodeAside({ line, since, until }: { line: LogLine; since: number; un
   })
   const id = line.display_id
   return (
-    <aside className="flex w-[480px] shrink-0 flex-col gap-6">
+    <aside className="flex min-w-[280px] max-w-[480px] flex-1 flex-col gap-6">
       {!line.fields && (
         <PlainTextNote
           source={line.source}
@@ -408,18 +517,19 @@ function OneNodeAside({ line, since, until }: { line: LogLine; since: number; un
       )}
       <div className="border border-dashed p-4">
         <h2 className="flex items-center gap-2 font-medium">
-          <GitForkIcon className="size-4 text-muted-foreground" />A one-node flow is just the card
+          <GitForkIcon className="size-4 text-muted-foreground" />
+          Only one event observed
         </h2>
         <p className="mt-2 text-muted-foreground">
           {id
-            ? `Only this line carries ${id.key} ${id.value}, so there is nothing to stitch. If a worker logged the same id, its steps would appear here as a flow.`
-            : 'This line carries no request, job, trace or correlation id, so there is nothing to stitch.'}
+            ? `This is the only event found for ${id.value}. Sampling, delivery gaps or expiry may leave related work unseen. Missing completion is not evidence of failure.`
+            : 'This event carries no request, job, trace or correlation id, so there is nothing to correlate.'}
         </p>
         <dl className="mt-3 font-mono text-xs">
           {[
             ['checked', 'request_id → job_id → trace_id → correlation_id'],
             ['window', `last ${fmtWindow(until - since)} · all ${sources ?? ''} sources`.replace('  ', ' ')],
-            ['matches', '1 line'],
+            ['matches', '1 event'],
           ].map(([k, v]) => (
             <div key={k} className="grid grid-cols-[96px_1fr] border-border/60 border-b py-1.5">
               <dt className="text-syntax-key">{k}</dt>
@@ -461,10 +571,10 @@ function NotFound({ nf }: { nf: FlowNotFound }) {
   const retention = health?.retention_ms ?? nf.until - nf.since
   const sources = useSources().data
   const window = fmtWindow(retention || 86_400_000)
-  if (nf.close.length === 0) return <Gone nf={nf} window={window} oldest={health?.oldest ?? null} sources={sources} />
+  // v0.1.1-04.5: the flow layout either way; close matches only when there are some.
   return (
     <div className="flex flex-1 flex-col px-6 pb-4">
-      <Crumbs value={nf.id} />
+      <Crumbs label={/^req_/.test(nf.id) ? 'request_id' : undefined} value={nf.id} />
       <div className="flex items-center gap-3">
         <h1 className="font-medium font-mono text-2xl">{nf.id}</h1>
         <span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">not found</span>
@@ -477,48 +587,44 @@ function NotFound({ nf }: { nf: FlowNotFound }) {
           <span className="border p-1.5">
             <GitForkIcon className="size-4 text-muted-foreground" />
           </span>
-          <h2 className="font-medium">No lines with this id</h2>
+          <h2 className="font-medium">No events with this ID</h2>
           <p className="text-muted-foreground">
-            Nothing in the last {window} carries {nf.id}. It may be older than the window, mistyped, or from a source
-            that is paused.
+            No received event in the last {window} carries {nf.id}. Check the ID and source. Sampling, delivery gaps or
+            expiry can also leave no match.
           </p>
           <Button nativeButton={false} render={<Link to="/search" search={{ q: nf.id, range: '24h' }} />}>
             <SearchIcon />
             Search all sources
           </Button>
         </div>
-        <div>
-          <h3 className="pb-2 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
-            Close matches
-          </h3>
-          <ul className="border">
-            {nf.close.map((c) => (
-              <li key={c.value} className="border-border/60 border-b last:border-b-0">
-                <Link
-                  to="/flow/$id"
-                  params={{ id: c.value }}
-                  className="flex h-8 items-center gap-3 px-3 font-mono text-xs hover:bg-row-hover"
-                >
-                  <span>{c.value}</span>
-                  <span className="flex-1" />
-                  <span className="truncate text-muted-foreground">
-                    {c.msg} · {fmtClock(c.ts)}
-                  </span>
-                  <ChevronRightIcon className="size-3.5 text-muted-foreground" />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </div>
+        {nf.close.length > 0 && (
+          <div>
+            <h3 className="pb-2 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
+              Close matches
+            </h3>
+            <ul className="border">
+              {nf.close.map((c) => (
+                <li key={c.value} className="border-border/60 border-b last:border-b-0">
+                  <Link
+                    to="/flow/$id"
+                    params={{ id: c.value }}
+                    className="flex h-8 items-center gap-3 px-3 font-mono text-xs hover:bg-row-hover"
+                  >
+                    <span>{c.value}</span>
+                    <span className="flex-1" />
+                    <span className="truncate text-muted-foreground">
+                      {c.msg} · {fmtClock(c.ts)}
+                    </span>
+                    <ChevronRightIcon className="size-3.5 text-muted-foreground" />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <p className="flex items-center gap-2 text-muted-foreground text-xs">
           <ClockIcon className="size-3.5" />
-          <span>
-            Need older lines? Retention is {window}. Change it in{' '}
-            <Link to="/settings/storage" className="text-brand hover:underline">
-              Settings → Storage
-            </Link>
-            .
-          </span>
+          <span>Showing the last {window}. Retention settings cannot restore expired events.</span>
         </p>
       </div>
     </div>
@@ -526,82 +632,3 @@ function NotFound({ nf }: { nf: FlowNotFound }) {
 }
 
 /** A flow link with nothing like it left in the window (design 08.6). */
-function Gone({
-  nf,
-  window,
-  oldest,
-  sources,
-}: {
-  nf: FlowNotFound
-  window: string
-  oldest: number | null
-  sources: { paused: boolean }[] | undefined
-}) {
-  const paused = sources?.filter((s) => s.paused).length ?? 0
-  const rows: [React.ReactNode, string, string][] = [
-    [
-      <ClockIcon key="i" />,
-      'Searchable window',
-      `${window}${oldest ? ` · oldest line ${fmtDay(oldest)}, ${fmtClock(oldest)}` : ''}`,
-    ],
-    [<SearchIcon key="i" />, 'Looked for', LOOKED_FOR],
-    [
-      <BoxesIcon key="i" />,
-      'Sources searched',
-      `all ${sources?.length ?? ''} · ${paused ? `${paused} paused` : 'none paused'}`.replace('  ', ' '),
-    ],
-  ]
-  return (
-    <div className="flex flex-1 flex-col justify-center px-[72px] pb-24">
-      <div className="flex max-w-[560px] flex-col gap-6">
-        <p className="font-mono text-muted-foreground text-sm">404</p>
-        <h1 className="font-semibold text-[32px] leading-tight tracking-tight">
-          This flow is no longer in the window.
-        </h1>
-        <p className="text-base text-muted-foreground">
-          Flow links only open while their lines are stored. Nothing in the last {window} carries {nf.id}, so it has
-          probably expired. It could also be a typo in the link.
-        </p>
-        <div className="flex h-9 items-center gap-2 border bg-card/40 px-3 font-mono text-[13px]">
-          <WorkflowIcon className="size-3.5 text-muted-foreground" />
-          <span className="text-muted-foreground">{`${publicHost()}/flow/`}</span>
-          <span className="truncate">{nf.id}</span>
-          <span className="flex-1" />
-          <span className="bg-status-err/15 px-1.5 text-[11px] text-status-err">404</span>
-        </div>
-        <dl className="border">
-          {rows.map(([icon, k, v]) => (
-            <div
-              key={k}
-              className="grid h-9 grid-cols-[180px_1fr] items-center border-border/60 border-b px-3 last:border-b-0"
-            >
-              <dt className="flex items-center gap-2 text-[13px] [&_svg]:size-3.5 [&_svg]:text-muted-foreground">
-                {icon}
-                {k}
-              </dt>
-              <dd className="truncate font-mono text-muted-foreground text-xs">{v}</dd>
-            </div>
-          ))}
-        </dl>
-        <div className="flex flex-wrap gap-2">
-          <Button nativeButton={false} render={<Link to="/" />}>
-            <ArrowLeftIcon />
-            Back to stream
-          </Button>
-          <Button
-            variant="outline"
-            nativeButton={false}
-            render={<Link to="/search" search={{ q: nf.id, range: '24h' }} />}
-          >
-            <SearchIcon />
-            Search {window} for {nf.id}
-          </Button>
-          <Button variant="ghost" nativeButton={false} render={<Link to="/settings/storage" />}>
-            <SettingsIcon />
-            Storage settings
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}

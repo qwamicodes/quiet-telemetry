@@ -51,7 +51,7 @@ sources: Array<string>,
  */
 started: number, ended: number, duration_ms: number, 
 /**
- * Highest attempt number seen (0 = no retries).
+ * Attempts after the first (0 = no retries), whatever the queue's numbering.
  */
 retries: number, errors: number, warnings: number, 
 /**

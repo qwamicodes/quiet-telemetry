@@ -1,5 +1,13 @@
 import { Link } from '@tanstack/react-router'
-import { AlertTriangleIcon, ChevronDownIcon, DatabaseIcon, HardDriveIcon, ShieldAlertIcon, XIcon } from 'lucide-react'
+import {
+  AlertTriangleIcon,
+  ChevronDownIcon,
+  DatabaseIcon,
+  HardDriveIcon,
+  SettingsIcon,
+  ShieldAlertIcon,
+  XIcon,
+} from 'lucide-react'
 import { useState } from 'react'
 import type { Issue, IssueKind } from '@/gen'
 import { useSystem } from '@/lib/settings-api'
@@ -29,7 +37,8 @@ function Action({ kind }: { kind: IssueKind }) {
   const cls = 'flex h-6 items-center border px-2 text-xs hover:bg-muted'
   if (kind === 'disk_near_cap' || kind === 'disk_at_cap' || kind === 'disk_low')
     return (
-      <Link to="/settings/storage" className={cls}>
+      <Link to="/settings/storage" className={cn(cls, 'gap-1.5')}>
+        <SettingsIcon className="size-3.5" />
         Storage settings
       </Link>
     )

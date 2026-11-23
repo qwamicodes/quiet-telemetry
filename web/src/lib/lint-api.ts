@@ -1,9 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import type { LintCheck, LintReport, LintStatus } from '@/gen'
 import { fetchJson } from '@/lib/api'
 
-export const lintStatus = z.enum(['pass', 'warn', 'fail', 'na']) satisfies z.ZodType<LintStatus>
+export const lintStatus = z.enum(['pass', 'warn', 'fail', 'review', 'optional', 'na']) satisfies z.ZodType<LintStatus>
 
 export const lintCheck = z.object({
   id: z.string(),
@@ -30,4 +30,22 @@ export function useLint(source: string | null) {
     enabled: !!source,
     staleTime: 15_000,
   })
+}
+
+/**
+ * The Guide nav dot (11.6 A): on while no source passes Check my logs.
+ * Reads the newest few sources only, and rarely.
+ */
+export function useNoSourcePasses(sources: string[]): boolean {
+  const results = useQueries({
+    queries: sources.slice(0, 6).map((s) => ({
+      queryKey: ['lint', s],
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        fetchJson(`/api/sources/${encodeURIComponent(s)}/lint`, lintReport, { signal }),
+      staleTime: 5 * 60_000,
+      retry: false,
+    })),
+  })
+  if (results.length === 0 || results.some((r) => !r.data)) return false
+  return !results.some((r) => r.data && r.data.applicable > 0 && r.data.passed === r.data.applicable)
 }

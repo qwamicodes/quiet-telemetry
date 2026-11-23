@@ -146,8 +146,8 @@ describe('custom source groups (06.9)', () => {
     expect(within(t).getByText('· 2 moved to Legivent staging')).toBeInTheDocument()
     expect(within(t).getByText('Nothing in this group yet')).toBeInTheDocument()
     expect(screen.getByTestId('group-rules-hint')).toHaveTextContent('A group you make wins over Compose / Stack.')
-    expect(screen.getByText(/^Your groups first/)).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: 'Grouping' })).toHaveTextContent('Grouping · Auto')
+    expect(screen.getByText(/^Request events, job attempts/)).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Grouping' })).toHaveTextContent('Group by stack')
 
     await user.click(screen.getByRole('tab', { name: 'Custom' }))
     expect(within(t).getByText('staging-bot')).toBeInTheDocument()
@@ -289,6 +289,7 @@ describe('custom source groups (06.9)', () => {
     const row = await screen.findByTestId('custom-groups-row', {}, { timeout: 5000 })
     expect(row).toHaveTextContent('You can also make your own groups from Sources')
     await waitFor(() => expect(row).toHaveTextContent('· 2 custom groups'))
-    expect(within(row).getByRole('link', { name: /Sources/ })).toHaveAttribute('href', '/sources')
+    // The "Sources →" link sits under the grouping select.
+    expect(screen.getByRole('link', { name: 'Sources' })).toHaveAttribute('href', '/sources')
   })
 })
