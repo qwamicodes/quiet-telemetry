@@ -1,0 +1,7 @@
+# Optional verification only; runtime, demo and core tests are dependency-free.
+# Install with --no-deps: all dependencies for this check are listed explicitly.
+starlette==0.50.0
+anyio==4.11.0
+idna==3.11
+sniffio==1.3.1
+typing_extensions==4.15.0
