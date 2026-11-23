@@ -13,9 +13,13 @@ RUN bun --bun run build
 FROM rust:1-alpine AS server
 RUN apk add --no-cache musl-dev
 WORKDIR /src/server
-# Dependencies first so they cache across source changes.
+# Dependencies first so they cache across source changes. The stand-in
+# main uses none of them, so cargo's unused-dependency lint is switched off
+# for this step only; `COPY server/` restores the real Cargo.toml.
 COPY server/Cargo.toml server/Cargo.lock ./
-RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
+RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+    && printf '\n[lints.cargo]\nunused_dependencies = "allow"\n' >> Cargo.toml \
+    && cargo build --release && rm -rf src
 COPY server/ ./
 # rust-embed reads ../web/dist at compile time.
 COPY --from=web /src/web/dist /src/web/dist
