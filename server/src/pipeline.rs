@@ -5,7 +5,7 @@ use crate::hub::{Hub, Line, SourceKind};
 use crate::normalize::normalize;
 use crate::settings::Settings;
 use crate::store::Store;
-use crate::system::SystemState;
+use crate::system::{DropReason, SystemState};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -126,6 +126,10 @@ impl Pipeline {
         // non-JSON lines" is off. A cut JSON line no longer parses; it is kept
         // as raw text either way, since it was JSON when it was written.
         let (max_bytes, keep_non_json) = self.settings.ingest_rules();
+        // Sources → Rejected → Dropped records (06.6): what was cut or
+        // dropped, counted per minute; the payloads themselves are not kept.
+        let now = chrono::Utc::now().timestamp_millis();
+        let sys = &self.system;
         let mut lines: Vec<_> = raws
             .into_iter()
             .filter_map(|r| {
@@ -137,10 +141,28 @@ impl Pipeline {
                     }
                     let mut l = normalize(&r.text[..cut], &r.source, r.collector_ts, r.received);
                     l.flags.push(format!("truncated:{len}"));
+                    sys.dropped(now, &r.source, DropReason::SizeLimit, true, len as u64);
                     return Some(l);
                 }
                 let l = normalize(&r.text, &r.source, r.collector_ts, r.received);
-                (keep_non_json || l.fields.is_some()).then_some(l)
+                if l.flags.iter().any(|f| f == "parse_limit") {
+                    sys.dropped(
+                        now,
+                        &r.source,
+                        DropReason::ParseLimit,
+                        keep_non_json,
+                        len as u64,
+                    );
+                } else if l.flags.iter().any(|f| f.starts_with("duplicate_key:")) {
+                    sys.dropped(now, &r.source, DropReason::DuplicateKey, true, len as u64);
+                }
+                if !keep_non_json && l.fields.is_none() {
+                    if !l.flags.iter().any(|f| f == "parse_limit") {
+                        sys.dropped(now, &r.source, DropReason::TextPolicy, false, len as u64);
+                    }
+                    return None;
+                }
+                Some(l)
             })
             .collect();
         if lines.is_empty() {
@@ -250,6 +272,23 @@ mod tests {
         assert!(got[0].raw.len() <= 1024);
         assert_eq!(got[0].flags, vec![format!("truncated:{}", long.len())]);
         assert_eq!(got[1].msg, "ok");
+
+        // Dropped records (06.6): counted with reason and size, no payload.
+        p.ingest(
+            SourceKind::Http,
+            [RawLine::new(r#"{"ts":1,"ts":2,"msg":"dup"}"#, "api", 1)],
+        )
+        .await
+        .unwrap();
+        let drops = p.system().drops(Some("api"), 10);
+        let by = |r: DropReason| drops.iter().find(|d| d.reason == r).cloned().unwrap();
+        let size = by(DropReason::SizeLimit);
+        assert!(size.stored && size.count == 1 && size.bytes == long.len() as u64);
+        let text = by(DropReason::TextPolicy);
+        assert!(!text.stored && text.count == 1 && text.bytes == 10);
+        assert!(by(DropReason::DuplicateKey).stored);
+        assert_eq!(p.system().dropped_since(0, Some("api")), 3);
+        assert_eq!(p.system().dropped_since(0, Some("other")), 0);
     }
 
     #[tokio::test]

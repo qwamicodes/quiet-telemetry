@@ -234,6 +234,11 @@ pub fn normalize(raw: &str, source: &str, collector_ts: Option<i64>, received: i
 
     let parsed = parse_object(&raw);
     let Some(entries) = parsed else {
+        // JSON deeper than the parser allows is kept as text and flagged, so
+        // Sources → Rejected can count it under "parse limit".
+        if hit_parse_limit(&raw) {
+            flags.push("parse_limit".into());
+        }
         return LogLine {
             id: 0,
             ts: collector_ts.unwrap_or(received),
@@ -532,6 +537,15 @@ impl<'de> Deserialize<'de> for Entries {
     }
 }
 
+/// A `{…}` line serde refused only because it nests past its recursion limit.
+fn hit_parse_limit(raw: &str) -> bool {
+    let t = raw.trim_start();
+    t.starts_with('{')
+        && serde_json::from_str::<Value>(t)
+            .err()
+            .is_some_and(|e| e.to_string().contains("recursion limit"))
+}
+
 fn parse_object(raw: &str) -> Option<Vec<(String, Value)>> {
     let t = raw.trim_start();
     if !t.starts_with('{') {
@@ -545,6 +559,16 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_760_000_000_000;
+
+    #[test]
+    fn json_past_the_nesting_limit_is_flagged() {
+        let deep = format!("{{\"a\":{}1{}}}", "[".repeat(200), "]".repeat(200));
+        let l = normalize(&deep, "api", None, NOW);
+        assert!(l.fields.is_none());
+        assert!(l.flags.iter().any(|f| f == "parse_limit"));
+        let broken = normalize("{\"a\":", "api", None, NOW);
+        assert!(!broken.flags.iter().any(|f| f == "parse_limit"));
+    }
 
     #[test]
     fn plain_text_stays_raw() {

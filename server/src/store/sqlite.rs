@@ -33,7 +33,9 @@ use crate::search::{
 use anyhow::Context;
 use async_trait::async_trait;
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{
+    params, params_from_iter, Connection, OpenFlags, OptionalExtension, TransactionBehavior,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -481,7 +483,9 @@ impl Writer {
         if have > 0 || self.known.is_empty() {
             return Ok(());
         }
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for h in &self.known {
             tx.execute(
                 &format!(
@@ -580,7 +584,9 @@ impl Writer {
         {
             self.ensure_partition(hour)?;
         }
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         // (lines, bytes, min_ts, max_ts) per hour; (kind, lines, last_ts) per source.
         let mut parts: HashMap<i64, (i64, i64, i64, i64)> = HashMap::new();
         let mut srcs: HashMap<&str, (SourceKind, i64, i64)> = HashMap::new();
@@ -663,7 +669,9 @@ impl Writer {
     }
 
     fn drop_hour(&mut self, hour: i64) -> anyhow::Result<u64> {
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Source counts follow what is still stored.
         let per_source: Vec<(String, i64)> = {
             let mut st = tx.prepare(&format!(
@@ -734,7 +742,9 @@ impl Writer {
                 break;
             }
             let (l, f, i) = (t('l', h), t('f', h), t('i', h));
-            let tx = self.conn.transaction()?;
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
             let gone: Vec<(i64, String)> = {
                 let mut st = tx.prepare(&format!(
                     "SELECT id, raw FROM {l} WHERE source = ? AND ts < ?"

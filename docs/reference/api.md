@@ -9,15 +9,15 @@ Every `/api` route needs a session cookie except the public auth routes, and eve
 - `GET /health` (liveness) · `GET /ready` (readiness, 503 while shutting down)
 - `GET /api/health`: version, `retention_ms`, `disk_bytes`, `stored_lines`, `oldest`, and `ingest: { auth, loopback, max_body, rate, tokens }`
 - `GET /api/about`: version, commit, build date, start time, store kind, SQLite version, database size, data dir, live clients, member count, Docker status (Settings → About)
-- `GET /api/sources`: every source, with `display_name`, `hidden`, `paused`, its group and `format` (`v0.1.0` while an old-format record arrived in the last 24 h, else `v0.1.1` once a canonical event has, else absent) · `GET /api/sources/grouping-preview`: how sources would group under each mode
+- `GET /api/sources`: every source, with `display_name`, `hidden`, `paused`, its group, `format` (`v0.1.0` while an old-format record arrived in the last 24 h, else `v0.1.1` once a canonical event has, else absent) and `id_key` (the id key its newest rows show, since the server started) · `GET /api/sources/grouping-preview`: how sources would group under each mode
 - `GET /api/sources/:name/lines?limit=`: the newest lines of one source
-- `GET /api/sources/:name/fields?sample=2000`: fields detected, flow ids, malformed lines
-- `GET /api/sources/:name/activity` → `{ rejections, rejected_15m, paused_dropped }`
-- `GET /api/sources/:name/lint?sample=1000`: **Check my logs**, the newest records scored against the canonical completion event → `{ source, sampled, passed, applicable, checks: [{ id, title, status: pass|warn|fail|review|optional|na, share, detail, fix }] }`
+- `GET /api/sources/:name/fields?sample=2000`: fields detected, flow ids, malformed lines, and `level_scheme` (`pino` numbers, `names`, `mixed` or `none`)
+- `GET /api/sources/:name/activity` → `{ rejections, rejected_15m, paused_dropped, dropped, dropped_24h }`. `dropped` lists dropped or cut records per minute, newest first, last 24h: `{ minute, source, reason: text_policy | parse_limit | size_limit | duplicate_key, stored, count, bytes }`. Payloads are never kept.
+- `GET /api/sources/:name/lint?sample=1000`: **Check my logs**, the newest records scored against the canonical completion event → `{ source, sampled, passed, applicable, checks: [{ id, title, status: pass|warn|fail|review|optional|na, share, detail, fix, failing }] }`. `failing` holds up to 3 records the check missed, `{ line_id, ts, note, excerpt }`; the excerpt is redacted again and cut to 320 characters
 - `GET /api/sources/:name/format`: the newest 5,000 records against the v0.1.1 contract, for the upgrade screen → `{ source, sample, old, new, other, tag, last_old, last_new, changes: [{ id, from, to, count, old_format }], rollout: [{ start, old, new }], now }`. A record is v0.1.0 when it carries `outcome`, `wideEvents.calls`, `msg` without `flow`, or `status` without `status_code`; `err` and `job_id` without `queue` are listed as advice.
 - `POST /api/sources/:name/remove {"confirm":"<name>","revoke_tokens":true}` (owner): pause + hide the source, delete its stored lines and revoke the ingest tokens bound to it; returns `{ lines, revoked, previous }` (Undo = restore each token within 60 s + `PUT` the previous settings)
 - `GET /api/id-coverage?keys=a,b&sample=2000`: how often each id key appears, across sources
-- `GET /api/system` → `{ ok, issues: [{kind, severity, title, detail}], docker, disk, ingest, store, now }` (the system banners)
+- `GET /api/system` → `{ ok, issues: [{kind, severity, title, detail}], docker, disk, ingest, store, now }` (the system banners). `docker` is `{ state: "connected", containers, endpoint, engine }`, `{ state: "unavailable", error, retry_at, attempt }` (the next reconnect, unix ms, and failed attempts in a row), `connecting` or `disabled`; `/api/health` carries the same object
 
 ## Stream
 

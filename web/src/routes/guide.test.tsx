@@ -31,7 +31,7 @@ const health: Health = {
   ok: true,
   version: '0.1.0',
   started: 0,
-  docker: { state: 'connected', containers: 3 },
+  docker: { state: 'connected', containers: 3, endpoint: '/var/run/docker.sock', engine: null },
   store: 'sqlite',
   retention_ms: 24 * H,
   disk_bytes: 0,
@@ -74,7 +74,15 @@ const report = (src: string): LintReport => ({
   passed: 2,
   applicable: 3,
   checks: [
-    { id: 'json', title: 'JSON lines', status: 'pass', share: 1, detail: '420 of 420 records parse', fix: '' },
+    {
+      id: 'json',
+      title: 'JSON lines',
+      status: 'pass',
+      share: 1,
+      detail: '420 of 420 records parse',
+      fix: '',
+      failing: [],
+    },
     {
       id: 'canonical',
       title: 'One completion event per request',
@@ -82,8 +90,9 @@ const report = (src: string): LintReport => ({
       share: 0.2,
       detail: '12 of 60 requests · 31 with more than one',
       fix: 'Let middleware build one event per request and emit it once when the response completes.',
+      failing: [],
     },
-    { id: 'level', title: 'level', status: 'pass', share: 1, detail: '420 of 420 records', fix: '' },
+    { id: 'level', title: 'level', status: 'pass', share: 1, detail: '420 of 420 records', fix: '', failing: [] },
     {
       id: 'job_id',
       title: 'job_id on job records',
@@ -91,6 +100,7 @@ const report = (src: string): LintReport => ({
       share: null,
       detail: 'no job records in the sample',
       fix: '',
+      failing: [],
     },
     {
       id: 'error_object',
@@ -99,6 +109,14 @@ const report = (src: string): LintReport => ({
       share: 0.12,
       detail: '1568 errors are strings or stringified JSON · 214 of 1782 typed',
       fix: 'Make `error` an object.',
+      failing: [
+        {
+          line_id: 7,
+          ts: 1_792_000_000_000,
+          note: 'error is a string',
+          excerpt: '{"level":"error","error":"paystack timed out","authorization":"[REDACTED]"}',
+        },
+      ],
     },
     {
       id: 'secrets',
@@ -107,6 +125,7 @@ const report = (src: string): LintReport => ({
       share: null,
       detail: 'no patterns found; this is not a privacy guarantee',
       fix: '',
+      failing: [],
     },
   ],
 })
@@ -365,6 +384,12 @@ describe('Guide (11.x)', () => {
     expect(fix).toHaveTextContent('2. Normalize error strings to message')
     await user.click(screen.getByRole('button', { name: 'Copy fix prompt' }))
     expect(await navigator.clipboard.readText()).toContain('Review legivent-api')
+
+    // 11.6 Failing fields · excerpt: the server's sanitized records.
+    const failing = screen.getByRole('region', { name: 'Failing fields' })
+    expect(failing).toHaveTextContent('error is a string')
+    expect(failing).toHaveTextContent('line 7')
+    expect(failing).toHaveTextContent('"authorization":"[REDACTED]"')
 
     await user.selectOptions(screen.getByLabelText('Source to check'), 'order-worker')
     await waitFor(() => expect(lintCalls).toContain('order-worker'))

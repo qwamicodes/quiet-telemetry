@@ -45,6 +45,7 @@ export const malformedLine = z.object({
 export const sourceFields = z.object({
   sampled: z.number(),
   json: z.number(),
+  level_scheme: z.enum(['pino', 'names', 'mixed', 'none']).default('none'),
   fields: z.array(detectedField),
   ids: z.array(idCoverage),
   malformed_total: z.number(),

@@ -182,12 +182,51 @@ pub struct MalformedLine {
     pub raw: String,
 }
 
+/// How a source writes its level (02.4 "pino levels ✓").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelScheme {
+    /// Pino / bunyan numbers (10 trace … 60 fatal).
+    Pino,
+    /// Names (`info`, `WARN`, `error`).
+    Names,
+    /// Some lines use numbers, others names.
+    Mixed,
+    /// No level field on the sampled JSON lines.
+    None,
+}
+
+/// The level scheme of `lines`, read from the first level key each carries.
+pub fn level_scheme(lines: &[Line]) -> LevelScheme {
+    const KEYS: &[&str] = &["level", "lvl", "severity", "log.level", "levelname"];
+    let (mut num, mut name) = (0u64, 0u64);
+    for l in lines {
+        let Some(f) = l.fields.as_ref().and_then(|f| f.as_object()) else {
+            continue;
+        };
+        match KEYS.iter().find_map(|k| f.get(*k)) {
+            Some(Value::Number(_)) => num += 1,
+            Some(Value::String(s)) if s.parse::<f64>().is_ok() => num += 1,
+            Some(Value::String(_)) => name += 1,
+            _ => {}
+        }
+    }
+    match (num, name) {
+        (0, 0) => LevelScheme::None,
+        (_, 0) => LevelScheme::Pino,
+        (0, _) => LevelScheme::Names,
+        _ => LevelScheme::Mixed,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct SourceFields {
     /// Lines looked at (newest first, up to `sample`).
     pub sampled: u64,
     /// How many of those were JSON objects.
     pub json: u64,
+    /// How the sampled lines write their level.
+    pub level_scheme: LevelScheme,
     pub fields: Vec<DetectedField>,
     pub ids: Vec<IdCoverage>,
     /// Malformed lines in the whole window (counted in the store).
@@ -388,6 +427,7 @@ async fn fields(
     Json(SourceFields {
         sampled: page.lines.len() as u64,
         json,
+        level_scheme: level_scheme(&page.lines),
         fields,
         ids,
         malformed_total,
@@ -558,5 +598,29 @@ mod tests {
         assert!((req.coverage - 2.0 / 3.0).abs() < 1e-9);
         assert_eq!(malformed_reason(&lines[2]).as_deref(), Some("not JSON"));
         assert_eq!(malformed_reason(&lines[0]), None);
+        assert_eq!(level_scheme(&lines), LevelScheme::None);
+    }
+
+    #[test]
+    fn level_scheme_reads_pino_numbers_and_names() {
+        let of = |raws: &[&str]| {
+            let lines: Vec<Line> = raws
+                .iter()
+                .map(|r| Arc::new(normalize(r, "api", None, 0)))
+                .collect();
+            level_scheme(&lines)
+        };
+        assert_eq!(
+            of(&[r#"{"level":30,"msg":"a"}"#, "text"]),
+            LevelScheme::Pino
+        );
+        assert_eq!(
+            of(&[r#"{"level":"info"}"#, r#"{"severity":"WARN"}"#]),
+            LevelScheme::Names
+        );
+        assert_eq!(
+            of(&[r#"{"level":30}"#, r#"{"level":"info"}"#]),
+            LevelScheme::Mixed
+        );
     }
 }

@@ -549,7 +549,9 @@ export function StreamPage() {
         onExport={source ? () => setExporting(true) : undefined}
       />
       {/* 03.7: full width under the top bar. */}
-      {sourceLost && source && <SourceLostBanner source={sourceName} lastTs={newest} onRetry={retryNow} />}
+      {sourceLost && source && (
+        <SourceLostBanner source={sourceName} lastTs={newest} docker={health?.docker} onRetry={retryNow} />
+      )}
       <FilterBar
         chips={chips}
         text={text}
