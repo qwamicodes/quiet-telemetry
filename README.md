@@ -108,7 +108,7 @@ curl -X POST localhost:7070/ingest/ndjson -H "Authorization: Bearer $TOKEN" -H '
   --data-binary $'{"level":30,"msg":"hello","request_id":"req_1"}\nplain text works too'
 ```
 
-For the best flows, follow the logging guide: one canonical JSON line per request or job attempt, `request_id` on every line, jobs carry the parent `request_id`, timed calls in `wideEvents.calls`.
+For the best flows, follow the logging guide (`docs/logging-guide.md`, or Guide → Instrument with an agent): one canonical completion event per request or job attempt with `flow`, `status_code` and `duration_ms`, `request_id` on every request, jobs keep the queue's own `job_id` with `queue` and carry the parent `request_id`, and credentials are `[REDACTED]` before the log is written.
 
 ### 5. Before you push
 
