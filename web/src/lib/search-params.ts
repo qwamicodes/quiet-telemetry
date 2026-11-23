@@ -131,6 +131,8 @@ export type StorageSearch = z.infer<typeof storageSearch>
 
 export const guideSearch = z.object({
   tab: guideTab.optional().catch(undefined),
+  /** Instrument with an agent: the step shown (`setup`, `review`, `examples`), so a link or Back lands on it. */
+  step: z.enum(['setup', 'review', 'examples']).optional().catch(undefined),
   source: z.string().max(300).optional().catch(undefined),
 })
 export type GuideSearch = z.infer<typeof guideSearch>

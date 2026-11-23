@@ -89,7 +89,9 @@ export function GuidePage() {
   useSeenOnVisit(tab === 'overview' ? null : (`guide.${tab}` as Target))
   const [stack, setStack] = useStack()
   const [setup, update] = useSetup()
-  const [step, setStepState] = useState(readStep)
+  // The step lives in the URL (`?tab=agent&step=review`); this browser
+  // session's last step is the fallback when the URL has none.
+  const step = search.step ?? readStep()
   const [copied, setCopied] = useState(false)
   const [drawer, setDrawer] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
@@ -99,10 +101,9 @@ export function GuidePage() {
   const toCheck = () => navigate({ to: '/guide', search: { tab: 'check' } })
   const setStep = (s: AgentStep) => {
     if (s === 'verify') return toCheck()
-    setStepState(s)
     setCopied(false)
     sessionStorage.setItem(STEP_KEY, s)
-    if (tab !== 'agent') navigate({ to: '/guide', search: { tab: 'agent' } })
+    navigate({ to: '/guide', search: { tab: 'agent', step: s } })
     document.querySelector('[data-guide-scroll]')?.scrollTo?.({ top: 0 })
   }
   // After a copy the stepper moves on to "Apply in your repo" (v0.1.0-11.5).

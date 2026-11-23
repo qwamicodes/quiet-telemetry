@@ -1290,7 +1290,7 @@ describe('stream row hover → Mute (03.15–03.23)', () => {
     const user = userEvent.setup()
     renderAt('/?source=legivent-api')
     const note = await screen.findByTestId('muted-note')
-    expect(note).toHaveTextContent('0 source rules + 1 global · 1 hidden')
+    expect(note).toHaveTextContent('1 mute rule · 1 hidden')
     await user.click(within(note).getByRole('button', { name: 'Show muted' }))
     const row = await waitFor(() => {
       const r = document.querySelector('[data-line-id="2"]')

@@ -338,6 +338,15 @@ describe('Guide (11.x)', () => {
     expect(screen.getByRole('button', { name: /Apply in your repo/ })).toHaveAttribute('aria-current', 'step')
   })
 
+  it('the agent step lives in the URL: a link opens it, moving updates it (11.x)', async () => {
+    const user = userEvent.setup()
+    const { router } = renderAt('/guide?tab=agent&step=review')
+    expect(await screen.findByRole('heading', { name: 'Review your logging prompt' })).toBeInTheDocument()
+    await user.click(within(screen.getByRole('list', { name: 'Steps' })).getAllByRole('button')[0])
+    expect(await screen.findByRole('heading', { name: 'Set up your logging prompt' })).toBeInTheDocument()
+    expect(router.state.location.search).toMatchObject({ tab: 'agent', step: 'setup' })
+  })
+
   it('templates: search, empty state, add a pack with Undo; no project blocks adding', async () => {
     const user = userEvent.setup()
     renderAt('/guide?tab=agent')

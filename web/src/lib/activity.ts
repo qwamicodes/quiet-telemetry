@@ -26,7 +26,7 @@ export interface RequestRow {
   duration?: number
 }
 
-export type JobState = 'completed' | 'completed_after_retry' | 'failed' | 'retry_scheduled' | 'not_observed'
+export type JobState = 'completed' | 'completed_after_retry' | 'failed' | 'retry_scheduled' | 'queued' | 'not_observed'
 
 export interface Attempt {
   line: LogLine
@@ -192,7 +192,19 @@ function jobState(attempts: Attempt[]): Pick<JobRow, 'state' | 'label' | 'tone' 
   if (attempts.some((a) => a.final)) return { state: 'failed', label: `Failed · ${plural}`, tone: 'err', exec, lastN }
   if (lastRun?.tone === 'err' && retryScheduled((lastRun.line.fields ?? {}) as Fields))
     return { state: 'retry_scheduled', label: 'Retry scheduled', tone: 'warn', exec, lastN }
+  // Queue lifecycle evidence only (04.3): the queue says it is waiting and
+  // no attempt has started. Without that evidence the state stays unknown.
+  if (!runs.length && attempts.some((a) => QUEUED.test(lifecycleStep(a))))
+    return { state: 'queued', label: 'Queued', tone: 'muted', exec, lastN }
   return { state: 'not_observed', label: 'Completion not observed', tone: 'muted', exec, lastN }
+}
+
+/** Queue lifecycle steps that mean "enqueued, not started" (BullMQ added/waiting/delayed, …). */
+const QUEUED = /^(queued|enqueued|added|waiting|delayed|scheduled)$/i
+
+function lifecycleStep(a: Attempt): string {
+  const f = (a.line.fields ?? {}) as Fields
+  return (str(f.phase) ?? str(f.step) ?? str(f.state) ?? str(f.event) ?? '').trim()
 }
 
 /** Build the activity list for a flow's lines (oldest first). */
@@ -293,6 +305,8 @@ export function jobBadge(j: JobRow): string {
       return 'completed'
     case 'retry_scheduled':
       return 'retry scheduled'
+    case 'queued':
+      return 'queued'
     default:
       return 'completion not observed'
   }
@@ -304,6 +318,7 @@ export const JOB_EVIDENCE: Record<JobState, string> = {
   completed_after_retry: 'completion confirmed after retry',
   completed: 'completion confirmed',
   retry_scheduled: 'retry scheduled by the queue',
+  queued: 'queued, confirmed by the queue',
   not_observed: 'completion not observed',
 }
 
