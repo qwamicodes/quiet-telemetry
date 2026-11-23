@@ -4,6 +4,16 @@ Technical choices made while building quiet, newest slice first. Each one
 stands unless Kwaame pushes back. The product-level log lives with the
 project notes; this file records what the code does and why.
 
+## Retained history, 5c · search across locations (2026-11-23)
+
+- **Segments are searched with the store's own SQL.** A downloaded segment is opened read-only with a `TEMP` `partitions` row for its hour, then `search_sync` runs on it unchanged (filters, FTS, id index, histogram). No second query path to keep in step with the local one.
+- **Coverage only for a range the user chose.** `/api/search` computes it only when `since` was given: the default window is the local one, and an hour that just expired locally must not start a history job on every search.
+- **One record per hour.** When two destinations hold an hour (a copy in progress), the active one's is searched; the other is listed in coverage only.
+- **A failing destination is tried once per job.** Its other hours are listed as not searched (`incomplete`) instead of each waiting on a timeout.
+- **Jobs in memory, per user.** They answer one search and are cheap to redo; a restart drops them. At most 4 per user (starting a fifth cancels the oldest); finished ones are kept 15 minutes. Matches are capped at 5,000 per job, which is also what an export of a job holds.
+- **Cache by checksum.** Files are named by the archived object's sha256 and checked against the catalog on download, so a stale or tampered object is refused and identical hours in two destinations share one file. LRU by bytes, apart from the disk cap.
+- **Flow marker is a cheap check.** "Related history unavailable" shows when the flow starts within an hour of the local window's edge, or a segment already in the cache has one of its ids. It never downloads to decide; loading is the user's choice.
+
 ## Retained history, 5b · retention policy (2026-11-23)
 
 - **A background worker, separate from the retention job.** `history/jobs.rs` runs a bounded step (32 object operations) every 5 s, at once when woken (a job added, a policy changed) and straight on while there is work: history retention first, then eviction, then jobs oldest first. Archiving stays in the retention job (5a), which must decide before it drops a local hour.
