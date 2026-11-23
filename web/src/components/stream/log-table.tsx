@@ -99,6 +99,18 @@ function Pick({
   )
 }
 
+/** `/api/v1/health?probe=1`: the query string reads muted after the path (03.15). */
+export function PathText({ path }: { path: string }) {
+  const q = path.indexOf('?')
+  if (q < 0) return <>{path}</>
+  return (
+    <>
+      {path.slice(0, q)}
+      <span className="text-muted-foreground">{path.slice(q)}</span>
+    </>
+  )
+}
+
 const LogRow = memo(function LogRow({
   line,
   selected,
@@ -144,7 +156,7 @@ const LogRow = memo(function LogRow({
         'group/row relative w-full cursor-default border-border/60 border-b font-mono text-[13px] outline-none hover:bg-row-hover',
         wrap ? 'min-h-(--row-h) py-1' : 'h-(--row-h)',
         bad && 'bg-row-error shadow-[inset_2px_0_0_var(--status-err)]',
-        selected && 'bg-row-selected shadow-[inset_2px_0_0_var(--brand)]',
+        selected && 'bg-row-selected shadow-[inset_0_0_0_1px_var(--brand)]',
         flash && !selected && 'bg-brand/10 shadow-[inset_2px_0_0_var(--brand)]',
         expanded && 'border-b-0',
         mutedBy && 'text-muted-foreground [&>*:not(:last-child)]:opacity-55',
@@ -161,7 +173,7 @@ const LogRow = memo(function LogRow({
           <>
             <span className="shrink-0 text-muted-foreground">{p.method}</span>
             <Pick k="path" v={f.path ?? p.path} onFilter={actions.onFilter} className="min-w-0">
-              {p.path}
+              <PathText path={p.path} />
             </Pick>
           </>
         ) : p.name ? (
@@ -477,10 +489,11 @@ function Refreshing() {
 /** Skeleton rows while the first backlog loads (design 08.4). */
 function SkeletonRows() {
   return (
-    <div aria-hidden className="flex flex-col">
-      {Array.from({ length: 14 }, (_, i) => (
+    // 08.4: placeholders fill the table whatever its height (the scroller clips them).
+    <div aria-hidden data-testid="skeleton-rows" className="flex h-full flex-col overflow-hidden">
+      {Array.from({ length: 60 }, (_, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: placeholders
-        <div key={i} className={cn(COLS, 'h-7 border-border/60 border-b')}>
+        <div key={i} className={cn(COLS, 'h-(--row-h) shrink-0 border-border/60 border-b')}>
           <Skeleton className="h-3 w-20" />
           <Skeleton className="h-3 w-9" />
           <Skeleton className="h-3" style={{ width: `${50 + ((i * 29) % 45)}%` }} />
@@ -505,6 +518,7 @@ export function LogTable({
   expandedId,
   follow,
   onFollow,
+  onRowHover,
   empty,
   loading,
   refreshing = false,
@@ -531,6 +545,8 @@ export function LogTable({
   expandedId: number | null
   follow: boolean
   onFollow: (f: boolean) => void
+  /** A row is under the pointer (the footer shows the row keys, 03.15). */
+  onRowHover?: (hovering: boolean) => void
   /** Shown instead of rows when there are none. */
   empty: ReactNode
   /** No rows for the current filters yet: skeletons instead of `empty`. */
@@ -625,11 +641,47 @@ export function LogTable({
   }, [follow, items, rows.length, top])
   useEffect(() => onUnseen?.(unseen, scrolledUp), [unseen, scrolledUp, onUnseen])
 
+  // Only the user resumes live by scrolling to the edge. Rows leaving the
+  // list (a new mute rule, the ring dropping old lines) can land the view on
+  // the edge too; that must not unpause (03.19: "Pause and scroll position
+  // are untouched by mute").
+  const userScrolled = useRef(0)
+  const rowHover = useRef(onRowHover)
+  rowHover.current = onRowHover
+  // Listeners on the scroller itself (not JSX props: it is a plain scroll
+  // container, not a control). User input marks a deliberate scroll; pointer
+  // movement over rows drives the footer's row keys (03.15).
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    let hovering = false
+    const hover = (on: boolean) => {
+      if (hovering === on) return
+      hovering = on
+      rowHover.current?.(on)
+    }
+    const mark = () => {
+      userScrolled.current = Date.now()
+    }
+    const over = (e: Event) => hover((e.target as HTMLElement).closest('[data-line-id]') != null)
+    const leave = () => hover(false)
+    const user = ['wheel', 'touchmove', 'pointerdown', 'keydown'] as const
+    for (const t of user) el.addEventListener(t, mark, { passive: true })
+    el.addEventListener('mouseover', over)
+    el.addEventListener('mouseleave', leave)
+    return () => {
+      for (const t of user) el.removeEventListener(t, mark)
+      el.removeEventListener('mouseover', over)
+      el.removeEventListener('mouseleave', leave)
+    }
+  }, [])
   const onScroll = () => {
     const el = ref.current
     if (!el || Date.now() < quietUntil.current) return
     const atEdge = top ? el.scrollTop < ROW * 2 : el.scrollHeight - el.scrollTop - el.clientHeight < ROW * 2
-    if (atEdge !== follow) onFollow(atEdge)
+    if (atEdge === follow) return
+    if (atEdge && Date.now() - userScrolled.current > 1000) return
+    onFollow(atEdge)
   }
 
   return (

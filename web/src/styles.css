@@ -247,3 +247,13 @@ html[data-sidebar-resizing] main {
 :root[data-density="compact"] {
   --row-h: 24px;
 }
+
+/* Connecting pill progress (08.4): a bar sliding across the pill's bottom edge. */
+@keyframes quiet-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}

@@ -218,3 +218,20 @@ export function sourceStatus(s: SourceInfo, now = Date.now()): 'ok' | 'warn' | '
 export function groupRate(rows: SourceInfo[], rates: Record<string, number>): number {
   return rows.reduce((a, s) => a + (rates[s.name] ?? 0), 0)
 }
+
+/**
+ * What the sidebar marks on a source beyond sending / idle / paused:
+ * `lost` (grey dot, "lost") when it is a Docker source and the Docker
+ * connection dropped (03.7); `err` (red dot, red rate) when its ingest
+ * requests were refused in the last 15 minutes (03.4, the same "erroring" as
+ * Sources, 06.1).
+ */
+export function sidebarFlag(
+  s: SourceInfo,
+  system: { dockerDown: boolean; rejected: { source: string | null; minute: number }[] },
+  now = Date.now(),
+): 'lost' | 'err' | null {
+  if (s.kind === 'docker' && system.dockerDown) return 'lost'
+  if (system.rejected.some((r) => r.source === s.name && now - r.minute < 15 * 60_000)) return 'err'
+  return null
+}

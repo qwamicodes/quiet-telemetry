@@ -21,8 +21,9 @@ import { useHealth, useSources } from '@/lib/api'
 import { useConnection } from '@/lib/connection'
 import { fmtWindow } from '@/lib/format'
 import { useNoSourcePasses } from '@/lib/lint-api'
+import { useSystem } from '@/lib/settings-api'
 import { useSidebar } from '@/lib/sidebar'
-import { groupSources, useCollapsedGroups } from '@/lib/source-groups'
+import { groupSources, sidebarFlag, useCollapsedGroups } from '@/lib/source-groups'
 import { useCustomGroups } from '@/lib/source-groups-api'
 import { useRates } from '@/lib/use-rates'
 import { type ChangeKind, setWhatsNewOpen, useWhatsNew } from '@/lib/whats-new'
@@ -76,6 +77,11 @@ export function Sidebar({
   const sources = useSources().data
   const noPass = useNoSourcePasses((sources ?? []).filter((s) => !s.hidden).map((s) => s.name))
   const rates = useRates(sources)
+  const system = useSystem().data
+  const flagInput = {
+    dockerDown: system?.docker.state === 'unavailable',
+    rejected: system?.ingest.recent ?? [],
+  }
   // Hidden sources stay under Sources and in search, not here (unless open now).
   const listed = sources?.filter((s) => !s.hidden || s.name === activeSource)
   // Custom groups first, in their order (06.9).
@@ -196,6 +202,7 @@ export function Sidebar({
                   rate={down ? null : (rates[s.name] ?? null)}
                   nested={!flat}
                   group={flat ? undefined : g.name}
+                  flag={sidebarFlag(s, flagInput)}
                 />
               ))}
             </section>

@@ -123,6 +123,12 @@ function AttemptItem({ a, selected, onSelect }: { a: Attempt; selected: number; 
   )
 }
 
+/** `1 attempt`, `3 attempts`; nothing for a job the queue only reported. */
+function attemptsText(j: JobRow): string | null {
+  const n = j.attempts.filter((a) => a.n != null || a.duration != null).length
+  return n ? `${n} ${n === 1 ? 'attempt' : 'attempts'}` : null
+}
+
 function JobItem({
   j,
   depth = 0,
@@ -155,7 +161,12 @@ function JobItem({
           </button>
         }
         title={j.flow}
-        sub={[j.source, j.queue, j.jobId].filter(Boolean).join(' · ')}
+        // A child job (04.3) reads `stock-1182 · inventory · 1 attempt`; a top-level job keeps its source.
+        sub={
+          depth > 0
+            ? [j.jobId, j.queue, attemptsText(j)].filter(Boolean).join(' · ')
+            : [j.source, j.queue, j.jobId].filter(Boolean).join(' · ')
+        }
         state={j.label}
         tone={j.tone}
         timing={
@@ -180,7 +191,10 @@ function JobItem({
           {j.children.map((c) => (
             <JobItem key={c.key} j={c} depth={depth + 1} selected={selected} onSelect={onSelect} />
           ))}
-          <Note>Children run independently. Parent completion does not complete its children.</Note>
+          <Note>
+            Children run independently. Parent completion does not complete its children.
+            {j.children.some((c) => c.state === 'queued') && ' Queued is confirmed by the queue.'}
+          </Note>
         </>
       )}
     </>

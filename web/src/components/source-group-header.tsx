@@ -58,7 +58,10 @@ export function SourceGroupHeader({
   rate,
   actions,
   note,
+  sending = false,
 }: {
+  /** Picker (03.8): `11/12 sending` instead of `11/12`. */
+  sending?: boolean
   group: SourceGroup
   collapsed: boolean
   onToggle: () => void
@@ -120,6 +123,7 @@ export function SourceGroupHeader({
         {compact && (
           <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
             {group.sending}/{group.total}
+            {sending && ' sending'}
           </span>
         )}
       </button>
