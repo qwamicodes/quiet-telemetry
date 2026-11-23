@@ -645,16 +645,36 @@ export function LogTable({
   // list (a new mute rule, the ring dropping old lines) can land the view on
   // the edge too; that must not unpause (03.19: "Pause and scroll position
   // are untouched by mute").
-  const hovering = useRef(false)
-  const hover = (on: boolean) => {
-    if (hovering.current === on) return
-    hovering.current = on
-    onRowHover?.(on)
-  }
   const userScrolled = useRef(0)
-  const markUser = () => {
-    userScrolled.current = Date.now()
-  }
+  const rowHover = useRef(onRowHover)
+  rowHover.current = onRowHover
+  // Listeners on the scroller itself (not JSX props: it is a plain scroll
+  // container, not a control). User input marks a deliberate scroll; pointer
+  // movement over rows drives the footer's row keys (03.15).
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    let hovering = false
+    const hover = (on: boolean) => {
+      if (hovering === on) return
+      hovering = on
+      rowHover.current?.(on)
+    }
+    const mark = () => {
+      userScrolled.current = Date.now()
+    }
+    const over = (e: Event) => hover((e.target as HTMLElement).closest('[data-line-id]') != null)
+    const leave = () => hover(false)
+    const user = ['wheel', 'touchmove', 'pointerdown', 'keydown'] as const
+    for (const t of user) el.addEventListener(t, mark, { passive: true })
+    el.addEventListener('mouseover', over)
+    el.addEventListener('mouseleave', leave)
+    return () => {
+      for (const t of user) el.removeEventListener(t, mark)
+      el.removeEventListener('mouseover', over)
+      el.removeEventListener('mouseleave', leave)
+    }
+  }, [])
   const onScroll = () => {
     const el = ref.current
     if (!el || Date.now() < quietUntil.current) return
@@ -710,12 +730,6 @@ export function LogTable({
       <div
         ref={ref}
         onScroll={onScroll}
-        onWheel={markUser}
-        onTouchMove={markUser}
-        onPointerDown={markUser}
-        onKeyDown={markUser}
-        onMouseOver={(e) => hover((e.target as HTMLElement).closest('[data-line-id]') != null)}
-        onMouseLeave={() => hover(false)}
         className={cn(
           'relative min-h-0 flex-1 overflow-y-auto transition-opacity',
           (dim || refreshing) && 'opacity-55',
