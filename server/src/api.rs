@@ -71,6 +71,8 @@ pub struct AppState {
     pub exports: Arc<crate::export_jobs::ExportJobs>,
     /// Retained history: destinations, archived hours, gaps (Phase 5a).
     pub history: Arc<crate::history::History>,
+    /// Searches of retained history and the segment cache (Phase 5c).
+    pub history_search: Arc<crate::history::search::HistorySearch>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -96,7 +98,23 @@ impl AppState {
             live_clients: Arc::new(AtomicUsize::new(0)),
             exports: Arc::new(crate::export_jobs::ExportJobs::temp()),
             history: Arc::new(crate::history::History::memory()),
+            history_search: Arc::new(crate::history::search::HistorySearch::new(
+                crate::history::search::Cache::open(
+                    &std::env::temp_dir()
+                        .join(format!("quiet-history-cache-{:08x}", rand::random::<u32>())),
+                    crate::history::search::DEFAULT_CACHE,
+                )
+                .expect("a temp dir for the history cache"),
+            )),
         }
+    }
+
+    pub fn with_history_search(
+        mut self,
+        search: Arc<crate::history::search::HistorySearch>,
+    ) -> Self {
+        self.history_search = search;
+        self
     }
 
     pub fn with_history(mut self, history: Arc<crate::history::History>) -> Self {
@@ -158,6 +176,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::tokens_api::routes())
         .merge(crate::settings_api::routes())
         .merge(crate::history_api::routes())
+        .merge(crate::history_search_api::routes())
         .merge(crate::mute_api::routes())
         .merge(crate::source_groups_api::routes())
         .merge(crate::auth_api::session_routes())

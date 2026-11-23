@@ -127,6 +127,10 @@ pub struct ServerArgs {
     /// Disk cap for the database; the oldest hour goes first (e.g. `5GB`, `500MB`).
     #[arg(long, env = "QUIET_MAX_DISK", default_value = "5GB", value_parser = parse_bytes)]
     pub max_disk: u64,
+    /// Disk for downloaded retained-history segments (`2GB`), apart from
+    /// `--max-disk`. Least recently used segments go first.
+    #[arg(long, env = "QUIET_HISTORY_CACHE", default_value = "2GB", value_parser = parse_bytes)]
+    pub history_cache: u64,
 
     /// How sources are grouped in the UI: `auto` (quiet.group label, then
     /// Compose project, then Swarm stack), `label` (see --group-label) or `off`.
@@ -311,6 +315,7 @@ mod tests {
         assert_eq!(cli.server.store, StoreKind::Sqlite);
         assert_eq!(cli.server.retention, Duration::from_secs(86_400));
         assert_eq!(cli.server.max_disk, 5_000_000_000);
+        assert_eq!(cli.server.history_cache, 2_000_000_000);
         assert_eq!(cli.server.group_by, None::<GroupMode>);
         assert_eq!(cli.server.group_label, None);
         assert_eq!(cli.server.search_include_muted, None);
@@ -331,8 +336,11 @@ mod tests {
             "memory",
             "--data-dir",
             "/data",
+            "--history-cache",
+            "500MB",
         ])
         .unwrap();
+        assert_eq!(cli.server.history_cache, 500_000_000);
         assert_eq!(cli.server.retention, Duration::from_secs(7 * 86_400));
         assert_eq!(cli.server.max_disk, 500_000_000);
         assert_eq!(cli.server.store, StoreKind::Memory);

@@ -131,6 +131,12 @@ pub struct SearchResponse {
     /// The range searched (the window when none was given), unix ms.
     pub since: i64,
     pub until: i64,
+    /// The part of the range older than the local window, and what retained
+    /// history holds of it (Phase 5c). Absent when the range stays local or
+    /// history was never used.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<crate::history::search::HistoryCoverage>,
 }
 
 fn bad(msg: impl Into<String>) -> Response {
@@ -151,7 +157,7 @@ fn unavailable(e: anyhow::Error) -> Response {
 }
 
 /// Missing bounds default to the retention window ending now.
-fn bound(s: &AppState, q: &mut SearchQuery) {
+pub(crate) fn bound(s: &AppState, q: &mut SearchQuery) {
     let now = chrono::Utc::now().timestamp_millis();
     q.until.get_or_insert(now);
     q.since.get_or_insert(now - s.retention_ms());
@@ -159,11 +165,28 @@ fn bound(s: &AppState, q: &mut SearchQuery) {
 
 async fn search(State(s): State<AppState>, Query(p): Query<SearchParams>) -> Response {
     let started = std::time::Instant::now();
+    // Only a range the user chose can reach into retained history: the
+    // default window is the local one.
+    let chose_range = p.since.is_some();
     let mut q = match p.to_query(Order::Newest) {
         Ok(q) => q,
         Err(e) => return bad(e),
     };
     bound(&s, &mut q);
+    // Coverage only on the first page: it describes the range, not a page.
+    let history = if q.cursor.is_none() && chose_range {
+        let first = crate::history_search_api::local_first(&s).await;
+        let now = chrono::Utc::now().timestamp_millis();
+        s.history
+            .coverage(q.since.unwrap_or(0), q.until.unwrap_or(now), first, now)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "history coverage failed");
+                None
+            })
+            .map(|(c, _)| c)
+    } else {
+        None
+    };
     match s.pipeline.store().search(&q).await {
         Ok(page) => Json(SearchResponse {
             lines: page.lines,
@@ -175,6 +198,7 @@ async fn search(State(s): State<AppState>, Query(p): Query<SearchParams>) -> Res
             took_ms: started.elapsed().as_millis() as u64,
             since: q.since.unwrap_or_default(),
             until: q.until.unwrap_or_default(),
+            history,
         })
         .into_response(),
         Err(e) => unavailable(e),

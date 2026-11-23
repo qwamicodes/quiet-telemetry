@@ -1004,3 +1004,365 @@ async fn a_refused_delete_job_is_blocked_and_cancel_keeps_what_is_left() {
     h.work(&s, &[], 15, &SystemState::default()).await.unwrap();
     assert!(matches!(h.destination(a.id), Err(HistoryError::NotFound)));
 }
+
+// ── Phase 5c: searching retained history ───────────────────────────────────
+
+mod history_search {
+    use super::*;
+    use crate::history::search::{Cache, HistorySearch, SearchJobState};
+
+    fn searcher(dir: &Path, max: u64) -> Arc<HistorySearch> {
+        Arc::new(HistorySearch::new(
+            Cache::open(&dir.join("history-cache"), max).unwrap(),
+        ))
+    }
+
+    fn q(text: &str, since: i64, until: i64) -> SearchQuery {
+        SearchQuery {
+            text: if text.is_empty() {
+                vec![]
+            } else {
+                vec![text.into()]
+            },
+            since: Some(since),
+            until: Some(until),
+            limit: 100,
+            histogram: Some(10),
+            ..Default::default()
+        }
+    }
+
+    async fn settle(job: &crate::history::search::Job) {
+        for _ in 0..500 {
+            if job.state() != SearchJobState::Retrieving {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("history job never finished");
+    }
+
+    /// Ten hours 482950…482959; the first six archived to `garage-local`
+    /// and dropped locally, so the local window starts at 482956.
+    async fn setup() -> (PathBuf, SqliteStore, Bucket, Arc<History>, Vec<u64>) {
+        let dir = tmp();
+        let s = store(&dir);
+        let (b, conn) = bucket();
+        let h = History::memory().with_connector(conn);
+        h.create(new_dest("garage-local", true), 0).await.unwrap();
+        fill(&s, 482_950, 10).await;
+        // What a local search finds in the six hours that will be archived.
+        let before = s
+            .search(&q("payout", 482_950 * H, 482_956 * H - 1))
+            .await
+            .unwrap();
+        let expected: Vec<u64> = before.lines.iter().map(|l| l.id).collect();
+        assert_eq!(expected.len(), 6);
+        let now = 482_960 * H;
+        let pass = h
+            .pass(&s, 482_956 * H, &[], now, &SystemState::default())
+            .await;
+        assert_eq!(pass.archived.len(), 6);
+        assert_eq!(s.hours().await.unwrap()[0], 482_956);
+        (dir, s, b, Arc::new(h), expected)
+    }
+
+    #[tokio::test]
+    async fn a_segment_answers_like_the_local_window_did() {
+        let (dir, _s, _b, h, expected) = setup().await;
+        let hs = searcher(&dir, u64::MAX);
+        let job = hs
+            .start(
+                h.clone(),
+                q("payout", 482_950 * H, 482_960 * H),
+                Some(482_956),
+                1,
+                482_960 * H,
+            )
+            .unwrap();
+        settle(&job).await;
+        let v = job.view(0, 100);
+        assert_eq!(v.state, SearchJobState::Done);
+        assert_eq!((v.done, v.total), (6, 6));
+        assert_eq!(v.lines.iter().map(|l| l.id).collect::<Vec<_>>(), expected);
+        assert!(v.locations.values().all(|n| n == "garage-local"));
+        assert_eq!(v.matched, 6);
+        assert!(v.downloaded > 0 && v.downloaded == v.bytes);
+        let hist: u64 = v.histogram.unwrap().iter().map(|b| b.count).sum();
+        assert_eq!(hist, 6);
+        // A second job reuses the cache: nothing downloaded.
+        let again = hs
+            .start(
+                h.clone(),
+                q("payout", 482_950 * H, 482_960 * H),
+                Some(482_956),
+                1,
+                482_960 * H,
+            )
+            .unwrap();
+        settle(&again).await;
+        assert_eq!(again.view(0, 1).downloaded, 0);
+        // An id lookup through the segment's id index.
+        let by_id = hs
+            .start(
+                h.clone(),
+                SearchQuery {
+                    ids: vec!["req_482951".into()],
+                    ..q("", 482_950 * H, 482_960 * H)
+                },
+                Some(482_956),
+                1,
+                482_960 * H,
+            )
+            .unwrap();
+        settle(&by_id).await;
+        assert_eq!(by_id.view(0, 10).lines.len(), 1);
+        // Jobs are per user.
+        assert!(hs.job(&job.id, 2).is_err());
+        assert!(hs.job(&job.id, 1).is_ok());
+    }
+
+    #[tokio::test]
+    async fn coverage_reports_hours_gaps_and_where_history_starts() {
+        let (_dir, _s, _b, h, _) = setup().await;
+        h.catalog.add_gap(482_949, GapReason::DiskCap, 0).unwrap();
+        h.catalog.add_gap(482_948, GapReason::DiskCap, 0).unwrap();
+        let (c, planned) = h
+            .coverage(482_940 * H, 482_960 * H, Some(482_956), 482_960 * H)
+            .unwrap()
+            .unwrap();
+        assert_eq!((c.from, c.to), (482_940 * H, 482_956 * H));
+        assert_eq!((c.hours, c.archived), (16, 6));
+        assert_eq!(c.expired_before, Some(482_950 * H));
+        assert_eq!(c.destinations.len(), 1);
+        assert_eq!(c.destinations[0].percent, 100);
+        assert_eq!(c.destinations[0].first, Some(482_950 * H));
+        assert_eq!(c.gaps.len(), 1, "consecutive gap hours merge");
+        assert_eq!((c.gaps[0].from, c.gaps[0].to), (482_948 * H, 482_950 * H));
+        assert!(!c.auto, "16 hours back is more than the automatic 6");
+        assert!(!c.truncated);
+        assert_eq!(
+            planned.iter().map(|p| p.hour).collect::<Vec<_>>(),
+            (482_950..482_956).rev().collect::<Vec<_>>(),
+            "newest first"
+        );
+        // A range inside the local window has no history part.
+        assert!(h
+            .coverage(482_957 * H, 482_960 * H, Some(482_956), 482_960 * H)
+            .unwrap()
+            .is_none());
+        // Reaching three hours back: searched automatically.
+        let (near, _) = h
+            .coverage(482_953 * H, 482_960 * H, Some(482_956), 482_960 * H)
+            .unwrap()
+            .unwrap();
+        assert!(near.auto);
+        assert_eq!(near.expired_before, None);
+    }
+
+    #[tokio::test]
+    async fn cancel_keeps_what_was_found_and_a_down_destination_is_incomplete() {
+        let (dir, _s, b, h, _) = setup().await;
+        let hs = searcher(&dir, u64::MAX);
+        let job = hs
+            .start(
+                h.clone(),
+                q("payout", 482_950 * H, 482_960 * H),
+                Some(482_956),
+                7,
+                482_960 * H,
+            )
+            .unwrap();
+        // Cancelled before the job ran an hour.
+        hs.cancel(&job.id, 7).unwrap();
+        settle(&job).await;
+        assert_eq!(job.state(), SearchJobState::Cancelled);
+        b.down.store(true, Ordering::SeqCst);
+        let down = hs
+            .start(
+                h.clone(),
+                q("payout", 482_950 * H, 482_960 * H),
+                Some(482_956),
+                7,
+                482_960 * H,
+            )
+            .unwrap();
+        settle(&down).await;
+        let v = down.view(0, 10);
+        assert_eq!(v.state, SearchJobState::Incomplete);
+        assert_eq!(v.failures.len(), 1);
+        assert_eq!(v.failures[0].destination, "garage-local");
+        assert_eq!(v.failures[0].hours, 6);
+        assert_eq!(
+            (v.failures[0].from, v.failures[0].to),
+            (482_950 * H, 482_956 * H)
+        );
+        assert!(v.failures[0].error.contains("connection refused"));
+        // The destination is tried once, not once per hour.
+        assert_eq!(v.done, 6);
+    }
+
+    #[tokio::test]
+    async fn the_api_runs_jobs_per_user_and_exports_their_matches() {
+        use crate::accounts::Role;
+        use crate::api::AppState;
+        use crate::auth::Viewer;
+        use crate::hub::Hub;
+        use crate::pipeline::Pipeline;
+        use crate::receiver::DockerStatus;
+        use crate::store::MemoryStore;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (dir, _s, _b, h, _) = setup().await;
+        let st = AppState::new(
+            Pipeline::new(Arc::new(MemoryStore::new(10)), Hub::new()),
+            Arc::new(Mutex::new(DockerStatus::Disabled)),
+        )
+        .auth_off()
+        .with_history(h.clone())
+        .with_history_search(searcher(&dir, u64::MAX));
+        let app = |id: i64, role: Role| {
+            let mut v = Viewer::local();
+            v.user.id = id;
+            v.user.role = role;
+            crate::history_search_api::routes()
+                .layer(axum::Extension(v))
+                .with_state(st.clone())
+        };
+        let call = |app: axum::Router, req: Request<Body>| async move {
+            let r = app.oneshot(req).await.unwrap();
+            let status = r.status();
+            let body = r.into_body().collect().await.unwrap().to_bytes().to_vec();
+            (status, body)
+        };
+        let post = |query: String| {
+            Request::post("/api/search/history")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "query": query }).to_string(),
+                ))
+                .unwrap()
+        };
+        // No archived hour in the range: nothing to search.
+        let now = chrono::Utc::now().timestamp_millis();
+        let (code, body) = call(
+            app(1, Role::Owner),
+            post(format!("since={}&until={}", now + H, now + 2 * H)),
+        )
+        .await;
+        assert_eq!(
+            code,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        let (code, body) = call(
+            app(1, Role::Owner),
+            post(format!(
+                "q=payout&since={}&until={}",
+                482_950 * H,
+                482_956 * H - 1
+            )),
+        )
+        .await;
+        assert_eq!(code, StatusCode::ACCEPTED);
+        let id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        settle(&st.history_search.job(&id, 1).unwrap()).await;
+        let get = |path: String| Request::get(path).body(Body::empty()).unwrap();
+        let (code, body) = call(
+            app(1, Role::Owner),
+            get(format!("/api/search/history/{id}")),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["state"], "done");
+        assert_eq!(v["count"], 6);
+        // Another user can't see it.
+        let (code, _) = call(
+            app(2, Role::Member),
+            get(format!("/api/search/history/{id}")),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        // Export: NDJSON, oldest first.
+        let (code, body) = call(
+            app(1, Role::Owner),
+            get(format!("/api/search/history/{id}/export?format=ndjson")),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let text = String::from_utf8(body).unwrap();
+        assert_eq!(text.lines().count(), 6);
+        assert!(text.lines().next().unwrap().contains("req_482950"));
+    }
+
+    #[test]
+    fn the_cache_evicts_least_recently_used_and_refuses_bad_checksums() {
+        let dir = tmp();
+        let seg = |n: u8| {
+            let raw = vec![n; 1000];
+            let z = zstd::encode_all(raw.as_slice(), 3).unwrap();
+            (hex(&sha2::Sha256::digest(&z)), z)
+        };
+        let c = Cache::open(&dir, 2_500).unwrap();
+        let (a, az) = seg(1);
+        let (b2, bz) = seg(2);
+        let (c3, cz) = seg(3);
+        c.put(&a, &az).unwrap();
+        c.put(&b2, &bz).unwrap();
+        assert!(c.get(&a).is_some(), "touch a: b is now least recently used");
+        c.put(&c3, &cz).unwrap();
+        assert!(c.get(&b2).is_none(), "b evicted");
+        assert!(c.get(&a).is_some() && c.get(&c3).is_some());
+        let err = c.put(&a, &bz).unwrap_err().to_string();
+        assert!(err.contains("checksum mismatch"), "{err}");
+        // What an earlier run downloaded is kept on restart.
+        let again = Cache::open(&dir, 2_500).unwrap();
+        assert!(again.get(&a).is_some() && again.get(&c3).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_flow_near_the_window_edge_or_found_in_the_cache_is_marked() {
+        let (dir, _s, _b, h, _) = setup().await;
+        let hs = searcher(&dir, u64::MAX);
+        let near = hs
+            .flow_history(
+                &h,
+                &["req_482956".into()],
+                Some(482_956 * H + 60_000),
+                Some(482_956),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!((near.since, near.until), (482_950 * H, 482_956 * H));
+        assert!(!near.found);
+        let far = || {
+            hs.flow_history(&h, &["req_482951".into()], Some(482_959 * H), Some(482_956))
+                .unwrap()
+        };
+        assert!(far().is_none(), "far from the edge, nothing cached");
+        let job = hs
+            .start(
+                h.clone(),
+                q("", 482_950 * H, 482_960 * H),
+                Some(482_956),
+                1,
+                482_960 * H,
+            )
+            .unwrap();
+        settle(&job).await;
+        assert!(far().unwrap().found, "a cached segment holds the id");
+        // No local window, no marker.
+        assert!(hs
+            .flow_history(&h, &["req_482951".into()], None, None)
+            .unwrap()
+            .is_none());
+    }
+}

@@ -12,6 +12,7 @@ mod format;
 mod grouping;
 mod history;
 mod history_api;
+mod history_search_api;
 mod hub;
 mod idpolicy;
 mod lint;

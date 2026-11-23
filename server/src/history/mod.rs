@@ -13,6 +13,7 @@ pub mod catalog;
 pub mod garage;
 pub mod jobs;
 pub mod remote;
+pub mod search;
 pub mod secret;
 
 use crate::store::Store;

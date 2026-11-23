@@ -125,6 +125,14 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     } else {
         Arc::new(History::memory())
     };
+    let history_search = {
+        let dir = args.data_dir.join("history-cache");
+        let max = args.history_cache;
+        Arc::new(crate::history::search::HistorySearch::new(
+            tokio::task::spawn_blocking(move || crate::history::search::Cache::open(&dir, max))
+                .await??,
+        ))
+    };
     let history_for_retention = (args.store == StoreKind::Sqlite).then(|| history.clone());
     if let Some(env) = garage {
         tokio::spawn(crate::history::garage::bootstrap(history.clone(), env));
@@ -132,6 +140,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let state = AppState::new(pipeline, docker_status)
         .with_exports(exports)
         .with_history(history.clone())
+        .with_history_search(history_search)
         .with_ingest(ingest_tokens.clone(), ingest)
         .with_accounts(accounts.clone(), auth)
         .with_host(HostInfo {

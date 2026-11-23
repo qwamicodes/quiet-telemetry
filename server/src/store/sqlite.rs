@@ -1304,6 +1304,60 @@ fn with_ids_sync(
     Ok(out)
 }
 
+/// Open an archived segment (a decompressed hour, see [`build_segment_sync`])
+/// read-only, with a TEMP `partitions` row so the store's own search SQL runs
+/// on it unchanged.
+fn open_segment(path: &std::path::Path, hour: i64) -> anyhow::Result<Connection> {
+    let c = Connection::open_with_flags(
+        ro_uri(path),
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("opening segment {}", path.display()))?;
+    let lines: i64 = c.query_row(&format!("SELECT COUNT(*) FROM {}", t('l', hour)), [], |r| {
+        r.get(0)
+    })?;
+    c.execute_batch(
+        "CREATE TEMP TABLE partitions (hour INTEGER PRIMARY KEY, lines INTEGER NOT NULL);",
+    )?;
+    c.execute(
+        "INSERT INTO temp.partitions (hour, lines) VALUES (?1, ?2)",
+        params![hour, lines],
+    )?;
+    Ok(c)
+}
+
+/// Search one archived hour with exactly the SQL a local search uses
+/// (filters, FTS, id index, histogram), so retained history answers like
+/// the local window. Blocking.
+pub fn search_segment(
+    path: &std::path::Path,
+    hour: i64,
+    q: &SearchQuery,
+) -> anyhow::Result<SearchPage> {
+    let mut c = open_segment(path, hour)?;
+    search_sync(&mut c, q)
+}
+
+/// Whether an archived hour holds any of `ids` (its id index). Blocking.
+pub fn segment_has_ids(path: &std::path::Path, hour: i64, ids: &[String]) -> anyhow::Result<bool> {
+    if ids.is_empty() {
+        return Ok(false);
+    }
+    let c = open_segment(path, hour)?;
+    let marks = vec!["?"; ids.len()].join(",");
+    let found: bool = c.query_row(
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM {} WHERE value IN ({marks}))",
+            t('i', hour)
+        ),
+        params_from_iter(ids.iter()),
+        |r| r.get(0),
+    )?;
+    Ok(found)
+}
+
 fn search_sync(c: &mut Connection, q: &SearchQuery) -> anyhow::Result<SearchPage> {
     let tx = c.transaction()?; // one snapshot for the whole search
     let parts = partitions_for(&tx, q)?;
