@@ -196,6 +196,7 @@ pub async fn bootstrap_once(history: &History, env: &GarageEnv, now: i64) -> any
                 path_style: Some(true),
                 access_key_id: kid.into(),
                 secret_access_key: secret.into(),
+                session_token: None,
                 activate: Some(true),
             },
             now,

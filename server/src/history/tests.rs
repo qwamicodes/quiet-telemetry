@@ -87,6 +87,7 @@ fn new_dest(name: &str, activate: bool) -> NewDestination {
         path_style: None,
         access_key_id: "GK0123456789abcdef".into(),
         secret_access_key: "s3cr3t".into(),
+        session_token: None,
         activate: Some(activate),
     }
 }
@@ -616,8 +617,8 @@ async fn a_shorter_history_window_previews_needs_confirming_then_deletes() {
     );
     // Two days, five hours after the first archived hour: 482950 … 482954 go.
     let now = (482_950 + 48 + 5) * H + 1;
-    // Indefinitely (the default) deletes nothing.
-    assert_eq!(h.status_at(now).unwrap().policy.retention_days, None);
+    // 30 days is the default; indefinitely deletes nothing.
+    assert_eq!(h.status_at(now).unwrap().policy.retention_days, Some(30));
     assert_eq!(h.preview(None, now).unwrap().hours, 0);
     let p = h.preview(Some(2), now).unwrap();
     assert_eq!((p.hours, p.lines), (5, 10));
@@ -627,8 +628,9 @@ async fn a_shorter_history_window_previews_needs_confirming_then_deletes() {
     let policy = HistoryPolicy {
         retention_days: Some(2),
         at_capacity: AtCapacity::Evict,
+        ..Default::default()
     };
-    match h.set_policy(policy, false, now) {
+    match h.set_policy(policy.clone(), false, now) {
         Err(HistoryError::ConfirmRequired(p)) => assert_eq!(p.hours, 5),
         other => panic!("expected confirm_required, got {other:?}"),
     }
@@ -636,7 +638,7 @@ async fn a_shorter_history_window_previews_needs_confirming_then_deletes() {
         h.set_policy(
             HistoryPolicy {
                 retention_days: Some(0),
-                ..policy
+                ..policy.clone()
             },
             true,
             now
@@ -716,6 +718,7 @@ async fn at_capacity_evicts_oldest_or_stops_archiving() {
         HistoryPolicy {
             retention_days: None,
             at_capacity: AtCapacity::Stop,
+            ..Default::default()
         },
         true,
         now,
@@ -755,6 +758,7 @@ async fn refused_deletes_block_cleanup_with_backoff_until_retry() {
         HistoryPolicy {
             retention_days: Some(1),
             at_capacity: AtCapacity::Evict,
+            ..Default::default()
         },
         true,
         0,
@@ -1049,6 +1053,14 @@ mod history_search {
         let s = store(&dir);
         let (b, conn) = bucket();
         let h = History::memory().with_connector(conn);
+        // These hours are from 2025: keep them (the 30-day default would
+        // count them as expired).
+        h.catalog
+            .set_policy(&HistoryPolicy {
+                retention_days: None,
+                ..Default::default()
+            })
+            .unwrap();
         h.create(new_dest("garage-local", true), 0).await.unwrap();
         fill(&s, 482_950, 10).await;
         // What a local search finds in the six hours that will be archived.
@@ -1365,4 +1377,79 @@ mod history_search {
             .unwrap()
             .is_none());
     }
+}
+
+#[tokio::test]
+async fn the_connection_test_lists_writes_reads_deletes_and_saves_nothing() {
+    let (_b, conn) = bucket();
+    let h = History::memory().with_connector(conn);
+    let v = h.test(&new_dest("production-r2", false), 0).await.unwrap();
+    let order: Vec<_> = v.steps.iter().map(|s| s.step).collect();
+    assert_eq!(
+        order,
+        [
+            VerifyStepKind::List,
+            VerifyStepKind::Write,
+            VerifyStepKind::Read,
+            VerifyStepKind::Delete
+        ]
+    );
+    assert!(v.ok && v.cleanup && v.steps.iter().all(|s| !s.skipped));
+    // Nothing was saved.
+    assert!(h.catalog.destinations().unwrap().is_empty());
+    // A client that can't be built: the first step says why, the rest are
+    // not run.
+    let down: Connector = Arc::new(|_, _| anyhow::bail!("no credentials found"));
+    let h = History::memory().with_connector(down);
+    let v = h.test(&new_dest("x", false), 0).await.unwrap();
+    assert!(!v.ok);
+    assert!(v.steps[0]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("no credentials"));
+    assert!(v.steps[1..].iter().all(|s| s.skipped));
+}
+
+#[test]
+fn a_session_token_is_sealed_with_the_secret() {
+    use super::remote::{pack, unpack};
+    assert_eq!(unpack(&pack("s3cr3t", None)), ("s3cr3t".into(), None));
+    assert_eq!(
+        unpack(&pack("s3cr3t", Some("tok"))),
+        ("s3cr3t".into(), Some("tok".into()))
+    );
+    assert_eq!(unpack(&pack(" s ", Some("  "))), ("s".into(), None));
+}
+
+#[tokio::test]
+async fn host_credentials_need_no_keys_on_amazon_s3_only() {
+    let (_b, conn) = bucket();
+    let h = History::memory().with_connector(conn);
+    let mut n = new_dest("disaster-recovery", false);
+    n.access_key_id = String::new();
+    n.secret_access_key = String::new();
+    assert!(matches!(h.test(&n, 0).await, Err(HistoryError::Invalid(_))));
+    n.kind = DestinationKind::S3;
+    n.endpoint = None;
+    assert!(h.check_s3_host(&n));
+}
+
+#[tokio::test]
+async fn the_policy_size_limit_is_each_connectors_capacity() {
+    let (_b, conn) = bucket();
+    let h = History::memory().with_connector(conn);
+    h.create(new_dest("garage-local", true), 0).await.unwrap();
+    let d = h.catalog.destinations().unwrap().remove(0);
+    assert_eq!(h.capacity(&d), None);
+    h.catalog
+        .set_policy(&HistoryPolicy {
+            size_limit_bytes: Some(100_000_000_000),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        h.capacity(&d),
+        Some((100_000_000_000, CapacitySource::Policy))
+    );
 }

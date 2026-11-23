@@ -1945,7 +1945,7 @@ mod tests {
         // History policy (5b): everyone reads it, only owners change it.
         let r = t.get("/api/settings/history", &member).await;
         assert_eq!(r.status, StatusCode::OK);
-        assert_eq!(r.body["retention_days"], serde_json::Value::Null);
+        assert_eq!(r.body["retention_days"], 30);
         for (who, want) in [(&member, StatusCode::FORBIDDEN), (&owner, StatusCode::OK)] {
             let r = t
                 .call(

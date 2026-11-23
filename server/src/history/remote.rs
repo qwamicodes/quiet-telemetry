@@ -22,13 +22,41 @@ pub fn init_tls() {
     });
 }
 
-/// Build a client for a destination. Nothing is sent until it is used.
-pub fn connect(d: &DestinationRow, secret: &str) -> anyhow::Result<Remote> {
+/// The sealed secret holds the secret access key and, for temporary
+/// credentials, the session token: `secret` or `secret\0token`.
+pub fn pack(secret: &str, token: Option<&str>) -> String {
+    match token.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => format!("{}\0{t}", secret.trim()),
+        None => secret.trim().to_string(),
+    }
+}
+
+pub fn unpack(sealed: &str) -> (String, Option<String>) {
+    match sealed.split_once('\0') {
+        Some((s, t)) => (s.to_string(), Some(t.to_string())),
+        None => (sealed.to_string(), None),
+    }
+}
+
+/// Build a client for a destination. Nothing is sent until it is used. A
+/// blank access key id (Amazon S3) uses the credentials available to the
+/// host: `AWS_*` environment, then instance, task or workload roles.
+pub fn connect(d: &DestinationRow, sealed: &str) -> anyhow::Result<Remote> {
     init_tls();
-    let mut b = AmazonS3Builder::new()
+    let (secret, token) = unpack(sealed);
+    let mut b = if d.access_key_id.is_empty() {
+        AmazonS3Builder::from_env()
+    } else {
+        let b = AmazonS3Builder::new()
+            .with_access_key_id(&d.access_key_id)
+            .with_secret_access_key(&secret);
+        match token {
+            Some(t) => b.with_token(t),
+            None => b,
+        }
+    };
+    b = b
         .with_bucket_name(&d.bucket)
-        .with_access_key_id(&d.access_key_id)
-        .with_secret_access_key(secret)
         .with_virtual_hosted_style_request(!d.path_style)
         .with_retry(RetryConfig {
             max_retries: 2,
@@ -89,8 +117,32 @@ fn short(e: impl std::fmt::Display) -> String {
     }
 }
 
-/// Put a small object, read it back, list the prefix, delete it. Every
-/// step is reported; a failed write skips the rest.
+/// Every step not run, because the client couldn't be built (bad endpoint,
+/// no host credentials): the error goes on the first step.
+pub fn unreachable(error: &str, now: i64) -> VerifyResult {
+    let steps = ORDER
+        .iter()
+        .enumerate()
+        .map(|(i, &step)| VerifyStep {
+            step,
+            ok: false,
+            skipped: i > 0,
+            error: (i == 0).then(|| error.to_string()),
+        })
+        .collect();
+    VerifyResult::from_steps(steps, now)
+}
+
+/// The order the connection test runs in (v1.1-05/06).
+const ORDER: [VerifyStepKind; 4] = [
+    VerifyStepKind::List,
+    VerifyStepKind::Write,
+    VerifyStepKind::Read,
+    VerifyStepKind::Delete,
+];
+
+/// List the prefix, write a small object, read it back, delete it. Every
+/// step is reported; a failed list or write leaves the rest not run.
 pub async fn verify(remote: &Remote, prefix: &str, now: i64) -> VerifyResult {
     let key = ObjPath::from(format!(
         "{prefix}v1/.quiet-verify-{:08x}",
@@ -101,8 +153,23 @@ pub async fn verify(remote: &Remote, prefix: &str, now: i64) -> VerifyResult {
     let step = |kind, r: Result<(), String>| VerifyStep {
         step: kind,
         ok: r.is_ok(),
+        skipped: false,
         error: r.err(),
     };
+    let not_run = |kind, why: &str| VerifyStep {
+        step: kind,
+        ok: false,
+        skipped: true,
+        error: Some(why.to_string()),
+    };
+    // List: reading the prefix's listing (empty is fine).
+    let mut listed = remote.list(Some(&ObjPath::from(format!("{prefix}v1"))));
+    let mut list = Ok(());
+    if let Some(Err(e)) = listed.next().await {
+        list = Err(short(e));
+    }
+    drop(listed);
+    steps.push(step(VerifyStepKind::List, list));
     let write = remote
         .put(&key, PutPayload::from(body.clone().into_bytes()))
         .await
@@ -111,13 +178,8 @@ pub async fn verify(remote: &Remote, prefix: &str, now: i64) -> VerifyResult {
     let wrote = write.is_ok();
     steps.push(step(VerifyStepKind::Write, write));
     if !wrote {
-        for k in [
-            VerifyStepKind::Read,
-            VerifyStepKind::List,
-            VerifyStepKind::Delete,
-        ] {
-            steps.push(step(k, Err("skipped: write failed".into())));
-        }
+        steps.push(not_run(VerifyStepKind::Read, "write failed"));
+        steps.push(not_run(VerifyStepKind::Delete, "no test object created"));
         return VerifyResult::from_steps(steps, now);
     }
     let read = match remote.get(&key).await {
@@ -129,22 +191,6 @@ pub async fn verify(remote: &Remote, prefix: &str, now: i64) -> VerifyResult {
         Err(e) => Err(short(e)),
     };
     steps.push(step(VerifyStepKind::Read, read));
-    let mut listed = remote.list(Some(&ObjPath::from(format!("{prefix}v1"))));
-    let mut list = Err("the test object was not listed".to_string());
-    while let Some(m) = listed.next().await {
-        match m {
-            Ok(m) if m.location == key => {
-                list = Ok(());
-                break;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                list = Err(short(e));
-                break;
-            }
-        }
-    }
-    steps.push(step(VerifyStepKind::List, list));
     let del = remote.delete(&key).await.map_err(short);
     steps.push(step(VerifyStepKind::Delete, del));
     VerifyResult::from_steps(steps, now)

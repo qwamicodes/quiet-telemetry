@@ -28,6 +28,7 @@ export const destinationKind = z.enum(['garage', 'r2', 's3', 's3_compatible']) s
 const verifyStep = z.object({
   step: z.enum(['write', 'read', 'list', 'delete']),
   ok: z.boolean(),
+  skipped: z.boolean().default(false),
   error: z.string().optional(),
 }) satisfies z.ZodType<VerifyStep>
 
@@ -61,7 +62,7 @@ export const destination = z.object({
   next_retry: z.number().nullable(),
   created_at: z.number(),
   capacity_bytes: z.number().nullable(),
-  capacity_source: z.enum(['owner', 'garage']).nullable(),
+  capacity_source: z.enum(['owner', 'policy', 'garage']).nullable(),
   at_capacity: z.boolean(),
   removing: z.boolean(),
   cleanup_error: z.string().nullable(),
@@ -88,6 +89,9 @@ export const atCapacity = z.enum(['evict', 'stop']) satisfies z.ZodType<AtCapaci
 export const historyPolicy = z.object({
   retention_days: z.number().nullable(),
   at_capacity: atCapacity,
+  size_limit_bytes: z.number().nullable().default(null),
+  saved_by: z.string().nullable().default(null),
+  saved_at: z.number().nullable().default(null),
 }) satisfies z.ZodType<HistoryPolicy>
 
 export const historyJob = z.object({
