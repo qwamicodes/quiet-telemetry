@@ -128,4 +128,3 @@ describe('PathText (v0.1.1-03.15)', () => {
     expect(q.parentElement).toHaveTextContent('/api/v1/health?probe=1')
   })
 })
-

@@ -70,7 +70,7 @@ export function LiveIndicator({
     <span
       role="status"
       className={cn(
-        'inline-flex h-7 items-center gap-2 border px-2.5 font-mono text-xs',
+        'relative inline-flex h-7 items-center gap-2 overflow-hidden border px-2.5 font-mono text-xs',
         state === 'live' && 'border-status-ok/30 bg-status-ok/10 text-status-ok',
         (state === 'paused' || state === 'connecting') && 'border-status-warn/30 bg-status-warn/10 text-status-warn',
         state === 'offline' && 'border-border bg-muted/40 text-muted-foreground',
@@ -82,6 +82,12 @@ export function LiveIndicator({
       />
       <span className="font-sans font-semibold">{label}</span>
       {detail && <span className="text-muted-foreground">· {detail}</span>}
+      {state === 'connecting' && (
+        // 08.4: an indeterminate bar along the pill's bottom edge while the backlog loads.
+        <span aria-hidden data-testid="connecting-progress" className="absolute inset-x-0 bottom-0 h-0.5">
+          <span className="block h-full w-2/5 animate-[quiet-indeterminate_1.2s_ease-in-out_infinite] bg-status-warn" />
+        </span>
+      )}
     </span>
   )
 }

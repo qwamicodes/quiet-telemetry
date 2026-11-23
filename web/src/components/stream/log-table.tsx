@@ -489,10 +489,11 @@ function Refreshing() {
 /** Skeleton rows while the first backlog loads (design 08.4). */
 function SkeletonRows() {
   return (
-    <div aria-hidden className="flex flex-col">
-      {Array.from({ length: 14 }, (_, i) => (
+    // 08.4: placeholders fill the table whatever its height (the scroller clips them).
+    <div aria-hidden data-testid="skeleton-rows" className="flex h-full flex-col overflow-hidden">
+      {Array.from({ length: 60 }, (_, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: placeholders
-        <div key={i} className={cn(COLS, 'h-7 border-border/60 border-b')}>
+        <div key={i} className={cn(COLS, 'h-(--row-h) shrink-0 border-border/60 border-b')}>
           <Skeleton className="h-3 w-20" />
           <Skeleton className="h-3 w-9" />
           <Skeleton className="h-3" style={{ width: `${50 + ((i * 29) % 45)}%` }} />
