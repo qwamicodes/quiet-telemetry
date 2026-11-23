@@ -1593,6 +1593,8 @@ mod tests {
         drop(s);
         {
             let c = Connection::open(&path).unwrap();
+            // The dropped store's writer may still be closing its connection.
+            c.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
             c.execute("DELETE FROM source_hours", []).unwrap();
         }
         let s = open(&path);
