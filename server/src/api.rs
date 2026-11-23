@@ -144,6 +144,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::export_jobs::routes())
         .merge(crate::stream_api::routes())
         .merge(crate::lint::routes())
+        .merge(crate::format::routes())
+        .merge(crate::whats_new::routes())
         .merge(crate::flow_api::routes())
         .merge(crate::tokens_api::routes())
         .merge(crate::settings_api::routes())

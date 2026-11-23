@@ -42,6 +42,9 @@ fn export_into(dir: &Path) {
     SourceFields::export_all(&cfg).unwrap();
     IdCoverageReport::export_all(&cfg).unwrap();
     crate::lint::LintReport::export_all(&cfg).unwrap();
+    crate::format::FormatReport::export_all(&cfg).unwrap();
+    crate::whats_new::WhatsNew::export_all(&cfg).unwrap();
+    crate::whats_new::WhatsNewUpdate::export_all(&cfg).unwrap();
     Health::export_all(&cfg).unwrap();
     crate::settings::AddMuteRule::export_all(&cfg).unwrap();
     crate::settings::AddedMuteRule::export_all(&cfg).unwrap();
