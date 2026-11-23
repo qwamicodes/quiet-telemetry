@@ -9,6 +9,7 @@ use crate::api::{self, AppState, HostInfo};
 use crate::auth::{AuthConfig, AuthMode};
 use crate::cli::{ServerArgs, StoreKind};
 use crate::export_jobs::ExportJobs;
+use crate::history::History;
 use crate::hub::Hub;
 use crate::pipeline::Pipeline;
 use crate::receiver::{DockerReceiver, DockerStatus, HttpReceiver, IngestConfig, Receiver};
@@ -111,8 +112,21 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let exports =
         Arc::new(tokio::task::spawn_blocking(move || ExportJobs::new(exports_dir)).await?);
     let export_hold = exports.hold();
+    // Retained history lives next to the lines: only the SQLite store has
+    // hourly partitions to archive.
+    let history = if args.store == StoreKind::Sqlite {
+        let dir = args.data_dir.clone();
+        Arc::new(tokio::task::spawn_blocking(move || History::open(&dir)).await??)
+    } else {
+        Arc::new(History::memory())
+    };
+    let history_for_retention = (args.store == StoreKind::Sqlite).then(|| history.clone());
+    if let Some(env) = crate::history::garage::GarageEnv::from_env() {
+        tokio::spawn(crate::history::garage::bootstrap(history.clone(), env));
+    }
     let state = AppState::new(pipeline, docker_status)
         .with_exports(exports)
+        .with_history(history.clone())
         .with_ingest(ingest_tokens.clone(), ingest)
         .with_accounts(accounts.clone(), auth)
         .with_host(HostInfo {
@@ -138,6 +152,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         settings.clone(),
         system,
         export_hold,
+        history_for_retention,
         shutdown.clone(),
     ));
     tasks.close();

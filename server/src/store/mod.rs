@@ -231,6 +231,40 @@ pub trait Store: Send + Sync + 'static {
         })
         .await
     }
+
+    /// Stored hours (unix ms / 3 600 000), oldest first. Stores without
+    /// hourly partitions have none, so nothing is ever archived from them.
+    async fn hours(&self) -> anyhow::Result<Vec<i64>> {
+        Ok(Vec::new())
+    }
+
+    /// Drop one stored hour whole (after it was archived). Returns its lines.
+    async fn drop_hour(&self, _hour: i64) -> anyhow::Result<u64> {
+        anyhow::bail!("{} store has no hourly partitions", self.kind())
+    }
+
+    /// Write one stored hour into a standalone SQLite file at `out` (same
+    /// tables as the store: lines, FTS, id index), leaving out the lines of
+    /// `exclude` sources. Retained history uploads it as a segment.
+    async fn build_segment(
+        &self,
+        _hour: i64,
+        _exclude: &[String],
+        _out: &std::path::Path,
+    ) -> anyhow::Result<SegmentStats> {
+        anyhow::bail!("{} store has no hourly partitions", self.kind())
+    }
+}
+
+/// What a segment built by [`Store::build_segment`] holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SegmentStats {
+    pub lines: u64,
+    /// Raw line bytes (before SQLite and compression).
+    pub bytes_raw: u64,
+    pub sources: Vec<String>,
+    pub min_ts: Option<i64>,
+    pub max_ts: Option<i64>,
 }
 
 /// The prefix "close matches" share with `value`: all but its last two

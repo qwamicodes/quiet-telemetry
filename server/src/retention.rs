@@ -8,6 +8,7 @@
 //! a shorter window or a lower cap applies within seconds. Sources with a
 //! shorter window of their own lose their older lines line by line.
 
+use crate::history::{History, Pass};
 use crate::settings::Settings;
 use crate::store::Store;
 use crate::system::SystemState;
@@ -22,6 +23,9 @@ pub struct Retention {
     pub max_bytes: u64,
     /// Skip window (and per-source window) expiry this pass; the cap still runs.
     pub hold_window: bool,
+    /// Skip only the instance window: retained history holds hours that
+    /// could not be archived yet. Per-source windows and the cap still run.
+    pub hold_hours: bool,
 }
 
 impl Retention {
@@ -32,6 +36,7 @@ impl Retention {
             window: Duration::from_millis(st.retention_ms as u64),
             max_bytes: st.max_disk,
             hold_window: false,
+            hold_hours: false,
         }
     }
 }
@@ -55,7 +60,9 @@ pub async fn sweep(
     let mut expired = 0;
     let mut per_source = 0;
     if !r.hold_window {
-        expired = store.expire(cutoff).await?;
+        if !r.hold_hours {
+            expired = store.expire(cutoff).await?;
+        }
         for (name, window) in sources {
             per_source += store.expire_source(name, now - window).await?;
         }
@@ -75,6 +82,7 @@ pub async fn run(
     settings: Arc<Settings>,
     system: Arc<SystemState>,
     hold: Arc<AtomicUsize>,
+    history: Option<Arc<History>>,
     shutdown: CancellationToken,
 ) {
     let mut tick = tokio::time::interval(EVERY);
@@ -92,7 +100,38 @@ pub async fn run(
         if hold.load(Ordering::SeqCst) > 0 {
             r.hold_window = true;
         }
-        match sweep(store.as_ref(), r, &settings.source_windows(), now).await {
+        // Retained history: archive the hours about to leave the window
+        // first; whatever couldn't be archived is held (only the cap can
+        // drop it, and that becomes a gap).
+        let cutoff = now - r.window.as_millis() as i64;
+        let mut before = Vec::new();
+        let mut pass = Pass::default();
+        if let Some(h) = history.as_ref().filter(|_| !r.hold_window) {
+            before = store.hours().await.unwrap_or_default();
+            pass = h
+                .pass(
+                    store.as_ref(),
+                    cutoff,
+                    &settings.history_excluded(),
+                    now,
+                    &system,
+                )
+                .await;
+            r.hold_hours = pass.hold;
+        }
+        let swept = sweep(store.as_ref(), r, &settings.source_windows(), now).await;
+        if let (Some(h), false) = (history.as_ref(), before.is_empty()) {
+            let after = store.hours().await.unwrap_or_default();
+            match h.record_gaps(&before, &after, cutoff, &pass, now) {
+                Ok(n) if n > 0 => tracing::warn!(
+                    hours = n,
+                    "history: hours left local storage without being archived"
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "history: recording gaps failed"),
+            }
+        }
+        match swept {
             Ok(s) => {
                 system.swept(now, s.capped);
                 if s != Swept::default() {
@@ -144,6 +183,7 @@ mod tests {
             window: Duration::from_secs(24 * 3600),
             max_bytes: u64::MAX,
             hold_window: false,
+            hold_hours: false,
         };
         // While an export is being prepared the window waits (05.7).
         let held = Retention {
@@ -221,6 +261,7 @@ mod tests {
             settings.clone(),
             system.clone(),
             Arc::new(AtomicUsize::new(0)),
+            None,
             shutdown.clone(),
         ));
         // First tick is immediate: the 30h-old line goes (default 24h).

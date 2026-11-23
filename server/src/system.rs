@@ -83,6 +83,9 @@ struct Inner {
     /// Ingest batches the store refused (writer gone, disk full).
     append_errors: u64,
     last_append_error: Option<(i64, String)>,
+    /// Retained history can't be written (destination unreachable): set and
+    /// cleared by the retention job.
+    history: Option<Issue>,
 }
 
 #[derive(Debug, Default)]
@@ -234,6 +237,15 @@ impl SystemState {
         }
     }
 
+    /// Set (or clear) the retained-history banner.
+    pub fn set_history_issue(&self, issue: Option<Issue>) {
+        self.inner.lock().unwrap().history = issue;
+    }
+
+    pub fn history_issue(&self) -> Option<Issue> {
+        self.inner.lock().unwrap().history.clone()
+    }
+
     pub fn store_error(&self, e: &anyhow::Error) {
         let mut g = self.inner.lock().unwrap();
         g.append_errors += 1;
@@ -314,6 +326,9 @@ pub enum IssueKind {
     DiskLow,
     StoreErrors,
     IngestRejected,
+    /// The active retained-history destination can't be reached; hours wait
+    /// on local disk.
+    HistoryUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -525,6 +540,9 @@ pub fn status(sys: &SystemState, r: Readings) -> SystemStatus {
                 store.last_error.clone().unwrap_or_default()
             ),
         });
+    }
+    if let Some(h) = sys.history_issue() {
+        issues.push(h);
     }
     if rejected_15m > 0 {
         issues.push(Issue {

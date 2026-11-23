@@ -69,6 +69,8 @@ pub struct AppState {
     pub live_clients: Arc<AtomicUsize>,
     /// Server-side preparing jobs for very large exports (05.7).
     pub exports: Arc<crate::export_jobs::ExportJobs>,
+    /// Retained history: destinations, archived hours, gaps (Phase 5a).
+    pub history: Arc<crate::history::History>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -93,7 +95,13 @@ impl AppState {
             host: HostInfo::default(),
             live_clients: Arc::new(AtomicUsize::new(0)),
             exports: Arc::new(crate::export_jobs::ExportJobs::temp()),
+            history: Arc::new(crate::history::History::memory()),
         }
+    }
+
+    pub fn with_history(mut self, history: Arc<crate::history::History>) -> Self {
+        self.history = history;
+        self
     }
 
     pub fn with_accounts(mut self, accounts: Arc<Accounts>, auth: AuthConfig) -> Self {
@@ -149,6 +157,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::flow_api::routes())
         .merge(crate::tokens_api::routes())
         .merge(crate::settings_api::routes())
+        .merge(crate::history_api::routes())
         .merge(crate::mute_api::routes())
         .merge(crate::source_groups_api::routes())
         .merge(crate::auth_api::session_routes())

@@ -46,6 +46,13 @@ fn export_into(dir: &Path) {
     crate::whats_new::WhatsNew::export_all(&cfg).unwrap();
     crate::whats_new::WhatsNewUpdate::export_all(&cfg).unwrap();
     Health::export_all(&cfg).unwrap();
+    crate::history::HistoryStatus::export_all(&cfg).unwrap();
+    crate::history::NewDestination::export_all(&cfg).unwrap();
+    crate::history::UpdateDestination::export_all(&cfg).unwrap();
+    crate::history_api::DestinationsResponse::export_all(&cfg).unwrap();
+    crate::history_api::DestinationSaved::export_all(&cfg).unwrap();
+    crate::history_api::ActivateRequest::export_all(&cfg).unwrap();
+    crate::history_api::RemoveDestination::export_all(&cfg).unwrap();
     crate::settings::AddMuteRule::export_all(&cfg).unwrap();
     crate::settings::AddedMuteRule::export_all(&cfg).unwrap();
     crate::settings::UpdateMuteRule::export_all(&cfg).unwrap();

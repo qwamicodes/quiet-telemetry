@@ -54,6 +54,11 @@ redact_fields: Array<string>,
  */
 redact_pii: Array<PiiKind>, 
 /**
+ * Leave this source's lines out of retained history (they still expire
+ * from the local window). `null` = included, the default.
+ */
+exclude_history?: boolean, 
+/**
  * Muted lines (board 06.3): lines matching any rule are hidden from the
  * stream and search by default ("N muted · show"); still stored,
  * counted and searchable. Matching happens in the browser.
