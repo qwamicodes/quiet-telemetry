@@ -14,7 +14,10 @@ export function Histogram({
   until,
   selected = -1,
   onJump,
+  unsearched = [],
 }: {
+  /** Ranges retained history did not search (expired, gaps, not yet asked): greyed. */
+  unsearched?: { from: number; to: number }[]
   buckets: Bucket[]
   since: number
   until: number
@@ -29,7 +32,9 @@ export function Histogram({
     <figure aria-label="Matches over time" className="flex flex-col gap-1.5">
       <div className="flex h-10 items-end gap-px border px-1 pt-1">
         {buckets.map((b, i) => {
-          const label = `${fmtClock(b.start)} · ${b.count} lines`
+          const end = i === buckets.length - 1 ? until : b.start + width
+          const grey = unsearched.some((u) => b.start < u.to && end > u.from)
+          const label = `${fmtClock(b.start)} · ${b.count} lines${grey ? ' · not searched' : ''}`
           const bar = (
             <span
               style={{ height: b.count ? `${Math.max(12, (b.count / max) * 100)}%` : 0 }}
@@ -42,7 +47,15 @@ export function Histogram({
           )
           if (!onJump || !b.count)
             return (
-              <span key={b.start} title={label} className="flex h-full flex-1 items-end">
+              <span
+                key={b.start}
+                title={label}
+                data-unsearched={grey || undefined}
+                className={cn(
+                  'flex h-full flex-1 items-end',
+                  grey && 'bg-[repeating-linear-gradient(135deg,var(--muted)_0_2px,transparent_2px_5px)]',
+                )}
+              >
                 {bar}
               </span>
             )
