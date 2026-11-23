@@ -81,3 +81,41 @@ describe('LogTable columns (v0.1.1-03.x)', () => {
     expect(fitWidth([long])).toBe(REQUEST_COL.max)
   })
 })
+
+describe('LogTable follow (v0.1.1-03.17 / 03.19)', () => {
+  const table = (lines: LogLine[], onFollow: (f: boolean) => void) => (
+    <QueryClientProvider client={makeQueryClient()}>
+      <TooltipProvider>
+        <LogTable
+          lines={lines}
+          selectedId={null}
+          expandedId={null}
+          follow={false}
+          onFollow={onFollow}
+          empty="empty"
+          actions={{
+            onSelect: vi.fn(),
+            onOpenFlow: vi.fn(),
+            onOpenDiagram: vi.fn(),
+            onCopy: vi.fn(),
+            onFilter: vi.fn(),
+          }}
+        />
+      </TooltipProvider>
+    </QueryClientProvider>
+  )
+
+  it('rows leaving the list (a mute) never resume live; the user scrolling to the edge does', () => {
+    const onFollow = vi.fn()
+    const { rerender, container } = render(table(api, onFollow))
+    // A mute hides rows; the shorter list scrolls to the edge on its own.
+    rerender(table(api.slice(0, 1), onFollow))
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement
+    fireEvent.scroll(scroller)
+    expect(onFollow).not.toHaveBeenCalled()
+    // The user scrolls down to the edge: live again.
+    fireEvent.wheel(scroller)
+    fireEvent.scroll(scroller)
+    expect(onFollow).toHaveBeenCalledWith(true)
+  })
+})

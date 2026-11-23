@@ -505,6 +505,7 @@ export function LogTable({
   expandedId,
   follow,
   onFollow,
+  onRowHover,
   empty,
   loading,
   refreshing = false,
@@ -531,6 +532,8 @@ export function LogTable({
   expandedId: number | null
   follow: boolean
   onFollow: (f: boolean) => void
+  /** A row is under the pointer (the footer shows the row keys, 03.15). */
+  onRowHover?: (hovering: boolean) => void
   /** Shown instead of rows when there are none. */
   empty: ReactNode
   /** No rows for the current filters yet: skeletons instead of `empty`. */
@@ -625,11 +628,27 @@ export function LogTable({
   }, [follow, items, rows.length, top])
   useEffect(() => onUnseen?.(unseen, scrolledUp), [unseen, scrolledUp, onUnseen])
 
+  // Only the user resumes live by scrolling to the edge. Rows leaving the
+  // list (a new mute rule, the ring dropping old lines) can land the view on
+  // the edge too; that must not unpause (03.19: "Pause and scroll position
+  // are untouched by mute").
+  const hovering = useRef(false)
+  const hover = (on: boolean) => {
+    if (hovering.current === on) return
+    hovering.current = on
+    onRowHover?.(on)
+  }
+  const userScrolled = useRef(0)
+  const markUser = () => {
+    userScrolled.current = Date.now()
+  }
   const onScroll = () => {
     const el = ref.current
     if (!el || Date.now() < quietUntil.current) return
     const atEdge = top ? el.scrollTop < ROW * 2 : el.scrollHeight - el.scrollTop - el.clientHeight < ROW * 2
-    if (atEdge !== follow) onFollow(atEdge)
+    if (atEdge === follow) return
+    if (atEdge && Date.now() - userScrolled.current > 1000) return
+    onFollow(atEdge)
   }
 
   return (
@@ -678,6 +697,12 @@ export function LogTable({
       <div
         ref={ref}
         onScroll={onScroll}
+        onWheel={markUser}
+        onTouchMove={markUser}
+        onPointerDown={markUser}
+        onKeyDown={markUser}
+        onMouseOver={(e) => hover((e.target as HTMLElement).closest('[data-line-id]') != null)}
+        onMouseLeave={() => hover(false)}
         className={cn(
           'relative min-h-0 flex-1 overflow-y-auto transition-opacity',
           (dim || refreshing) && 'opacity-55',

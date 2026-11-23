@@ -98,7 +98,9 @@ export function TopBar({
   offlineReason,
   onTogglePause,
   onExport,
+  onPickerOpen,
 }: {
+  onPickerOpen?: (open: boolean) => void
   source: SourceInfo | undefined
   name: string | null
   state: LiveState
@@ -115,8 +117,12 @@ export function TopBar({
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b px-6">
       <SidebarToggle />
-      <StatusDot status={state === 'live' ? 'ok' : state === 'offline' ? 'idle' : 'warn'} />
-      <SourcePicker source={source} name={name} />
+      <SourcePicker
+        source={source}
+        name={name}
+        status={state === 'live' ? 'ok' : state === 'offline' ? 'idle' : 'warn'}
+        onOpenChange={onPickerOpen}
+      />
       {source && (
         <span className="border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{source.kind}</span>
       )}

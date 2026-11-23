@@ -20,7 +20,19 @@ type Item = { type: 'group'; group: SourceGroup } | { type: 'source'; source: So
  * The stream top bar's source name, as a picker (board v0.1-03.8): sources by
  * group, fold with ← →, ↵ streams one source. A group never streams.
  */
-export function SourcePicker({ source, name }: { source: SourceInfo | undefined; name: string | null }) {
+export function SourcePicker({
+  source,
+  name,
+  status,
+  onOpenChange,
+}: {
+  source: SourceInfo | undefined
+  name: string | null
+  /** The stream's state dot, drawn inside the trigger (03.8). */
+  status?: 'ok' | 'warn' | 'err' | 'idle'
+  /** The stream footer says `one source at a time` while it is open. */
+  onOpenChange?: (open: boolean) => void
+}) {
   const sources = useSources().data ?? []
   const rates = useRates(sources)
   const navigate = useNavigate()
@@ -88,6 +100,7 @@ export function SourcePicker({ source, name }: { source: SourceInfo | undefined;
       open={open}
       onOpenChange={(o) => {
         setOpen(o)
+        onOpenChange?.(o)
         if (o)
           setActive(
             Math.max(
@@ -104,6 +117,7 @@ export function SourcePicker({ source, name }: { source: SourceInfo | undefined;
           open && 'border-brand/60',
         )}
       >
+        {status && <StatusDot status={status} />}
         <h1 className="truncate font-medium text-base">{source?.display_name ?? name ?? 'No source'}</h1>
         <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
       </PopoverTrigger>
@@ -135,6 +149,7 @@ export function SourcePicker({ source, name }: { source: SourceInfo | undefined;
                 <SourceGroupHeader
                   group={it.group}
                   compact
+                  sending
                   collapsed={!q && isCollapsed(it.group.key)}
                   onToggle={() => set(it.group.key, !isCollapsed(it.group.key))}
                 />

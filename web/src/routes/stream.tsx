@@ -5,7 +5,6 @@ import { TOGGLE_PAUSE } from '@/components/command-palette'
 import { ExportDialog } from '@/components/export-dialog'
 import { MobileStream } from '@/components/mobile/mobile-stream'
 import { useIsMobile } from '@/components/mobile/use-mobile'
-import { MutedNote } from '@/components/muted-note'
 import { ErrorRateBanner, GapBanner, SourceLostBanner } from '@/components/stream/connection-banner'
 import { FilterBar, FilterChip } from '@/components/stream/filter-bar'
 import { LogTable, type RowActions } from '@/components/stream/log-table'
@@ -14,6 +13,7 @@ import { StreamFooter } from '@/components/stream/stream-footer'
 import { StreamHistogram, withLive } from '@/components/stream/stream-histogram'
 import { liveState, TopBar } from '@/components/stream/top-bar'
 import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
 import type { LevelTally, LogLine } from '@/gen'
 import { useHealth, useSources } from '@/lib/api'
 import { readAppearance } from '@/lib/appearance'
@@ -191,6 +191,8 @@ export function StreamPage() {
   }, [settingsData, source])
   const stats = useStreamStats(source, search.q)
   const [follow, setFollow] = useState(true)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [rowHover, setRowHover] = useState(false)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [unseen, setUnseen] = useState(0)
@@ -546,6 +548,7 @@ export function StreamPage() {
         stitchedBy={lastStitched}
         offlineReason={conn.down ? 'server unreachable' : 'reconnecting'}
         onTogglePause={() => setFollow((f) => !f)}
+        onPickerOpen={setPickerOpen}
         onExport={source ? () => setExporting(true) : undefined}
       />
       {/* 03.7: full width under the top bar. */}
@@ -592,16 +595,6 @@ export function StreamPage() {
           }
         />
       )}
-      {(muted > 0 || rowMute.canUndo) && source && (
-        <MutedNote
-          count={muted}
-          shown={showMuted}
-          onToggle={() => setShowMuted((v) => !v)}
-          source={source}
-          rules={ruleCounts}
-          undo={rowMute.canUndo}
-        />
-      )}
       <MuteMenu api={rowMute} />
       <div className="flex min-h-0 flex-1 gap-3 px-5 pb-5">
         <MuteContext.Provider value={muteCtx}>
@@ -612,6 +605,7 @@ export function StreamPage() {
             expandedId={expandedId}
             follow={follow}
             onFollow={setFollow}
+            onRowHover={setRowHover}
             direction={direction}
             wrap={wrap}
             loading={live === 'connecting' || pending}
@@ -651,6 +645,27 @@ export function StreamPage() {
                             : live
                 }
                 text={footer}
+                hint={
+                  pickerOpen ? (
+                    'one source at a time'
+                  ) : rowHover || selectedId != null ? (
+                    <>
+                      hover or J/K a row: <Kbd className="ml-1">M</Kbd> mute · <Kbd>C</Kbd> copy · <Kbd>↵</Kbd> open
+                      flow
+                    </>
+                  ) : undefined
+                }
+                muted={
+                  (muted > 0 || rowMute.canUndo) && source
+                    ? {
+                        rules: ruleCounts.source + ruleCounts.global,
+                        count: muted,
+                        shown: showMuted,
+                        onToggle: () => setShowMuted((v) => !v),
+                        undo: rowMute.canUndo,
+                      }
+                    : undefined
+                }
               />
             }
             empty={
