@@ -1,5 +1,6 @@
 # Retained history with Garage, in-house next to quiet (v0.1.1).
-#   make up-history
+#   make up-history     quiet built into an image, sign-in on
+#   make dev-history    no image: Garage here, quiet via `make dev` on the host, sign-in off
 #   (or: docker compose -f deploy/docker-compose.local.yml -f deploy/docker-compose.history.yml up --build)
 # quiet keeps its local window as before; hours that leave it are archived to
 # Garage. On first start quiet sets Garage up (layout, bucket, key) and
@@ -21,6 +22,8 @@ services:
     environment:
       GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-4f0c3a1b2d5e6f7081920a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f}
       GARAGE_ADMIN_TOKEN: ${QUIET_GARAGE_ADMIN_TOKEN:-quiet-local-garage-admin}
+    # Host loopback only, for `make dev-history` (quiet running on the host).
+    ports: ["127.0.0.1:3900:3900", "127.0.0.1:3903:3903"]
     volumes:
       - ./garage/garage.toml:/etc/garage.toml:ro
       - garage-data:/var/lib/garage
