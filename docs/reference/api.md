@@ -9,11 +9,12 @@ Every `/api` route needs a session cookie except the public auth routes, and eve
 - `GET /health` (liveness) · `GET /ready` (readiness, 503 while shutting down)
 - `GET /api/health`: version, `retention_ms`, `disk_bytes`, `stored_lines`, `oldest`, and `ingest: { auth, loopback, max_body, rate, tokens }`
 - `GET /api/about`: version, commit, build date, start time, store kind, SQLite version, database size, data dir, live clients, member count, Docker status (Settings → About)
-- `GET /api/sources`: every source, with `display_name`, `hidden`, `paused` and its group · `GET /api/sources/grouping-preview`: how sources would group under each mode
+- `GET /api/sources`: every source, with `display_name`, `hidden`, `paused`, its group and `format` (`v0.1.0` while an old-format record arrived in the last 24 h, else `v0.1.1` once a canonical event has, else absent) · `GET /api/sources/grouping-preview`: how sources would group under each mode
 - `GET /api/sources/:name/lines?limit=`: the newest lines of one source
 - `GET /api/sources/:name/fields?sample=2000`: fields detected, flow ids, malformed lines
 - `GET /api/sources/:name/activity` → `{ rejections, rejected_15m, paused_dropped }`
 - `GET /api/sources/:name/lint?sample=1000`: **Check my logs**, the newest records scored against the canonical completion event → `{ source, sampled, passed, applicable, checks: [{ id, title, status: pass|warn|fail|review|optional|na, share, detail, fix }] }`
+- `GET /api/sources/:name/format`: the newest 5,000 records against the v0.1.1 contract, for the upgrade screen → `{ source, sample, old, new, other, tag, last_old, last_new, changes: [{ id, from, to, count, old_format }], rollout: [{ start, old, new }], now }`. A record is v0.1.0 when it carries `outcome`, `wideEvents.calls`, `msg` without `flow`, or `status` without `status_code`; `err` and `job_id` without `queue` are listed as advice.
 - `POST /api/sources/:name/remove {"confirm":"<name>","revoke_tokens":true}` (owner): pause + hide the source, delete its stored lines and revoke the ingest tokens bound to it; returns `{ lines, revoked, previous }` (Undo = restore each token within 60 s + `PUT` the previous settings)
 - `GET /api/id-coverage?keys=a,b&sample=2000`: how often each id key appears, across sources
 - `GET /api/system` → `{ ok, issues: [{kind, severity, title, detail}], docker, disk, ingest, store, now }` (the system banners)
@@ -71,6 +72,7 @@ Matching happens in the browser for the stream and search; these counts come fro
 
 - Public (no session): `GET /api/auth/state` → `{ auth: "on"|"off", setup_required, user, csrf, version, host, instance_name }` · `POST /api/auth/setup {name,email,password}` (first run only, else 409) · `POST /api/auth/login {email,password,remember?}` (401 / 429 + `Retry-After`) · `POST /api/auth/invite {token}` → the invite, or 410 `{ code: expired|used|revoked, invite }` · `POST /api/auth/invite/accept {token,name,email?,password}` · `POST /api/auth/reset {token}` → `{ email, name, expires }` · `POST /api/auth/reset/accept {token,password}` → 204 (signs out everywhere). Sign-in routes answer `{ user, csrf }` and set the cookie.
 - Session: `POST /api/auth/logout` · `GET`/`PATCH /api/account {name,email,password?}` (changing the email needs the password) · `POST /api/account/password {current,password}` → `{ user }` (other sessions stay signed in) · `GET /api/account/sessions` · `DELETE /api/account/sessions/:id` · `POST /api/account/sessions/sign-out-others` · `GET /api/members` → `{ members, invites }` (invites for owners only).
+- What's new (session): `GET /api/whats-new` → `{ release, eligible, since, seen, banner_dismissed }` · `PUT /api/whats-new {seen?, banner_dismissed?}` → the same. Seen item ids are kept per account and release (the list only grows); `eligible` is true for accounts created before this instance first ran the release, so a fresh install shows no markers.
 - Owner: `POST /api/invites {email?,role}` → `201 { invite, token, path }` · `DELETE /api/invites/:id` · `PATCH /api/members/:id {role}` · `DELETE /api/members/:id` · `POST /api/members/:id/reset-link` → `{ token, path, expires }`. Removing or demoting the last owner: 409 `last_owner`.
 
 ## Ingest
