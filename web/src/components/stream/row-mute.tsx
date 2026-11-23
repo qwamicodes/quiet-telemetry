@@ -157,9 +157,10 @@ export function RowToolbar({
         <span
           aria-hidden
           data-testid="row-key-hint"
-          className="absolute -top-6 right-0 hidden whitespace-nowrap border bg-popover px-2 py-0.5 font-mono text-[11px] text-muted-foreground shadow-sm md:block"
+          // 03.18: a light tooltip, sans, bold keys, shown 600ms after focus lands.
+          className="absolute -top-6 right-0 hidden animate-in whitespace-nowrap bg-foreground px-2 py-0.5 font-sans text-[11px] text-background shadow-sm fade-in-0 [animation-delay:600ms] [animation-fill-mode:both] md:block"
         >
-          M mute · ⇧M options · C copy · ↵ open flow
+          <b>M</b> mute · <b>⇧M</b> options · <b>C</b> copy · <b>↵</b> open flow
         </span>
       )}
       <span role="toolbar" aria-label="Row actions" className="pointer-events-auto flex gap-1">

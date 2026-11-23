@@ -99,6 +99,18 @@ function Pick({
   )
 }
 
+/** `/api/v1/health?probe=1`: the query string reads muted after the path (03.15). */
+export function PathText({ path }: { path: string }) {
+  const q = path.indexOf('?')
+  if (q < 0) return <>{path}</>
+  return (
+    <>
+      {path.slice(0, q)}
+      <span className="text-muted-foreground">{path.slice(q)}</span>
+    </>
+  )
+}
+
 const LogRow = memo(function LogRow({
   line,
   selected,
@@ -144,7 +156,7 @@ const LogRow = memo(function LogRow({
         'group/row relative w-full cursor-default border-border/60 border-b font-mono text-[13px] outline-none hover:bg-row-hover',
         wrap ? 'min-h-(--row-h) py-1' : 'h-(--row-h)',
         bad && 'bg-row-error shadow-[inset_2px_0_0_var(--status-err)]',
-        selected && 'bg-row-selected shadow-[inset_2px_0_0_var(--brand)]',
+        selected && 'bg-row-selected shadow-[inset_0_0_0_1px_var(--brand)]',
         flash && !selected && 'bg-brand/10 shadow-[inset_2px_0_0_var(--brand)]',
         expanded && 'border-b-0',
         mutedBy && 'text-muted-foreground [&>*:not(:last-child)]:opacity-55',
@@ -161,7 +173,7 @@ const LogRow = memo(function LogRow({
           <>
             <span className="shrink-0 text-muted-foreground">{p.method}</span>
             <Pick k="path" v={f.path ?? p.path} onFilter={actions.onFilter} className="min-w-0">
-              {p.path}
+              <PathText path={p.path} />
             </Pick>
           </>
         ) : p.name ? (

@@ -7,7 +7,7 @@ import { kindLabel } from '@/lib/connect'
 import { isRecent } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-const STATUS_LABEL = { ok: 'sending', warn: 'paused', idle: 'idle' } as const
+const STATUS_LABEL = { ok: 'sending', warn: 'paused', idle: 'idle', err: 'ingest refused' } as const
 
 export function SourceItem({
   source,
@@ -15,7 +15,10 @@ export function SourceItem({
   rate,
   nested = false,
   group,
+  flag = null,
 }: {
+  /** `lost` (Docker dropped, 03.7) or `err` (ingest refused, 03.4); see `sidebarFlag`. */
+  flag?: 'lost' | 'err' | null
   source: SourceInfo
   active: boolean
   rate: number | null
@@ -25,12 +28,14 @@ export function SourceItem({
   group?: string
 }) {
   const live = isRecent(source.last_ts)
-  const status = source.paused ? 'warn' : live ? 'ok' : 'idle'
+  const status = source.paused ? 'warn' : flag === 'lost' ? 'idle' : flag === 'err' ? 'err' : live ? 'ok' : 'idle'
   const rateText = source.paused
     ? 'paused'
-    : rate != null && rate > 0
-      ? `${rate < 10 ? rate.toFixed(1) : Math.round(rate)}/s`
-      : '—'
+    : flag === 'lost'
+      ? 'lost'
+      : rate != null && rate > 0
+        ? `${rate < 10 ? rate.toFixed(1) : Math.round(rate)}/s`
+        : '—'
   const label = source.display_name ?? source.name
   const nameRef = useRef<HTMLSpanElement>(null)
   // Narrow sidebar (03.12): a cut-off name gets the full name, group, rate and
@@ -78,7 +83,14 @@ export function SourceItem({
             <span className="truncate font-mono text-[11px] text-muted-foreground">{kindLabel(source.kind)}</span>
           )}
         </span>
-        <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">{rateText}</span>
+        <span
+          className={cn(
+            'shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums',
+            flag === 'err' && !source.paused && 'text-status-err',
+          )}
+        >
+          {rateText}
+        </span>
       </TooltipTrigger>
       <TooltipContent
         side="bottom"
@@ -90,7 +102,7 @@ export function SourceItem({
       >
         <span className="font-medium text-xs">{source.name}</span>
         <span className="font-mono text-[11px] text-muted-foreground">
-          {[group, rateText, STATUS_LABEL[status]].filter(Boolean).join(' · ')}
+          {[group, rateText, flag === 'lost' ? null : STATUS_LABEL[status]].filter(Boolean).join(' · ')}
         </span>
       </TooltipContent>
     </Tooltip>

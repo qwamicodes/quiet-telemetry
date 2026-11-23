@@ -8,6 +8,7 @@ import {
   inGroupFilter,
   movedNote,
   resetCollapsedGroups,
+  sidebarFlag,
   toggleAllGroups,
   toggleGroup,
 } from '@/lib/source-groups'
@@ -119,5 +120,20 @@ describe('custom groups', () => {
     // Grouping off: no groups, even kept custom ones.
     const flat = [src('x', { group: null, group_kind: null })]
     expect(groupSources(flat, flat, NOW, custom, true)).toEqual([])
+  })
+})
+
+describe('sidebarFlag (v0.1.1-03.4, 03.7)', () => {
+  const src = (name: string, kind: SourceInfo['kind']) => ({ name, kind }) as SourceInfo
+  const now = 1_800_000_000_000
+  it('lost: a docker source while Docker is unreachable', () => {
+    expect(sidebarFlag(src('api', 'docker'), { dockerDown: true, rejected: [] }, now)).toBe('lost')
+    expect(sidebarFlag(src('api', 'http'), { dockerDown: true, rejected: [] }, now)).toBeNull()
+  })
+  it('err: ingest refused for it in the last 15 minutes', () => {
+    const rejected = [{ source: 'api', minute: now - 5 * 60_000 }]
+    expect(sidebarFlag(src('api', 'http'), { dockerDown: false, rejected }, now)).toBe('err')
+    expect(sidebarFlag(src('api', 'http'), { dockerDown: false, rejected }, now + 20 * 60_000)).toBeNull()
+    expect(sidebarFlag(src('worker', 'http'), { dockerDown: false, rejected }, now)).toBeNull()
   })
 })

@@ -1,7 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fitWidth, LogTable, REQUEST_COL } from '@/components/stream/log-table'
+import { fitWidth, LogTable, PathText, REQUEST_COL } from '@/components/stream/log-table'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { LogLine } from '@/gen'
 import { makeQueryClient } from '@/providers'
@@ -119,3 +119,13 @@ describe('LogTable follow (v0.1.1-03.17 / 03.19)', () => {
     expect(onFollow).toHaveBeenCalledWith(true)
   })
 })
+
+describe('PathText (v0.1.1-03.15)', () => {
+  it('mutes the query string after the path', () => {
+    render(<PathText path="/api/v1/health?probe=1" />)
+    const q = screen.getByText('?probe=1')
+    expect(q).toHaveClass('text-muted-foreground')
+    expect(q.parentElement).toHaveTextContent('/api/v1/health?probe=1')
+  })
+})
+
