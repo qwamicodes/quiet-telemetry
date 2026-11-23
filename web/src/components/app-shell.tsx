@@ -9,6 +9,8 @@ import { Sidebar } from '@/components/sidebar'
 import { SidebarToggle } from '@/components/sidebar-resize'
 import { ServerUnreachableBanner } from '@/components/stream/connection-banner'
 import { SystemBanners } from '@/components/system-banners'
+import { WhatsNewBanner } from '@/components/whats-new/whats-new-banner'
+import { WhatsNewSheet } from '@/components/whats-new/whats-new-sheet'
 import { useAuth } from '@/lib/auth-api'
 import { setDisplayTimeZone, setPublicUrl, setTimestampStyle } from '@/lib/format'
 import { copyPrompt, stackNow } from '@/lib/guide'
@@ -88,6 +90,7 @@ export function AppShell() {
             )}
           >
             {floatToggle && <SidebarToggle floating className="absolute top-3.5 left-3 z-30" />}
+            <WhatsNewBanner />
             <SystemBanners />
             <Outlet />
           </main>
@@ -96,6 +99,7 @@ export function AppShell() {
         <CommandPalette open={palette} onOpenChange={setPalette} onOpenShortcuts={() => setKeys(true)} />
         <ShortcutsSheet open={keys} onOpenChange={setKeys} />
         <SessionExpired />
+        <WhatsNewSheet />
       </div>
     </SidebarProvider>
   )

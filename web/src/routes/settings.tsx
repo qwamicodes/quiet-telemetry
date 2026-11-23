@@ -22,10 +22,12 @@ import { Storage } from '@/components/settings/storage'
 import { IngestTokens } from '@/components/tokens/token-table'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { Marker } from '@/components/whats-new/marker'
 import { ACCENTS, type Accent, type Density, useAppearance } from '@/lib/appearance'
 import { useSettings } from '@/lib/settings-api'
 import { type ThemePref, useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
+import { type Target, useSeenOnVisit, useWhatsNew } from '@/lib/whats-new'
 
 function NavLink({
   to,
@@ -55,6 +57,11 @@ function NavLink({
       {children}
     </Link>
   )
+}
+
+function SettingsMarker({ target }: { target: Target }) {
+  const kind = useWhatsNew().marker(target)
+  return kind ? <Marker kind={kind} className="ml-auto" /> : null
 }
 
 /** Settings (v0.1-07.x): a 200 px nav, then a 760 px page column, 48 px apart. */
@@ -88,6 +95,7 @@ export function SettingsLayout() {
         </NavLink>
         <NavLink to="/settings/appearance" icon={<SunIcon />}>
           Appearance
+          <SettingsMarker target="settings.appearance" />
         </NavLink>
         <NavLink to="/settings/about" icon={<InfoIcon />}>
           About
@@ -205,6 +213,7 @@ const DENSITIES: { value: Density; label: string }[] = [
 export function SettingsAppearance() {
   const { pref, setTheme, theme } = useTheme()
   const [a, set] = useAppearance()
+  useSeenOnVisit('settings.appearance')
   const [direction, setDirection] = useBrowserDirection()
   return (
     <div className="flex flex-col gap-5">

@@ -24,10 +24,18 @@ import { VerifyActions, VerifyLogs } from '@/components/guide/verify-logs'
 import { Caps } from '@/components/settings/kit'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import { Marker } from '@/components/whats-new/marker'
 import { useSources } from '@/lib/api'
 import { blankGoal, downloadPrompt, PROMPT_COPIED, type StackId, useSetup, useStack } from '@/lib/guide'
 import type { GuideTab } from '@/lib/search-params'
 import { cn } from '@/lib/utils'
+import { type Target, useSeenOnVisit, useWhatsNew } from '@/lib/whats-new'
+
+/** `new` / `updated` on a Guide tab until it is opened (v0.1.1-00.1). */
+function GuideTabMarker({ tab }: { tab: GuideTab }) {
+  const kind = useWhatsNew().marker(`guide.${tab}` as Target)
+  return kind && tab !== 'overview' ? <Marker kind={kind} /> : null
+}
 
 const TABS: { id: GuideTab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
@@ -78,6 +86,7 @@ const readStep = (): Exclude<AgentStep, 'verify'> => {
 export function GuidePage() {
   const search = useSearch({ from: '/guide' })
   const tab: GuideTab = search.tab ?? 'overview'
+  useSeenOnVisit(tab === 'overview' ? null : (`guide.${tab}` as Target))
   const [stack, setStack] = useStack()
   const [setup, update] = useSetup()
   const [step, setStepState] = useState(readStep)
@@ -172,11 +181,12 @@ export function GuidePage() {
               search={{ ...search, tab: t.id === 'overview' ? undefined : t.id }}
               aria-current={t.id === tab ? 'page' : undefined}
               className={cn(
-                '-mb-px border-transparent border-b-2 px-2.5 py-2 text-[13px] text-muted-foreground hover:text-foreground',
+                '-mb-px flex items-center gap-1.5 border-transparent border-b-2 px-2.5 py-2 text-[13px] text-muted-foreground hover:text-foreground',
                 t.id === tab && 'border-foreground text-foreground',
               )}
             >
               {t.label}
+              <GuideTabMarker tab={t.id} />
             </Link>
           ))}
         </nav>

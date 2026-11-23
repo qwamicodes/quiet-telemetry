@@ -32,6 +32,7 @@ import { useDebounced } from '@/lib/use-debounced'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { useRates } from '@/lib/use-rates'
 import { useStream } from '@/lib/use-stream'
+import { useSeenOnVisit } from '@/lib/whats-new'
 import { Welcome } from '@/routes/connect'
 
 const route = getRouteApi('/')
@@ -78,6 +79,7 @@ function errorSpike(lines: LogLine[], stats: LevelTally | null, total: number) {
 }
 
 export function StreamPage() {
+  useSeenOnVisit('stream')
   const search = route.useSearch()
   const navigate = route.useNavigate()
   const go = useNavigate()

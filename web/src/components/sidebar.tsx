@@ -16,6 +16,7 @@ import { SourceGroupHeader } from '@/components/source-group-header'
 import { SourceItem } from '@/components/source-item'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { UserMenu } from '@/components/user-menu'
+import { Marker, UnseenDot } from '@/components/whats-new/marker'
 import { useHealth, useSources } from '@/lib/api'
 import { useConnection } from '@/lib/connection'
 import { fmtWindow } from '@/lib/format'
@@ -24,12 +25,14 @@ import { useSidebar } from '@/lib/sidebar'
 import { groupSources, useCollapsedGroups } from '@/lib/source-groups'
 import { useCustomGroups } from '@/lib/source-groups-api'
 import { useRates } from '@/lib/use-rates'
+import { type ChangeKind, setWhatsNewOpen, useWhatsNew } from '@/lib/whats-new'
 
 function NavItem({
   to,
   icon,
   badge,
   dot,
+  marker,
   children,
 }: {
   to: '/' | '/search' | '/sources' | '/settings' | '/guide'
@@ -37,6 +40,8 @@ function NavItem({
   badge?: string
   /** A small brand dot after the label (Guide, 11.6 A). */
   dot?: string
+  /** `new` / `updated` from What's new, rolled up (00.4). */
+  marker?: ChangeKind | null
   children: ReactNode
 }) {
   return (
@@ -49,6 +54,7 @@ function NavItem({
       <span className="flex flex-1 items-center gap-2">
         {children}
         {dot && <span role="img" aria-label={dot} className="size-1.5 bg-brand" />}
+        {marker && <Marker kind={marker} />}
       </span>
       {badge && <span className="font-mono text-[11px] text-muted-foreground">{badge}</span>}
     </Link>
@@ -82,6 +88,7 @@ export function Sidebar({
   const keys = groups.map((g) => g.key)
   const onStream = useRouterState({ select: (s) => s.location.pathname === '/' })
   const { hidden } = useSidebar()
+  const whatsNew = useWhatsNew()
 
   return (
     <aside
@@ -93,9 +100,16 @@ export function Sidebar({
     >
       <div className="flex h-14 items-center justify-between px-4">
         <Logo />
-        <span className="border border-sidebar-border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+        <button
+          type="button"
+          onClick={() => setWhatsNewOpen(true)}
+          aria-label={whatsNew.unseen.length ? `What's new: ${whatsNew.unseen.length} unseen` : "What's new"}
+          title="What's new"
+          className="flex items-center gap-1.5 border border-sidebar-border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground outline-none hover:text-foreground focus-visible:border-ring"
+        >
           v{health ? health.version.split('.').slice(0, 2).join('.') : '…'}
-        </span>
+          {whatsNew.unseen.length > 0 && <UnseenDot label="Unseen changes" />}
+        </button>
       </div>
 
       <div className="px-3">
@@ -114,19 +128,29 @@ export function Sidebar({
       </div>
 
       <nav className="mt-4 flex flex-col gap-0.5 px-3">
-        <NavItem to="/" icon={<RowsIcon />}>
+        <NavItem to="/" icon={<RowsIcon />} marker={whatsNew.marker('stream')}>
           Stream
         </NavItem>
         <NavItem to="/search" icon={<SearchIcon />} badge={health ? fmtWindow(health.retention_ms) : undefined}>
           Search
         </NavItem>
-        <NavItem to="/sources" icon={<PlugIcon />} badge={sources ? String(sources.length) : undefined}>
+        <NavItem
+          to="/sources"
+          icon={<PlugIcon />}
+          marker={whatsNew.marker('sources')}
+          badge={sources ? String(sources.length) : undefined}
+        >
           Sources
         </NavItem>
-        <NavItem to="/settings" icon={<SettingsIcon />}>
+        <NavItem to="/settings" icon={<SettingsIcon />} marker={whatsNew.marker('settings')}>
           Settings
         </NavItem>
-        <NavItem to="/guide" icon={<BookOpenIcon />} dot={noPass ? 'No source passes Check my logs yet' : undefined}>
+        <NavItem
+          to="/guide"
+          icon={<BookOpenIcon />}
+          marker={whatsNew.marker('guide')}
+          dot={noPass ? 'No source passes Check my logs yet' : undefined}
+        >
           Guide
         </NavItem>
       </nav>
