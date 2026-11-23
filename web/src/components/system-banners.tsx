@@ -32,12 +32,14 @@ const ICON: Record<IssueKind, typeof AlertTriangleIcon> = {
   store_errors: DatabaseIcon,
   ingest_rejected: AlertTriangleIcon,
   history_unavailable: CloudOffIcon,
+  history_at_capacity: CloudOffIcon,
+  history_cleanup_blocked: CloudOffIcon,
 }
 
 /** Where each banner sends you. */
 function Action({ kind }: { kind: IssueKind }) {
   const cls = 'flex h-6 items-center border px-2 text-xs hover:bg-muted'
-  if (kind === 'disk_near_cap' || kind === 'disk_at_cap' || kind === 'disk_low' || kind === 'history_unavailable')
+  if (kind === 'disk_near_cap' || kind === 'disk_at_cap' || kind === 'disk_low' || kind.startsWith('history_'))
     return (
       <Link to="/settings/storage" className={cn(cls, 'gap-1.5')}>
         <SettingsIcon className="size-3.5" />

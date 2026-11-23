@@ -78,6 +78,32 @@ impl Admin {
     }
 }
 
+/// The bucket's size quota (`quotas.maxSize`), when one is set.
+pub fn quota_of(bucket: &Value) -> Option<u64> {
+    bucket["quotas"]["maxSize"].as_u64().filter(|q| *q > 0)
+}
+
+/// Read the Garage bucket's size quota through the admin API: the capacity
+/// of `garage-local` unless an owner set one in quiet.
+pub async fn quota(env: &GarageEnv) -> anyhow::Result<Option<u64>> {
+    super::remote::init_tls();
+    let admin = Admin {
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?,
+        base: env.admin_endpoint.clone(),
+        token: env.admin_token.clone(),
+    };
+    let b = admin
+        .ok(
+            reqwest::Method::GET,
+            &format!("/v1/bucket?globalAlias={}", env.bucket),
+            None,
+        )
+        .await?;
+    Ok(quota_of(&b))
+}
+
 /// One attempt. `Ok(true)`: connected (or already there).
 pub async fn bootstrap_once(history: &History, env: &GarageEnv, now: i64) -> anyhow::Result<bool> {
     if history

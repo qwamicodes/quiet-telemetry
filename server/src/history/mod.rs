@@ -11,6 +11,7 @@
 
 pub mod catalog;
 pub mod garage;
+pub mod jobs;
 pub mod remote;
 pub mod secret;
 
@@ -119,6 +120,9 @@ pub enum GapReason {
     DiskCap,
     /// Every line in it came from sources excluded from history.
     Excluded,
+    /// Waited while the active destination was full ("stop archiving")
+    /// until the disk cap dropped it.
+    AtCapacity,
 }
 
 impl GapReason {
@@ -128,6 +132,7 @@ impl GapReason {
             GapReason::DestinationUnavailable => "destination_unavailable",
             GapReason::DiskCap => "disk_cap",
             GapReason::Excluded => "excluded",
+            GapReason::AtCapacity => "at_capacity",
         }
     }
 
@@ -137,9 +142,166 @@ impl GapReason {
             "destination_unavailable" => GapReason::DestinationUnavailable,
             "disk_cap" => GapReason::DiskCap,
             "excluded" => GapReason::Excluded,
+            "at_capacity" => GapReason::AtCapacity,
             _ => return None,
         })
     }
+}
+
+/// What happens when the active destination is full (5b).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AtCapacity {
+    /// Delete the oldest archived hours there to make room (like the local
+    /// disk cap).
+    #[default]
+    Evict,
+    /// Stop archiving: hours wait on local disk (banner); only the disk cap
+    /// drops them, recorded as `at_capacity` gaps.
+    Stop,
+}
+
+/// Settings → Storage → Retained history (5b). Applies to every destination.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct HistoryPolicy {
+    /// Days archived hours are kept; `null`: indefinitely (the default, so
+    /// nothing is deleted until an owner chooses a window).
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub retention_days: Option<u32>,
+    #[serde(default)]
+    pub at_capacity: AtCapacity,
+}
+
+/// Longest history window an owner can type, in days (100 years).
+pub const MAX_RETENTION_DAYS: u32 = 36_500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum JobKind {
+    /// Archive the complete hours still in the local window now.
+    Backfill,
+    /// Copy every hour of one destination to another.
+    Copy,
+    /// Delete a destination's history, then forget it.
+    Delete,
+}
+
+impl JobKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JobKind::Backfill => "backfill",
+            JobKind::Copy => "copy",
+            JobKind::Delete => "delete",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "backfill" => JobKind::Backfill,
+            "copy" => JobKind::Copy,
+            "delete" => JobKind::Delete,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    Running,
+    /// A delete was refused (cleanup blocked): retried with backoff or Retry.
+    Blocked,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+impl JobState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JobState::Running => "running",
+            JobState::Blocked => "blocked",
+            JobState::Done => "done",
+            JobState::Failed => "failed",
+            JobState::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "running" => JobState::Running,
+            "blocked" => JobState::Blocked,
+            "done" => JobState::Done,
+            "failed" => JobState::Failed,
+            "cancelled" => JobState::Cancelled,
+            _ => return None,
+        })
+    }
+
+    pub fn open(self) -> bool {
+        matches!(self, JobState::Running | JobState::Blocked)
+    }
+}
+
+/// A background job as the API shows it.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct HistoryJob {
+    pub id: i64,
+    pub kind: JobKind,
+    pub state: JobState,
+    /// Where hours go (backfill, copy) or are deleted from (delete).
+    pub destination_id: Option<i64>,
+    pub destination: Option<String>,
+    /// Copy: where hours come from.
+    pub source_id: Option<i64>,
+    pub source: Option<String>,
+    /// Hours to move, and hours moved so far.
+    #[ts(type = "number")]
+    pub total: u64,
+    #[ts(type = "number")]
+    pub done: u64,
+    #[ts(type = "number")]
+    pub bytes: u64,
+    pub error: Option<String>,
+    pub next_retry: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CapacitySource {
+    /// Set by an owner on the destination.
+    Owner,
+    /// The quota of the Garage bucket quiet set up.
+    Garage,
+}
+
+/// What a shorter history window would delete (dry run).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct HistoryPreview {
+    #[ts(type = "number | null")]
+    pub retention_days: Option<u32>,
+    /// Hours that start before this are deleted, unix ms.
+    pub before: Option<i64>,
+    #[ts(type = "number")]
+    pub hours: u64,
+    #[ts(type = "number")]
+    pub lines: u64,
+    #[ts(type = "number")]
+    pub bytes: u64,
+    pub destinations: Vec<PreviewDestination>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct PreviewDestination {
+    pub id: i64,
+    pub name: String,
+    #[ts(type = "number")]
+    pub hours: u64,
+    #[ts(type = "number")]
+    pub bytes: u64,
 }
 
 /// One archived hour in one destination.
@@ -200,6 +362,20 @@ pub struct Destination {
     pub error: Option<String>,
     pub next_retry: Option<i64>,
     pub created_at: i64,
+    /// How much it may hold (5b): owner-set, or the Garage bucket quota.
+    #[ts(type = "number | null")]
+    pub capacity_bytes: Option<u64>,
+    pub capacity_source: Option<CapacitySource>,
+    /// Holds at least its capacity.
+    pub at_capacity: bool,
+    /// Its history is being deleted before it is forgotten.
+    pub removing: bool,
+    /// The last refused (or failed) delete and when cleanup tries again.
+    pub cleanup_error: Option<String>,
+    pub cleanup_retry_at: Option<i64>,
+    /// Hours whose delete was refused ("cleanup blocked").
+    #[ts(type = "number")]
+    pub cleanup_blocked_hours: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
@@ -282,6 +458,19 @@ pub struct HistoryStatus {
     /// Hours past the local window still waiting to be archived.
     #[ts(type = "number")]
     pub waiting_hours: u64,
+    pub policy: HistoryPolicy,
+    /// Archived hours older than this are deleted (`null`: kept indefinitely).
+    pub retained_from: Option<i64>,
+    /// Archived hours past the history window still to delete.
+    #[ts(type = "number")]
+    pub expired_hours: u64,
+    #[ts(type = "number")]
+    pub expired_bytes: u64,
+    /// Complete hours in the local window not archived yet (Backfill offers them).
+    #[ts(type = "number")]
+    pub backfill_hours: u64,
+    /// Newest first, at most 20.
+    pub jobs: Vec<HistoryJob>,
 }
 
 #[derive(Debug)]
@@ -289,8 +478,8 @@ pub enum HistoryError {
     Invalid(String),
     NotFound,
     Conflict(&'static str, String),
-    /// Copy history / delete history arrive in 5b.
-    NotYet(&'static str),
+    /// A shorter history window would delete archived hours: confirm first.
+    ConfirmRequired(HistoryPreview),
     Failed(anyhow::Error),
 }
 
@@ -315,6 +504,10 @@ struct Unavailable {
 struct Runtime {
     unavailable: Option<Unavailable>,
     waiting: u64,
+    /// The Garage bucket's quota (bytes) when quiet set Garage up, and when
+    /// it was last read.
+    garage_quota: Option<u64>,
+    garage_checked: Option<i64>,
 }
 
 pub struct History {
@@ -323,6 +516,10 @@ pub struct History {
     tmp: PathBuf,
     connector: Connector,
     runtime: Mutex<Runtime>,
+    /// Wakes the background worker (a job was added, a policy changed).
+    pub wake: tokio::sync::Notify,
+    /// Set when quiet set Garage up (`QUIET_GARAGE_*`): its quota is read.
+    garage: Option<garage::GarageEnv>,
 }
 
 /// What one archive pass did.
@@ -334,10 +531,41 @@ pub struct Pass {
     pub hold: bool,
     /// Hours that are waiting for the destination.
     pub waiting: Vec<i64>,
+    /// They wait because the active destination is full ("stop archiving").
+    pub at_capacity: bool,
+}
+
+/// First hour kept under `policy` at `now` (hour number); older ones are
+/// deleted. `None`: kept indefinitely.
+pub fn retention_before(policy: &HistoryPolicy, now: i64) -> Option<i64> {
+    policy
+        .retention_days
+        .map(|d| now.div_euclid(HOUR) - i64::from(d) * 24)
 }
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// `5 GB`, `312 MB` (decimal units, like the disk cap).
+pub fn fmt_bytes(b: u64) -> String {
+    const UNITS: [(&str, u64); 4] = [
+        ("TB", 1_000_000_000_000),
+        ("GB", 1_000_000_000),
+        ("MB", 1_000_000),
+        ("KB", 1_000),
+    ];
+    for (u, n) in UNITS {
+        if b >= n {
+            let v = b as f64 / n as f64;
+            return if v >= 10.0 || (v - v.round()).abs() < 0.05 {
+                format!("{} {u}", v.round() as u64)
+            } else {
+                format!("{v:.1} {u}")
+            };
+        }
+    }
+    format!("{b} B")
 }
 
 fn name_ok(s: &str) -> bool {
@@ -355,6 +583,8 @@ impl History {
             tmp: data_dir.join("history-tmp"),
             connector: Arc::new(remote::connect),
             runtime: Mutex::new(Runtime::default()),
+            wake: tokio::sync::Notify::new(),
+            garage: None,
         };
         h.catalog.instance_id()?;
         Ok(h)
@@ -367,6 +597,8 @@ impl History {
             tmp: std::env::temp_dir().join(format!("quiet-history-{:08x}", rand::random::<u32>())),
             connector: Arc::new(remote::connect),
             runtime: Mutex::new(Runtime::default()),
+            wake: tokio::sync::Notify::new(),
+            garage: None,
         }
     }
 
@@ -376,7 +608,33 @@ impl History {
         self
     }
 
-    fn remote(&self, d: &DestinationRow) -> anyhow::Result<Remote> {
+    /// Read the Garage bucket quota for `garage-local` (capacity).
+    pub fn with_garage(mut self, env: garage::GarageEnv) -> Self {
+        self.garage = Some(env);
+        self
+    }
+
+    #[cfg(test)]
+    pub fn set_garage_quota(&self, q: Option<u64>) {
+        let mut rt = self.runtime.lock().unwrap();
+        rt.garage_quota = q;
+        rt.garage_checked = Some(i64::MAX);
+    }
+
+    /// Effective capacity: owner-set, else the Garage quota for `garage-local`.
+    pub fn capacity(&self, d: &DestinationRow) -> Option<(u64, CapacitySource)> {
+        if let Some(c) = d.capacity_bytes {
+            return Some((c, CapacitySource::Owner));
+        }
+        if d.name == garage::NAME {
+            if let Some(q) = self.runtime.lock().unwrap().garage_quota {
+                return Some((q, CapacitySource::Garage));
+            }
+        }
+        None
+    }
+
+    pub(crate) fn remote(&self, d: &DestinationRow) -> anyhow::Result<Remote> {
         let secret = self.secrets.open_sealed(&d.secret_enc)?;
         (self.connector)(d, &secret)
     }
@@ -387,6 +645,8 @@ impl History {
 
     fn view(&self, d: &DestinationRow) -> anyhow::Result<Destination> {
         let held = self.catalog.held(d.id)?;
+        let blocked = self.catalog.blocked_hours(d.id)?;
+        let cap = self.capacity(d);
         let rt = self.runtime.lock().unwrap();
         let down = rt
             .unavailable
@@ -418,6 +678,13 @@ impl History {
             error: down.map(|u| u.error.clone()),
             next_retry: down.map(|u| u.next_retry),
             created_at: d.created_at,
+            capacity_bytes: cap.map(|c| c.0),
+            capacity_source: cap.map(|c| c.1),
+            at_capacity: cap.is_some_and(|(c, _)| held.bytes_stored >= c),
+            removing: d.removing,
+            cleanup_error: d.cleanup_error.clone(),
+            cleanup_retry_at: d.cleanup_retry_at,
+            cleanup_blocked_hours: blocked,
         })
     }
 
@@ -433,15 +700,30 @@ impl History {
         Ok(self.view(&self.find(id)?)?)
     }
 
+    #[cfg(test)]
     pub fn status(&self) -> anyhow::Result<HistoryStatus> {
+        self.status_at(chrono::Utc::now().timestamp_millis())
+    }
+
+    /// Status at `now`, without the backfill count (that needs the store:
+    /// [`History::status_with`]).
+    pub fn status_at(&self, now: i64) -> anyhow::Result<HistoryStatus> {
         let destinations = self.destinations()?;
         let enabled_at = self.catalog.enabled_at()?;
+        let policy = self.catalog.policy()?;
+        let before = retention_before(&policy, now);
+        let (expired_hours, expired_bytes) = match before {
+            Some(b) => {
+                let old = self.catalog.hours_before(b)?;
+                (old.len() as u64, old.iter().map(|h| h.bytes_stored).sum())
+            }
+            None => (0, 0),
+        };
         Ok(HistoryStatus {
             enabled: enabled_at.is_some(),
             enabled_at,
             instance_id: self.catalog.instance_id()?,
             active: destinations.iter().find(|d| d.active).map(|d| d.id),
-            destinations,
             gaps: self
                 .catalog
                 .gaps(100)?
@@ -454,7 +736,77 @@ impl History {
                 .collect(),
             gap_hours: self.catalog.gap_count()?,
             waiting_hours: self.runtime.lock().unwrap().waiting,
+            policy,
+            retained_from: before.map(|b| b * HOUR),
+            expired_hours,
+            expired_bytes,
+            backfill_hours: 0,
+            jobs: self.jobs(&destinations)?,
+            destinations,
         })
+    }
+
+    /// Status including how many local hours Backfill would archive.
+    pub async fn status_with(&self, store: &dyn Store, now: i64) -> anyhow::Result<HistoryStatus> {
+        let mut st = self.status_at(now)?;
+        st.backfill_hours = self.backfill_candidates(store, now).await?.len() as u64;
+        Ok(st)
+    }
+
+    fn jobs(&self, destinations: &[Destination]) -> anyhow::Result<Vec<HistoryJob>> {
+        let name = |id: Option<i64>| {
+            id.and_then(|id| destinations.iter().find(|d| d.id == id))
+                .map(|d| d.name.clone())
+        };
+        Ok(self
+            .catalog
+            .jobs(20)?
+            .into_iter()
+            .map(|j| HistoryJob {
+                id: j.id,
+                kind: j.kind,
+                state: j.state,
+                destination_id: j.destination_id,
+                destination: name(j.destination_id),
+                source_id: j.source_id,
+                source: name(j.source_id),
+                total: j.total,
+                done: j.done,
+                bytes: j.bytes,
+                error: j.error,
+                next_retry: j.next_retry,
+                created_at: j.created_at,
+                updated_at: j.updated_at,
+            })
+            .collect())
+    }
+
+    pub fn job(&self, id: i64) -> Result<HistoryJob, HistoryError> {
+        let destinations = self.destinations()?;
+        self.jobs(&destinations)?
+            .into_iter()
+            .find(|j| j.id == id)
+            .or_else(|| {
+                // Older than the newest 20: build it alone.
+                let j = self.catalog.job(id).ok()??;
+                Some(HistoryJob {
+                    id: j.id,
+                    kind: j.kind,
+                    state: j.state,
+                    destination_id: j.destination_id,
+                    destination: None,
+                    source_id: j.source_id,
+                    source: None,
+                    total: j.total,
+                    done: j.done,
+                    bytes: j.bytes,
+                    error: j.error,
+                    next_retry: j.next_retry,
+                    created_at: j.created_at,
+                    updated_at: j.updated_at,
+                })
+            })
+            .ok_or(HistoryError::NotFound)
     }
 
     fn check_fields(
@@ -536,6 +888,11 @@ impl History {
             verified_at: None,
             last_verify: None,
             created_at: now,
+            capacity_bytes: None,
+            removing: false,
+            cleanup_error: None,
+            cleanup_retry_at: None,
+            cleanup_attempts: 0,
         };
         let id = self.catalog.insert(&row)?;
         let v = self.verify(id, now).await?;
@@ -638,19 +995,22 @@ impl History {
     }
 
     /// Make a destination the one new hours go to. It must pass Verify now.
-    /// Copying history between destinations is 5b.
+    /// With `copy_history`, the previously active destination's hours are
+    /// copied to it in the background; both stay searchable meanwhile.
     pub async fn activate(
         &self,
         id: i64,
         copy_history: bool,
         now: i64,
     ) -> Result<Destination, HistoryError> {
-        if copy_history {
-            return Err(HistoryError::NotYet(
-                "copy history arrives in a later release",
+        let d = self.find(id)?;
+        if d.removing {
+            return Err(HistoryError::Conflict(
+                "removing",
+                format!("{}'s history is being deleted", d.name),
             ));
         }
-        let d = self.find(id)?;
+        let previous = self.catalog.active()?.filter(|p| p.id != id);
         let v = self.verify(id, now).await?;
         if !v.ok {
             return Err(HistoryError::Conflict(
@@ -666,32 +1026,282 @@ impl History {
         self.runtime.lock().unwrap().unavailable = None;
         let remote = self.remote(&d)?;
         let _ = self.write_instance(&remote, &d, now).await;
+        if copy_history {
+            if let Some(prev) = previous {
+                self.start_copy(&prev, &d, now)?;
+            }
+        }
         self.destination(id)
     }
 
-    /// Forget a destination, leaving its objects in the bucket (reconnect +
-    /// reindex brings them back). Deleting its history is 5b.
-    pub fn remove(&self, id: i64, delete_history: bool) -> Result<(), HistoryError> {
-        if delete_history {
-            return Err(HistoryError::NotYet(
-                "deleting a destination's history arrives in a later release",
-            ));
+    /// Copy every hour `from` holds that `to` doesn't (a background job).
+    pub fn start_copy(
+        &self,
+        from: &DestinationRow,
+        to: &DestinationRow,
+        now: i64,
+    ) -> Result<HistoryJob, HistoryError> {
+        if let Some(j) = self.catalog.open_jobs()?.into_iter().find(|j| {
+            j.kind == JobKind::Copy
+                && j.source_id == Some(from.id)
+                && j.destination_id == Some(to.id)
+        }) {
+            return self.job(j.id);
         }
+        let total = self.copy_remaining(from.id, to.id)?.len() as u64;
+        let id = self
+            .catalog
+            .add_job(JobKind::Copy, Some(to.id), Some(from.id), total, now)?;
+        self.wake.notify_one();
+        self.job(id)
+    }
+
+    /// Stop archiving: no destination receives new hours. What was archived
+    /// stays searchable; hours leaving the local window are deleted again.
+    pub fn turn_off(&self) -> Result<(), HistoryError> {
+        self.catalog.clear_active()?;
+        self.runtime.lock().unwrap().unavailable = None;
+        Ok(())
+    }
+
+    /// Forget a destination. `delete_history: false` leaves its objects in
+    /// the bucket (reconnect + reindex brings them back); `true` deletes
+    /// them first in a background job, then forgets it.
+    pub fn remove(
+        &self,
+        id: i64,
+        delete_history: bool,
+        now: i64,
+    ) -> Result<Option<HistoryJob>, HistoryError> {
         let d = self.find(id)?;
         if d.active {
             return Err(HistoryError::Conflict(
                 "active",
                 format!(
-                    "{} is the active destination: make another one active first",
+                    "{} is the active destination: make another one active or turn retained history off first",
                     d.name
                 ),
             ));
         }
-        self.catalog.remove(id)?;
-        Ok(())
+        let open = self
+            .catalog
+            .open_jobs()?
+            .into_iter()
+            .find(|j| j.kind == JobKind::Delete && j.destination_id == Some(id));
+        if let Some(j) = open {
+            return Ok(Some(self.job(j.id)?));
+        }
+        if !delete_history {
+            self.catalog.remove(id)?;
+            return Ok(None);
+        }
+        let total = self.catalog.held(id)?.hours;
+        self.catalog.set_removing(id, true)?;
+        let job = self
+            .catalog
+            .add_job(JobKind::Delete, Some(id), None, total, now)?;
+        self.wake.notify_one();
+        Ok(Some(self.job(job)?))
     }
 
-    async fn write_instance(
+    /// Owner-set capacity in bytes; `None` clears it.
+    pub fn set_capacity(&self, id: i64, bytes: Option<u64>) -> Result<Destination, HistoryError> {
+        self.find(id)?;
+        if bytes.is_some_and(|b| b < 1_000_000) {
+            return Err(HistoryError::Invalid("capacity: at least 1 MB".into()));
+        }
+        self.catalog.set_capacity(id, bytes)?;
+        self.wake.notify_one();
+        self.destination(id)
+    }
+
+    /// Try a blocked cleanup now (Retry).
+    pub fn retry_cleanup(&self, id: i64) -> Result<Destination, HistoryError> {
+        let d = self.find(id)?;
+        self.catalog
+            .set_cleanup(id, d.cleanup_error.as_deref(), None, d.cleanup_attempts)?;
+        for mut j in self.catalog.open_jobs()? {
+            if j.destination_id == Some(id) && j.kind == JobKind::Delete {
+                j.next_retry = None;
+                j.state = JobState::Running;
+                self.catalog.save_job(&j)?;
+            }
+        }
+        self.wake.notify_one();
+        self.destination(id)
+    }
+
+    /// What `retention_days` would delete now.
+    pub fn preview(&self, retention_days: Option<u32>, now: i64) -> anyhow::Result<HistoryPreview> {
+        let policy = HistoryPolicy {
+            retention_days,
+            ..Default::default()
+        };
+        let before = retention_before(&policy, now);
+        let old = match before {
+            Some(b) => self.catalog.hours_before(b)?,
+            None => Vec::new(),
+        };
+        let mut destinations: Vec<PreviewDestination> = Vec::new();
+        for h in &old {
+            match destinations.iter_mut().find(|d| d.id == h.destination_id) {
+                Some(d) => {
+                    d.hours += 1;
+                    d.bytes += h.bytes_stored;
+                }
+                None => destinations.push(PreviewDestination {
+                    id: h.destination_id,
+                    name: self
+                        .catalog
+                        .destination(h.destination_id)?
+                        .map(|d| d.name)
+                        .unwrap_or_default(),
+                    hours: 1,
+                    bytes: h.bytes_stored,
+                }),
+            }
+        }
+        Ok(HistoryPreview {
+            retention_days,
+            before: before.map(|b| b * HOUR),
+            hours: old.len() as u64,
+            lines: old.iter().map(|h| h.lines).sum(),
+            bytes: old.iter().map(|h| h.bytes_stored).sum(),
+            destinations,
+        })
+    }
+
+    /// Save the history policy. A window that deletes archived hours needs
+    /// `confirm` (else [`HistoryError::ConfirmRequired`] with the preview).
+    pub fn set_policy(
+        &self,
+        p: HistoryPolicy,
+        confirm: bool,
+        now: i64,
+    ) -> Result<HistoryPolicy, HistoryError> {
+        if let Some(d) = p.retention_days {
+            if d == 0 || d > MAX_RETENTION_DAYS {
+                return Err(HistoryError::Invalid(format!(
+                    "retention_days: 1 to {MAX_RETENTION_DAYS}, or null to keep history indefinitely"
+                )));
+            }
+        }
+        let preview = self.preview(p.retention_days, now)?;
+        if preview.hours > 0 && !confirm {
+            return Err(HistoryError::ConfirmRequired(preview));
+        }
+        self.catalog.set_policy(&p)?;
+        self.wake.notify_one();
+        Ok(p)
+    }
+
+    /// Archive the complete hours still in the local window now.
+    pub async fn backfill(&self, store: &dyn Store, now: i64) -> Result<HistoryJob, HistoryError> {
+        let Some(active) = self.catalog.active()? else {
+            return Err(HistoryError::Conflict(
+                "no_destination",
+                "connect and turn on a destination first".into(),
+            ));
+        };
+        if let Some(j) = self
+            .catalog
+            .open_jobs()?
+            .into_iter()
+            .find(|j| j.kind == JobKind::Backfill)
+        {
+            return self.job(j.id);
+        }
+        let n = self.backfill_candidates(store, now).await?.len() as u64;
+        if n == 0 {
+            return Err(HistoryError::Conflict(
+                "nothing_to_backfill",
+                "every complete hour in the local window is archived".into(),
+            ));
+        }
+        let id = self
+            .catalog
+            .add_job(JobKind::Backfill, Some(active.id), None, n, now)?;
+        self.wake.notify_one();
+        self.job(id)
+    }
+
+    /// Complete local hours (ended before `now`) the active destination
+    /// doesn't hold yet. Empty without an active destination.
+    pub async fn backfill_candidates(
+        &self,
+        store: &dyn Store,
+        now: i64,
+    ) -> anyhow::Result<Vec<i64>> {
+        let Some(active) = self.catalog.active()? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for h in store.hours().await? {
+            if (h + 1) * HOUR <= now && self.catalog.hour_of(active.id, h)?.is_none() {
+                out.push(h);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Hours `from` holds that `to` doesn't, oldest first.
+    pub fn copy_remaining(&self, from: i64, to: i64) -> anyhow::Result<Vec<HourRecord>> {
+        let mut out = Vec::new();
+        for h in self.catalog.hours_of(from)? {
+            if self.catalog.hour_of(to, h.hour)?.is_none() {
+                out.push(h);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn cancel_job(&self, id: i64, now: i64) -> Result<HistoryJob, HistoryError> {
+        let mut j = self.catalog.job(id)?.ok_or(HistoryError::NotFound)?;
+        if !j.state.open() {
+            return Err(HistoryError::Conflict(
+                "finished",
+                "this job has already finished".into(),
+            ));
+        }
+        j.state = JobState::Cancelled;
+        j.updated_at = now;
+        self.catalog.save_job(&j)?;
+        if j.kind == JobKind::Delete {
+            if let Some(d) = j.destination_id {
+                // What is left stays, read-only and searchable.
+                self.catalog.set_removing(d, false)?;
+            }
+        }
+        self.job(id)
+    }
+
+    pub fn retry_job(&self, id: i64, now: i64) -> Result<HistoryJob, HistoryError> {
+        let mut j = self.catalog.job(id)?.ok_or(HistoryError::NotFound)?;
+        if matches!(j.state, JobState::Done | JobState::Cancelled) {
+            return Err(HistoryError::Conflict(
+                "finished",
+                "this job has already finished".into(),
+            ));
+        }
+        j.state = JobState::Running;
+        j.next_retry = None;
+        j.updated_at = now;
+        self.catalog.save_job(&j)?;
+        if let (JobKind::Delete, Some(d)) = (j.kind, j.destination_id) {
+            if let Some(row) = self.catalog.destination(d)? {
+                self.catalog.set_cleanup(
+                    d,
+                    row.cleanup_error.as_deref(),
+                    None,
+                    row.cleanup_attempts,
+                )?;
+            }
+        }
+        self.wake.notify_one();
+        self.job(id)
+    }
+
+    pub(crate) async fn write_instance(
         &self,
         remote: &Remote,
         d: &DestinationRow,
@@ -711,6 +1321,41 @@ impl History {
             .put(
                 &ObjPath::from(remote::instance_key(&d.prefix)),
                 PutPayload::from(serde_json::to_vec_pretty(&body)?),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// `<prefix>v1/manifest/<hour>.json` for an archived hour.
+    pub(crate) async fn put_manifest(
+        &self,
+        remote: &Remote,
+        d: &DestinationRow,
+        rec: &HourRecord,
+        now: i64,
+    ) -> anyhow::Result<()> {
+        let manifest = serde_json::json!({
+            "schema": 1,
+            "format": "sqlite",
+            "compression": "zstd",
+            "instance_id": self.catalog.instance_id()?,
+            "hour": rec.hour,
+            "start": chrono::DateTime::from_timestamp_millis(rec.hour * HOUR).map(|t| t.to_rfc3339()),
+            "key": rec.key,
+            "lines": rec.lines,
+            "bytes_raw": rec.bytes_raw,
+            "bytes_stored": rec.bytes_stored,
+            "sources": rec.sources,
+            "min_ts": rec.min_ts,
+            "max_ts": rec.max_ts,
+            "sha256": rec.sha256,
+            "created_at": now,
+            "redaction": "lines were sanitized before storage (credentials [REDACTED])",
+        });
+        remote
+            .put(
+                &ObjPath::from(remote::manifest_key(&d.prefix, rec.hour)),
+                PutPayload::from(serde_json::to_vec_pretty(&manifest)?),
             )
             .await?;
         Ok(())
@@ -741,6 +1386,13 @@ impl History {
             let _ = std::fs::remove_file(&file);
             return Ok(None);
         }
+        // Backfilled earlier and unchanged since: nothing to upload.
+        if let Some(prev) = self.catalog.hour_of(d.id, hour)? {
+            if prev.lines == stats.lines && prev.bytes_raw == stats.bytes_raw {
+                let _ = std::fs::remove_file(&file);
+                return Ok(Some(prev));
+            }
+        }
         let f2 = file.clone();
         let (zst, sha) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let raw = std::fs::read(&f2)?;
@@ -768,30 +1420,7 @@ impl History {
             sha256: sha,
             archived_at: now,
         };
-        let manifest = serde_json::json!({
-            "schema": 1,
-            "format": "sqlite",
-            "compression": "zstd",
-            "instance_id": self.catalog.instance_id()?,
-            "hour": hour,
-            "start": chrono::DateTime::from_timestamp_millis(hour * HOUR).map(|t| t.to_rfc3339()),
-            "key": key,
-            "lines": rec.lines,
-            "bytes_raw": rec.bytes_raw,
-            "bytes_stored": rec.bytes_stored,
-            "sources": rec.sources,
-            "min_ts": rec.min_ts,
-            "max_ts": rec.max_ts,
-            "sha256": rec.sha256,
-            "created_at": now,
-            "redaction": "lines were sanitized before storage (credentials [REDACTED])",
-        });
-        remote
-            .put(
-                &ObjPath::from(remote::manifest_key(&d.prefix, hour)),
-                PutPayload::from(serde_json::to_vec_pretty(&manifest)?),
-            )
-            .await?;
+        self.put_manifest(remote, d, &rec, now).await?;
         let head = remote.head(&ObjPath::from(key.clone())).await?;
         if head.size != size {
             anyhow::bail!("uploaded {key} is {} bytes, expected {size}", head.size);
@@ -824,8 +1453,43 @@ impl History {
         };
         if expiring.is_empty() {
             self.set_waiting(0, system);
+            system.set_history_issue_of(IssueKind::HistoryAtCapacity, None);
             return Pass::default();
         }
+        // Full, and the policy says stop: hours wait on local disk.
+        if let Some((cap, _)) = self.capacity(&d) {
+            let used = self.catalog.held(d.id).map(|h| h.bytes_stored).unwrap_or(0);
+            let stop = self
+                .catalog
+                .policy()
+                .map(|p| p.at_capacity == AtCapacity::Stop)
+                .unwrap_or(false);
+            if stop && used >= cap {
+                let n = expiring.len() as u64;
+                self.runtime.lock().unwrap().waiting = n;
+                system.set_history_issue_of(
+                    IssueKind::HistoryAtCapacity,
+                    Some(Issue {
+                        kind: IssueKind::HistoryAtCapacity,
+                        severity: Severity::Warn,
+                        title: format!("Retained history full: {} holds its capacity", d.name),
+                        detail: format!(
+                            "{} of {} · {n} hour{} waiting on local disk · raise the capacity, shorten history or switch to evict oldest",
+                            crate::history::fmt_bytes(used),
+                            crate::history::fmt_bytes(cap),
+                            if n == 1 { "" } else { "s" },
+                        ),
+                    }),
+                );
+                return Pass {
+                    hold: true,
+                    waiting: expiring,
+                    at_capacity: true,
+                    ..Default::default()
+                };
+            }
+        }
+        system.set_history_issue_of(IssueKind::HistoryAtCapacity, None);
         let due = {
             let rt = self.runtime.lock().unwrap();
             rt.unavailable
@@ -957,7 +1621,9 @@ impl History {
                 continue;
             }
             let expiring = (h + 1) * HOUR <= cutoff;
-            let reason = if waiting.contains(&h) {
+            let reason = if waiting.contains(&h) && pass.at_capacity {
+                GapReason::AtCapacity
+            } else if waiting.contains(&h) {
                 GapReason::DestinationUnavailable
             } else if !active && expiring {
                 GapReason::NoDestination

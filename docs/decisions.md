@@ -4,6 +4,18 @@ Technical choices made while building quiet, newest slice first. Each one
 stands unless Kwaame pushes back. The product-level log lives with the
 project notes; this file records what the code does and why.
 
+## Retained history, 5b · retention policy (2026-11-23)
+
+- **A background worker, separate from the retention job.** `history/jobs.rs` runs a bounded step (32 object operations) every 5 s, at once when woken (a job added, a policy changed) and straight on while there is work: history retention first, then eviction, then jobs oldest first. Archiving stays in the retention job (5a), which must decide before it drops a local hour.
+- **Jobs re-derive their work from the catalog.** `history_jobs` keeps kind, state, counts and backoff only. Backfill = complete local hours the active destination lacks; copy = hours the source holds and the target doesn't; delete = hours the destination still holds. A catalog row is written after the object is checked, so a restart mid-job just resumes; nothing is tracked per item.
+- **History retention and eviction are continuous, not jobs.** They are recomputed each step from the policy and the catalog (`expired_hours` in the status is their progress), so lengthening the window again simply stops them. Shortening needs `confirm` with a preview (`409 confirm_required`).
+- **Defaults: keep indefinitely, evict oldest at capacity.** Nothing archived is deleted until an owner picks a window; capacity is opt-in (owner-set, or the Garage bucket quota for `garage-local`), so evict only acts on a limit someone chose. Eviction never deletes the newest hour, so a capacity smaller than one hour can't loop.
+- **Refused vs transient.** `PermissionDenied` / `Unauthenticated`, or AccessDenied / object lock / 403 / Forbidden in the message → refused: hours marked `cleanup_blocked`, banner, backoff 5 min doubling to 6 h. Anything else backs off from 30 s to 15 min without marking hours. The backoff lives on the destination row, so it survives restarts.
+- **Copy server-side only when it can be.** Same kind, endpoint, bucket, region and access key → `copy`; otherwise download → upload. Each copied hour gets a fresh manifest pointing at its new key. A source object that is gone is skipped and its catalog row dropped.
+- **Backfilled hours aren't uploaded twice.** When an hour expires, `archive_hour` builds its segment, and if the destination already holds that hour with the same line and byte counts, it keeps the existing object.
+- **History issues are one per kind** (`history_unavailable`, `history_at_capacity`, `history_cleanup_blocked`) in `SystemState`, so they show and clear independently.
+- The Settings screens follow the design doc and still need comparing with the Paper boards "v1.1 storage & retention".
+
 ## Retained history, 5a · store and connectors (2026-11-23)
 
 Design agreed in `docs/v0.1.1-storage-design.md`: local SQLite stays the default and works alone; retained history is optional, in Garage next to quiet or a bucket the owner brings.
@@ -15,7 +27,7 @@ Design agreed in `docs/v0.1.1-storage-design.md`: local SQLite stays the default
 - **Archive in the retention job, not a separate worker.** Oldest first, one hour at a time; HEAD checks the uploaded size; the hour is dropped only after the catalog row is written. A failure stops the pass and holds the rest (`Retention::hold_hours`: the instance window waits, per-source windows and the cap still run). Backoff 30 s doubling to 15 min, shown in a `history_unavailable` system issue.
 - **Gaps are computed, not guessed.** The job lists stored hours before and after the sweep; an hour that disappeared without a catalog row is a gap, with its reason from what the pass knew (waiting → `destination_unavailable`, expiring with nothing active → `no_destination`, else `disk_cap`). Nothing is recorded before history was first turned on.
 - **Garage bootstrap through the v1 admin API** (`/v1/status`, `/v1/layout`, `/v1/layout/apply`, `/v1/bucket`, `/v1/key`, `/v1/bucket/allow`), pinned to `dxflrs/garage:v1.1.0`, in an overlay compose file so the default stack is unchanged. Checked against a real Garage 1.1: layout, bucket, key, Verify, then two hours archived when the window was shortened.
-- **Not in 5a:** history retention, capacity, copy history, deleting a destination's data (both answer 501 `not_yet`), multipart uploads for very large hours, `quiet storage reindex`, and searching history (5c). The Settings screens follow the design doc and still need comparing with the Paper boards "v1.1 storage & retention".
+- **Not in 5a:** history retention, capacity, copy history, deleting a destination's data (5b, built), multipart uploads for very large hours, `quiet storage reindex`, and searching history (5c). The Settings screens follow the design doc and still need comparing with the Paper boards "v1.1 storage & retention".
 
 ## Docker source identity, d-docker-identity (2026-10-23)
 

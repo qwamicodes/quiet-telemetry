@@ -52,14 +52,22 @@ Every `/api` route needs a session cookie except the public auth routes, and eve
 
 Secrets are write-only: responses carry `access_key_preview`, never the secret.
 
-- `GET /api/storage/history` → `{ enabled, enabled_at, instance_id, active, destinations, gaps: [{ hour, reason, at }] (newest 100), gap_hours, waiting_hours }`. `reason`: `no_destination` · `destination_unavailable` · `disk_cap` · `excluded`.
-- `GET /api/storage/destinations` → `{ destinations: [{ id, name, kind, endpoint, region, bucket, prefix, path_style, access_key_preview, active, state, verified_at, last_verify, hours, lines, bytes_stored, first, last, error, next_retry, created_at }] }`. `kind`: `garage` · `r2` · `s3` · `s3_compatible`; `state`: `ok` · `unavailable` · `read_only`.
+- `GET /api/storage/history` → `{ enabled, enabled_at, instance_id, active, destinations, gaps: [{ hour, reason, at }] (newest 100), gap_hours, waiting_hours, policy, retained_from, expired_hours, expired_bytes, backfill_hours, jobs (newest 20) }`. `reason`: `no_destination` · `destination_unavailable` · `disk_cap` · `excluded` · `at_capacity`. `retained_from`: archived hours older than this are deleted (`null`: kept indefinitely); `expired_*`: hours past it still to delete; `backfill_hours`: complete local hours the active destination doesn't hold. A job: `{ id, kind: backfill|copy|delete, state: running|blocked|done|failed|cancelled, destination_id, destination, source_id, source, total, done, bytes, error, next_retry, created_at, updated_at }`.
+- `GET /api/storage/destinations` → `{ destinations: [{ id, name, kind, endpoint, region, bucket, prefix, path_style, access_key_preview, active, state, verified_at, last_verify, hours, lines, bytes_stored, first, last, error, next_retry, created_at, capacity_bytes, capacity_source: owner|garage|null, at_capacity, removing, cleanup_error, cleanup_retry_at, cleanup_blocked_hours }] }`. `kind`: `garage` · `r2` · `s3` · `s3_compatible`; `state`: `ok` · `unavailable` · `read_only`.
+- `GET /api/settings/history` → `{ retention_days: number | null, at_capacity: "evict" | "stop" }` (defaults: `null` = indefinitely, `evict`).
+- `POST /api/settings/history/preview {retention_days}` → `{ retention_days, before, hours, lines, bytes, destinations: [{ id, name, hours, bytes }] }`: what that window would delete now.
 - Owner only:
   - `POST /api/storage/destinations {name, kind, endpoint?, region?, bucket, prefix?, path_style?, access_key_id, secret_access_key, activate?}` → `201 { destination, verify }`. Saved even when Verify fails; made active only when `activate` and Verify passed. 409 `name_taken`.
   - `PATCH /api/storage/destinations/:id {…same fields, all optional}` (a blank secret keeps the saved one) → `{ destination, verify }`
   - `POST /api/storage/destinations/:id/verify` → `{ ok, cleanup, steps: [{ step: write|read|list|delete, ok, error? }], at }`
-  - `POST /api/storage/destinations/:id/activate {copy_history?}` → the destination; 409 `verify_failed`; `copy_history: true` → 501 `not_yet` (Phase 5b)
-  - `DELETE /api/storage/destinations/:id {delete_history?}` → 204; keeps the objects in the bucket; 409 `active` for the active one; `delete_history: true` → 501 `not_yet` (Phase 5b)
+  - `POST /api/storage/destinations/:id/activate {copy_history?}` → the destination; 409 `verify_failed` · `removing`. `copy_history: true` starts a `copy` job from the previously active destination (both stay searchable until it finishes).
+  - `DELETE /api/storage/destinations/:id {delete_history?}` → 204, keeping the objects in the bucket; with `delete_history: true` → `202 { job }`: a `delete` job deletes its hours, then forgets it (asking again returns the running job). 409 `active` for the active one (make another active, or turn history off first).
+  - `PUT /api/storage/destinations/:id/capacity {capacity_bytes: number | null}` → the destination (at least 1 MB; `null` clears it). Without one, `garage-local` uses its Garage bucket quota.
+  - `POST /api/storage/destinations/:id/retry-cleanup` → the destination: try refused deletes again now.
+  - `PUT /api/settings/history {retention_days, at_capacity?, confirm?}` → the policy. 400 `invalid` outside 1–36 500 days. When the new window deletes archived hours and `confirm` isn't `true`: `409 { error, code: "confirm_required", preview }`.
+  - `POST /api/storage/history/backfill` → `202` the `backfill` job (409 `no_destination` · `nothing_to_backfill`; asking again returns the running job).
+  - `POST /api/storage/history/off` → 204: no destination receives new hours; what is archived stays.
+  - `POST /api/storage/jobs/:id/cancel` · `POST /api/storage/jobs/:id/retry` → the job (409 `finished`). Cancelling a delete keeps what is left, read only.
 
 ## Source groups
 
