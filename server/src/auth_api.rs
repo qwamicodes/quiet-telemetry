@@ -12,7 +12,7 @@
 //! Session (any role):
 //!   POST   /api/auth/logout
 //!   GET    /api/account · PATCH /api/account { name, email, password? }
-//!   POST   /api/account/password     { current, password } → other sessions signed out
+//!   POST   /api/account/password     { current, password } → { user }; other sessions stay signed in
 //!   GET    /api/account/sessions · DELETE /api/account/sessions/:id
 //!   POST   /api/account/sessions/sign-out-others
 //!   GET    /api/members              members (+ pending invites for owners)
