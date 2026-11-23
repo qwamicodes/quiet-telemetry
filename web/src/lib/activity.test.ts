@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { LogLine } from '@/gen'
+import type { CorrId, LogLine } from '@/gen'
 import { activityCounts, buildActivity, type JobRow } from '@/lib/activity'
 
 let id = 0
@@ -39,7 +39,7 @@ const fail = (attempt: number, extra: Record<string, unknown> = {}) =>
   )
 const ok = (attempt: number) => ev('worker', { ...job, attempt, duration_ms: 200 })
 
-const jobOf = (lines: LogLine[], opened = { key: 'request_id' as const, value: 'req_1' }) =>
+const jobOf = (lines: LogLine[], opened: CorrId = { key: 'request_id', value: 'req_1' }) =>
   buildActivity(lines, opened).main.find((r): r is JobRow => r.kind === 'job') as JobRow
 
 describe('buildActivity (v0.1.1-04.x)', () => {
@@ -114,5 +114,22 @@ describe('buildActivity (v0.1.1-04.x)', () => {
     expect(j.attempts.map((x) => x.title)).toEqual(['picked_up', 'Attempt 0', 'moved_to_failed'])
     expect(j.state).toBe('failed')
     expect(a.other.map((o) => o.title)).toEqual(['tick'])
+  })
+
+  it('Queued only with queue lifecycle evidence, and a child reads jobId · queue · attempts (04.3)', () => {
+    const waiting = ev('inventory', {
+      flow: 'reserve_stock',
+      queue: 'inventory',
+      job_id: 'stock-1182',
+      parent_job_id: 'payout-88-1300',
+      phase: 'waiting',
+    })
+    expect(jobOf([waiting], { key: 'job_id', value: 'stock-1182' })).toMatchObject({ state: 'queued', label: 'Queued' })
+    // An event without a lifecycle step stays unknown.
+    const silent = ev('inventory', { flow: 'reserve_stock', queue: 'inventory', job_id: 'stock-9' })
+    expect(jobOf([silent], { key: 'job_id', value: 'stock-9' }).state).toBe('not_observed')
+    // Once an attempt runs, it is no longer queued.
+    const ran = ev('inventory', { ...waiting.fields, phase: undefined, attempt: 1, duration_ms: 90 })
+    expect(jobOf([waiting, ran], { key: 'job_id', value: 'stock-1182' }).state).toBe('completed')
   })
 })
