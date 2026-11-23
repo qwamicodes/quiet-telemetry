@@ -358,6 +358,16 @@ impl Accounts {
                  used INTEGER,
                  used_by INTEGER,
                  revoked INTEGER);
+             CREATE TABLE IF NOT EXISTS whats_new_releases (
+                 release TEXT PRIMARY KEY,
+                 since INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS whats_new_seen (
+                 user_id INTEGER NOT NULL,
+                 release TEXT NOT NULL,
+                 seen TEXT NOT NULL,
+                 banner_dismissed INTEGER NOT NULL,
+                 updated INTEGER NOT NULL,
+                 PRIMARY KEY (user_id, release));
              CREATE TABLE IF NOT EXISTS password_resets (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  hash TEXT NOT NULL UNIQUE,
@@ -372,6 +382,60 @@ impl Accounts {
 
     pub fn memory() -> Self {
         Accounts::open(None).expect("in-memory sqlite")
+    }
+
+    /// When this instance first ran a build with `release`'s What's new list
+    /// (recorded on the first call, then kept).
+    pub fn whats_new_since(&self, release: &str, now: i64) -> anyhow::Result<i64> {
+        let db = self.db();
+        db.execute(
+            "INSERT OR IGNORE INTO whats_new_releases (release, since) VALUES (?1, ?2)",
+            params![release, now],
+        )?;
+        Ok(db.query_row(
+            "SELECT since FROM whats_new_releases WHERE release = ?1",
+            params![release],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// What `user_id` has seen of `release`: item ids, and whether the
+    /// one-time banner was dismissed.
+    pub fn whats_new_seen(
+        &self,
+        user_id: i64,
+        release: &str,
+    ) -> anyhow::Result<(Vec<String>, bool)> {
+        let row: Option<(String, bool)> = self
+            .db()
+            .query_row(
+                "SELECT seen, banner_dismissed FROM whats_new_seen WHERE user_id = ?1 AND release = ?2",
+                params![user_id, release],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(match row {
+            Some((seen, banner)) => (serde_json::from_str(&seen).unwrap_or_default(), banner),
+            None => (Vec::new(), false),
+        })
+    }
+
+    pub fn set_whats_new_seen(
+        &self,
+        user_id: i64,
+        release: &str,
+        seen: &[String],
+        banner_dismissed: bool,
+        now: i64,
+    ) -> anyhow::Result<()> {
+        self.db().execute(
+            "INSERT INTO whats_new_seen (user_id, release, seen, banner_dismissed, updated)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (user_id, release) DO UPDATE SET
+                 seen = excluded.seen, banner_dismissed = excluded.banner_dismissed, updated = excluded.updated",
+            params![user_id, release, serde_json::to_string(seen)?, banner_dismissed, now],
+        )?;
+        Ok(())
     }
 
     fn db(&self) -> std::sync::MutexGuard<'_, Connection> {

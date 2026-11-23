@@ -59,6 +59,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     };
     let pipeline = Pipeline::with_settings(store.clone(), Hub::new(), settings.clone());
     pipeline.restore().await?;
+    crate::format::warm(&pipeline).await;
 
     // Ingest tokens live next to the lines (same quiet.db), or in memory.
     let tokens_path = (args.store == StoreKind::Sqlite).then(|| args.data_dir.join("quiet.db"));
@@ -93,6 +94,12 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let accounts_path = args.data_dir.join("quiet.db");
     let accounts =
         Arc::new(tokio::task::spawn_blocking(move || Accounts::open(Some(&accounts_path))).await??);
+    // What's new: the first start of a build with this release's list. Accounts
+    // made before it see the markers (board 00.4).
+    accounts.whats_new_since(
+        crate::whats_new::RELEASE,
+        chrono::Utc::now().timestamp_millis(),
+    )?;
     let auth = AuthConfig {
         mode: args.auth,
         cookie_secure: args.cookie_secure,

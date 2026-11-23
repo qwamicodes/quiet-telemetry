@@ -70,6 +70,7 @@ import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { useRates } from '@/lib/use-rates'
 import { cn } from '@/lib/utils'
+import { useSeenOnVisit } from '@/lib/whats-new'
 
 /** A log error share at or above this is drawn red in the LOG ERRORS column. */
 const HIGH_ERRORS = 0.05
@@ -214,6 +215,7 @@ const fmtPct = (v: number) => (v === 0 ? '0%' : v < 0.1 ? `${(v * 100).toFixed(1
 
 /** `/sources` — everything that sends lines: receiver kind, rate, last line. */
 export function SourcesPage() {
+  useSeenOnVisit('sources')
   const sourcesQ = useSources()
   const sources = sourcesQ.data
   const health = useHealth().data

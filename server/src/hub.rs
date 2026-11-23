@@ -99,6 +99,13 @@ pub struct SourceMeta {
     pub auto_group_kind: Option<GroupKind>,
     pub lines: u64,
     pub last_ts: Option<i64>,
+    /// Arrival of the newest v0.1.0 / v0.1.1 record (see `format.rs`).
+    #[serde(skip)]
+    #[ts(skip)]
+    pub last_old_format: Option<i64>,
+    #[serde(skip)]
+    #[ts(skip)]
+    pub last_new_format: Option<i64>,
     /// The id key its newest line with an id showed on the row
     /// (`request_id`, `job_id`); ⌘K source rows show it (03.9, 08.1).
     /// Since the server started.
@@ -139,9 +146,15 @@ impl Source {
         let g = crate::grouping::current().group_of(kind, &meta.labels);
         meta.group = g.as_ref().map(|(name, _)| name.clone());
         meta.group_kind = g.map(|(_, k)| k);
+        let format = crate::format::tag(
+            meta.last_old_format,
+            meta.last_new_format,
+            chrono::Utc::now().timestamp_millis(),
+        );
         SourceInfo {
             name: self.name.clone(),
             kind,
+            format,
             meta,
             display_name: None,
             hidden: false,
@@ -154,6 +167,11 @@ impl Source {
 pub struct SourceInfo {
     pub name: String,
     pub kind: SourceKind,
+    /// The logging contract its recent records follow: `v0.1.0` while an
+    /// old-format record arrived in the last 24 h (board 00.3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub format: Option<crate::format::LogFormat>,
     #[serde(flatten)]
     pub meta: SourceMeta,
     /// From its settings: shown instead of `name` (stored lines keep `name`).
@@ -237,6 +255,15 @@ impl Hub {
             }
             m.lines += 1;
             m.last_ts = Some(m.last_ts.map_or(line.ts, |t| t.max(line.ts)));
+            match crate::format::classify(line.fields.as_ref()) {
+                Some(crate::format::LogFormat::V010) => {
+                    m.last_old_format = m.last_old_format.max(Some(line.received))
+                }
+                Some(crate::format::LogFormat::V011) => {
+                    m.last_new_format = m.last_new_format.max(Some(line.received))
+                }
+                None => {}
+            }
             if let Some(id) = &line.display_id {
                 let key = id.key.as_str();
                 if m.id_key.as_deref() != Some(key) {

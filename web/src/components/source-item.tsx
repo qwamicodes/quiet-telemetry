@@ -61,8 +61,18 @@ export function SourceItem({
       >
         <StatusDot status={status} />
         <span className="flex min-w-0 flex-1 flex-col leading-tight">
-          <span ref={nameRef} className="truncate text-[13px]">
-            {label}
+          <span className="flex min-w-0 items-baseline gap-1">
+            <span ref={nameRef} className="truncate text-[13px]">
+              {label}
+            </span>
+            {source.format === 'v0.1.0' && (
+              <span
+                className="shrink-0 font-mono text-[11px] text-status-warn"
+                title="Still writes the v0.1.0 log format · Sources → Upgrade"
+              >
+                · v0.1.0
+              </span>
+            )}
           </span>
           {!nested && (
             <span className="truncate font-mono text-[11px] text-muted-foreground">{kindLabel(source.kind)}</span>

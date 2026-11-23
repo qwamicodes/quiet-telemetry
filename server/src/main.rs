@@ -8,6 +8,7 @@ mod export;
 mod export_jobs;
 mod flow;
 mod flow_api;
+mod format;
 mod grouping;
 mod hub;
 mod idpolicy;
@@ -32,6 +33,7 @@ mod system;
 mod tokens;
 mod tokens_api;
 mod web;
+mod whats_new;
 
 #[cfg(test)]
 mod bindings;

@@ -35,12 +35,14 @@ import { searchResponse } from '@/lib/schemas'
 import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { cn } from '@/lib/utils'
+import { useSeenOnVisit } from '@/lib/whats-new'
 
 const flowRoute = getRouteApi('/flow/$id')
 const lineRoute = getRouteApi('/line/$lineId')
 
 /** `/flow/$id`: every line sharing this id, stitched across ids. */
 export function FlowPage() {
+  useSeenOnVisit('flow')
   const { id } = flowRoute.useParams()
   const { line, card } = flowRoute.useSearch()
   return <FlowScreen target={{ id }} selectedLine={line} view={card} />

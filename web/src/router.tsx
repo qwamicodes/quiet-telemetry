@@ -43,6 +43,7 @@ import {
   SettingsTokens,
 } from '@/routes/settings'
 import { SourceDetailPage } from '@/routes/source-detail'
+import { SourceUpgradePage } from '@/routes/source-upgrade'
 import { SourcesPage } from '@/routes/sources'
 import { StreamPage } from '@/routes/stream'
 
@@ -169,6 +170,14 @@ export const sourceDetailRoute = createRoute({
   errorComponent: BrokenLink,
 })
 
+const sourceUpgradeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sources/$name/upgrade',
+  params: { parse: (p) => sourceParams.parse(p), stringify: ({ name }) => ({ name }) },
+  component: SourceUpgradePage,
+  errorComponent: BrokenLink,
+})
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
@@ -234,6 +243,7 @@ export const routeTree = rootRoute.addChildren([
   guideRoute,
   sourcesRoute,
   sourceDetailRoute,
+  sourceUpgradeRoute,
   settingsRoute.addChildren([
     settingsIndexRoute,
     settingsAccountRoute,
