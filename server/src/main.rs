@@ -18,6 +18,7 @@ mod normalize;
 mod pipe;
 mod pipeline;
 mod receiver;
+mod redact;
 mod retention;
 mod search;
 mod search_api;
