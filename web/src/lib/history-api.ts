@@ -58,6 +58,7 @@ export const destination = z.object({
   bytes_stored: z.number(),
   first: z.number().nullable(),
   last: z.number().nullable(),
+  last_upload: z.number().nullable().default(null),
   error: z.string().nullable(),
   next_retry: z.number().nullable(),
   created_at: z.number(),
@@ -171,6 +172,14 @@ export function useCreateDestination() {
   return useMutation({
     mutationFn: (n: NewDestination) => fetchJson('/api/storage/destinations', saved, put(n, 'POST')),
     onSuccess: refresh,
+  })
+}
+
+/** Test a connection without saving it (v1.1-05/06). */
+export function useTestDestination() {
+  return useMutation({
+    mutationFn: ({ id, ...n }: NewDestination & { id?: number }) =>
+      fetchJson(`/api/storage/destinations/test${id ? `?id=${id}` : ''}`, verifyResult, put(n, 'POST')),
   })
 }
 

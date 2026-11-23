@@ -4,7 +4,9 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   About,
+  Destination,
   Health,
+  HistoryStatus,
   LogLine,
   MuteRule,
   MuteStats,
@@ -15,6 +17,7 @@ import type {
   StorageReport,
   SystemStatus,
   User,
+  VerifyResult,
 } from '@/gen'
 import { makeQueryClient, Providers } from '@/providers'
 import { makeRouter } from '@/router'
@@ -88,6 +91,95 @@ const rule = (over: Partial<MuteRule>): MuteRule => ({
   origin: 'hover',
   ...over,
 })
+
+const dest = (over: Partial<Destination>): Destination => ({
+  id: 1,
+  name: 'garage-local',
+  kind: 'garage',
+  endpoint: 'http://garage:3900',
+  region: 'garage',
+  bucket: 'quiet-history',
+  prefix: 'quiet/',
+  path_style: true,
+  access_key_preview: 'GK12••••3456',
+  active: true,
+  state: 'ok',
+  verified_at: NOW - 60_000,
+  last_verify: null,
+  hours: 300,
+  lines: 1_000_000,
+  bytes_stored: 23_800_000_000,
+  first: NOW - 13 * 24 * H,
+  last: NOW - 2 * H,
+  last_upload: NOW - 4_000,
+  error: null,
+  next_retry: null,
+  created_at: 0,
+  capacity_bytes: 100_000_000_000,
+  capacity_source: 'policy',
+  at_capacity: false,
+  removing: false,
+  cleanup_error: null,
+  cleanup_retry_at: null,
+  cleanup_blocked_hours: 0,
+  ...over,
+})
+
+let history: HistoryStatus
+let testResult: VerifyResult
+const freshHistory = () => {
+  history = {
+    enabled: true,
+    enabled_at: 0,
+    instance_id: 'abc',
+    active: 1,
+    destinations: [
+      dest({}),
+      dest({
+        id: 2,
+        name: 'production-r2',
+        kind: 'r2',
+        endpoint: 'https://acc.r2.cloudflarestorage.com',
+        region: 'auto',
+        bucket: 'quiet-production',
+        active: false,
+        hours: 0,
+        bytes_stored: 0,
+        first: null,
+        last: null,
+        last_upload: null,
+        verified_at: NOW - 120_000,
+        last_verify: { ok: true, cleanup: true, steps: [], at: NOW - 120_000 },
+      }),
+    ],
+    gaps: [],
+    gap_hours: 0,
+    waiting_hours: 0,
+    policy: {
+      retention_days: 30,
+      at_capacity: 'evict',
+      size_limit_bytes: 100_000_000_000,
+      saved_by: 'kwaame',
+      saved_at: NOW - 3_600_000,
+    },
+    retained_from: NOW - 13 * 24 * H,
+    expired_hours: 0,
+    expired_bytes: 0,
+    backfill_hours: 0,
+    jobs: [],
+  }
+  testResult = {
+    ok: false,
+    cleanup: false,
+    at: NOW,
+    steps: [
+      { step: 'list', ok: true, skipped: false },
+      { step: 'write', ok: false, skipped: false, error: 'AccessDenied · Access Denied' },
+      { step: 'read', ok: false, skipped: true, error: 'write failed' },
+      { step: 'delete', ok: false, skipped: true, error: 'no test object created' },
+    ],
+  }
+}
 
 function fresh() {
   sources = [source('legivent-api'), source('traefik', { kind: 'vector' }), source('noisy', { hidden: true })]
@@ -197,6 +289,7 @@ class FakeSocket {
 
 beforeEach(() => {
   fresh()
+  freshHistory()
   backlog = []
   FakeSocket.all = []
   localStorage.clear()
@@ -314,6 +407,44 @@ beforeEach(() => {
         settings.flow_ids = body
         return json(body)
       }
+      if (url === '/api/storage/history') return json(history)
+      if (url.startsWith('/api/storage/destinations/test')) return json(testResult)
+      if (url === '/api/storage/destinations' && method === 'POST') {
+        const d = dest({ ...body, id: 3, active: false, hours: 0, bytes_stored: 0, first: null, last: null })
+        history.destinations.push(d)
+        return json({ destination: d, verify: { ...testResult, ok: true, cleanup: true } }, 201)
+      }
+      if (url.endsWith('/activate')) {
+        const id = Number(url.split('/')[4])
+        for (const d of history.destinations) d.active = d.id === id
+        return json(history.destinations.find((d) => d.id === id))
+      }
+      if (url.endsWith('/verify')) return json({ ...testResult, ok: true, cleanup: true })
+      if (url.startsWith('/api/storage/destinations/') && method === 'DELETE') {
+        const id = Number(url.split('/')[4])
+        history.destinations = history.destinations.filter((d) => d.id !== id)
+        return new Response(null, { status: 204 })
+      }
+      if (url === '/api/settings/history' && method === 'PUT') {
+        if ((body.retention_days ?? 1e9) < (history.policy.retention_days ?? 1e9) && !body.confirm)
+          return json(
+            {
+              error: 'confirm',
+              code: 'confirm_required',
+              preview: {
+                retention_days: body.retention_days,
+                before: NOW - 7 * 24 * H,
+                hours: 144,
+                lines: 9,
+                bytes: 10_900_000_000,
+                destinations: [{ id: 1, name: 'garage-local', hours: 144, bytes: 10_900_000_000 }],
+              },
+            },
+            409,
+          )
+        history.policy = { ...history.policy, ...body, saved_by: 'kwaame', saved_at: NOW }
+        return json(history.policy)
+      }
       if (url === '/api/storage/purge') return json({ lines: 42, source: body.source ?? null })
       if (url === '/api/about') return json(aboutInfo)
       if (url.startsWith('/api/sources/grouping-preview')) {
@@ -382,10 +513,131 @@ function renderAt(path: string, user: User = owner) {
   return { router, client }
 }
 
+describe('Settings → Storage tabs (v1.1-01…29)', () => {
+  it('Overview: stored history in the active connector, its policy, Garage on this host and the local window', async () => {
+    renderAt('/settings/storage')
+    const stored = await screen.findByRole('region', { name: 'Stored history' })
+    expect(within(stored).getByText('23.8 GB')).toBeInTheDocument()
+    expect(within(stored).getByText('of 100 GB history limit')).toBeInTheDocument()
+    expect(within(stored).getByText('Garage · local')).toBeInTheDocument()
+    expect(within(stored).getByText('Up to date')).toBeInTheDocument()
+    expect(within(stored).getByText('30 days · remove oldest history')).toBeInTheDocument()
+    expect(screen.getByText('Local history')).toBeInTheDocument()
+    expect(screen.getByText('Recent local data')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('Overview: an unreachable destination says uploads are delayed and retries on demand', async () => {
+    history.destinations[0] = dest({ state: 'unavailable', error: 'connection refused', next_retry: NOW + 28_000 })
+    history.waiting_hours = 3
+    const user = userEvent.setup()
+    renderAt('/settings/storage')
+    expect(await screen.findByText('History uploads are delayed')).toBeInTheDocument()
+    expect(screen.getByText('Waiting to upload')).toBeInTheDocument()
+    expect(screen.getByText('3 hours')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Retry now' }))
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/storage/destinations/1/verify')).toBe(true))
+  })
+
+  it('Overview: at the size limit with stop adding, new history is not being stored', async () => {
+    history.destinations[0] = dest({ at_capacity: true, bytes_stored: 100_000_000_000 })
+    history.policy.at_capacity = 'stop'
+    renderAt('/settings/storage')
+    expect(await screen.findByText('New history is not being stored')).toBeInTheDocument()
+    expect(screen.getByText('History writes stopped')).toBeInTheDocument()
+    expect(screen.getByText('History gap')).toBeInTheDocument()
+  })
+
+  it('Connectors: the shared policy, each connector, and activating one copies the local window', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings/storage?tab=connectors')
+    expect(await screen.findByText('30 days · 100 GB per connector · remove oldest')).toBeInTheDocument()
+    const list = screen.getByRole('list', { name: 'Connectors' })
+    expect(within(list).getByText('Garage')).toBeInTheDocument()
+    expect(within(list).getByText('production-r2')).toBeInTheDocument()
+    expect(within(list).getByText('Ready')).toBeInTheDocument()
+    await user.click(within(list).getByRole('button', { name: 'Activate' }))
+    expect(await screen.findByText('Activate production-r2?')).toBeInTheDocument()
+    expect(screen.getByText(/Quiet will copy the 24 hours still available locally/)).toBeInTheDocument()
+    expect(screen.getByText(/stays searchable while connected. It is not migrated/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Activate R2' }))
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/storage/destinations/2/activate')).toBe(true))
+  })
+
+  it('Connect R2: test first, a failed write leaves read and delete not run, then save once it passes', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings/storage?tab=connectors&screen=connect&kind=r2')
+    await user.type(await screen.findByRole('textbox', { name: 'Connection name' }), 'production-r2b')
+    await user.type(screen.getByRole('textbox', { name: 'Bucket' }), 'quiet-production')
+    await user.type(screen.getByRole('textbox', { name: 'S3 endpoint' }), 'https://acc.r2.cloudflarestorage.com')
+    await user.type(screen.getByRole('textbox', { name: 'Access Key ID' }), 'AKIA1')
+    await user.type(screen.getByLabelText('Secret Access Key'), 's3cr3t')
+    await user.click(screen.getByRole('button', { name: 'Test connection' }))
+    expect(await screen.findByText('Write permission is missing')).toBeInTheDocument()
+    expect(screen.getByText('1 passed · 1 failed · 2 not run')).toBeInTheDocument()
+    expect(screen.getByText('Not run · write failed')).toBeInTheDocument()
+    expect(screen.getByText('Provider response · AccessDenied')).toBeInTheDocument()
+    // Nothing is saved by a test.
+    expect(calls.some((c) => c.url === '/api/storage/destinations' && c.method === 'POST')).toBe(false)
+    testResult = {
+      ok: true,
+      cleanup: true,
+      at: NOW,
+      steps: (['list', 'write', 'read', 'delete'] as const).map((step) => ({ step, ok: true, skipped: false })),
+    }
+    await user.click(screen.getByRole('button', { name: 'Retry test' }))
+    expect(await screen.findByText('4 of 4 checks passed')).toBeInTheDocument()
+    expect(screen.getByText('Ready to save')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save connector' }))
+    await waitFor(() => {
+      const saved = calls.find((c) => c.url === '/api/storage/destinations' && c.method === 'POST')
+      expect(saved?.body).toMatchObject({ name: 'production-r2b', kind: 'r2', activate: false, access_key_id: 'AKIA1' })
+    })
+  })
+
+  it('Remove: objects are left untouched in the bucket', async () => {
+    history.destinations[0] = dest({ active: false, hours: 300 })
+    history.destinations[1].active = true
+    const user = userEvent.setup()
+    renderAt('/settings/storage?tab=connectors')
+    const list = await screen.findByRole('list', { name: 'Connectors' })
+    await user.click(within(list).getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByText('Remove Garage from Quiet?')).toBeInTheDocument()
+    expect(screen.getByText(/Objects in Garage will be left untouched/)).toBeInTheDocument()
+    expect(screen.getByText('production-r2 will remain the active destination.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove connector' }))
+    await waitFor(() => {
+      const del = calls.find((c) => c.method === 'DELETE')
+      expect(del?.url).toBe('/api/storage/destinations/1')
+      expect(del?.body).toEqual({ delete_history: false })
+    })
+  })
+
+  it('Policy: one policy for every connector; shortening it asks first', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings/storage?tab=policy')
+    expect(await screen.findByText('Applies to every connector')).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: '30 days' })).toHaveAttribute('aria-checked', 'true')
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Size limit per connector' })).toHaveValue('100'))
+    expect(screen.getByText(/Last saved · kwaame/)).toBeInTheDocument()
+    await user.click(screen.getByRole('radio', { name: 'Custom' }))
+    expect(screen.getByRole('textbox', { name: 'Custom duration' })).toBeInTheDocument()
+    await user.click(screen.getByRole('radio', { name: '7 days' }))
+    await user.click(screen.getByRole('button', { name: 'Save policy' }))
+    expect(await screen.findByText('Shorten retention to 7 days?')).toBeInTheDocument()
+    expect(screen.getByText(/about 10.9 GB across 1 connector/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Apply shorter retention' }))
+    await waitFor(() => {
+      const put = calls.filter((c) => c.url === '/api/settings/history').pop()
+      expect(put?.body).toMatchObject({ retention_days: 7, size_limit_bytes: 100_000_000_000, confirm: true })
+    })
+  })
+})
+
 describe('Settings → Storage', () => {
   it('shows usage, partitions and volume; the window toggle saves', async () => {
     const user = userEvent.setup()
-    renderAt('/settings/storage')
+    renderAt('/settings/storage?screen=local')
     expect(await screen.findByText('1.90 GB')).toBeInTheDocument()
     expect(screen.getByText(/SQLite on this host · \/var\/lib\/quiet\/quiet\.db/)).toBeInTheDocument()
     expect(screen.getByRole('img', { name: '3 hourly partitions stored' })).toBeInTheDocument()
@@ -404,7 +656,7 @@ describe('Settings → Storage', () => {
     storage = { ...storage, used: 4.82e9, ratio: 0.964 }
     system = { ...system, disk: { ...system.disk, state: 'full', capped_at: NOW } }
     const user = userEvent.setup()
-    renderAt('/settings/storage')
+    renderAt('/settings/storage?screen=local')
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('Disk is at 96% of the 5 GB cap')
     expect(alert).toHaveTextContent('traefik is 37% of the volume')
@@ -421,7 +673,7 @@ describe('Settings → Storage', () => {
   })
 
   it('members read but cannot change or purge', async () => {
-    renderAt('/settings/storage', member)
+    renderAt('/settings/storage?screen=local', member)
     expect(await screen.findByText(/Only an owner can change/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Purge now/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '24h' })).toBeDisabled()

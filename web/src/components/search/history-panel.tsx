@@ -1,21 +1,30 @@
-import { ArchiveIcon, FileDownIcon, LoaderCircleIcon, SquareIcon } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import type { HistoryCoverage, HistorySearchJob } from '@/gen'
-import { fmtBytes, fmtCount } from '@/lib/format'
+import { Link } from '@tanstack/react-router'
+import { FileDownIcon } from 'lucide-react'
+import { Callout, Card, Dot, Meter, OBtn, PBtn, Tag } from '@/components/settings/storage/ui'
+import type { DestinationCoverage, HistoryCoverage, HistorySearchJob } from '@/gen'
+import { fmtCount, fmtWindow } from '@/lib/format'
 import { fmtDay, fmtDays, gapReasonText, historyExportUrl } from '@/lib/history-search'
-import { cn } from '@/lib/utils'
 
-/**
- * What retained history holds of a search range past the local window
- * (v1.1-19 … 23), and the job searching it: coverage per destination,
- * "No retained history before …", gaps, Search retained history, progress,
- * cancel, and the cancelled / incomplete states.
- */
+// Retained history in Search (v1.1-19, 20, 21, 24, 27): what the range's
+// history holds, the job searching it, and its incomplete / cancelled states.
+
+/** `Garage` for the Garage quiet set up, else the connector's name. */
+const shown = (name: string) => (name === 'garage-local' ? 'Garage' : name)
+
+const range = (d: { first: number | null; last: number | null }) =>
+  d.first != null && d.last != null ? fmtDays(d.first, d.last + 3_600_000) : '–'
+
+/** The locations a history search reads: the local window, then each connector holding hours. */
+function locations(c: HistoryCoverage): DestinationCoverage[] {
+  return c.destinations.filter((d) => d.hours > 0)
+}
+
 export function HistoryPanel({
   coverage,
   job,
   starting,
   error,
+  localWindowMs,
   onStart,
   onCancel,
 }: {
@@ -23,101 +32,198 @@ export function HistoryPanel({
   job: HistorySearchJob | null
   starting: boolean
   error: string | null
+  /** The local window, for `Recent · 24h`. */
+  localWindowMs: number
   onStart: () => void
   onCancel: () => void
 }) {
-  const retrieving = job?.state === 'retrieving'
-  const failed = new Set(job?.failures.map((f) => f.destination) ?? [])
+  const held = locations(coverage)
+  const failed = new Map((job?.failures ?? []).map((f) => [f.destination, f]))
+  const first = held.map((d) => d.first).filter((x): x is number => x != null)
+  const from = first.length ? Math.min(...first) : null
+  const pct = job?.total ? Math.round((job.done / job.total) * 100) : 0
+  const searching = held.filter((d) => !failed.has(d.name)).map((d) => shown(d.name))
+
+  const notes = (
+    <>
+      {coverage.gaps.map((g) => (
+        <li key={g.from}>
+          Not retained {fmtDays(g.from, g.to)}: {gapReasonText(g.reason)}.
+        </li>
+      ))}
+      {coverage.truncated && <li>Searches the newest 168 hours; narrow the range for older ones.</li>}
+      {error && (
+        <li role="alert" className="text-status-err">
+          {error}
+        </li>
+      )}
+    </>
+  )
+
+  if (job?.state === 'retrieving') {
+    return (
+      <section aria-label="Retained history" className="flex flex-col gap-5">
+        <Callout title="Searching stored history" action={<OBtn onClick={onCancel}>Cancel search</OBtn>}>
+          Recent local data {held.length > 1 ? 'is' : 'is'} ready. Quiet is still searching {searching.join(' and ')}{' '}
+          for the selected dates.
+        </Callout>
+        <Card
+          title="Retrieving matching events"
+          aside={
+            <span className="font-mono text-muted-foreground text-xs leading-[18px]" aria-live="polite">
+              {job.done} of {job.total} hours
+            </span>
+          }
+        >
+          <div className="flex flex-col gap-2 p-4">
+            <Meter label="Hours searched" ratio={job.total ? job.done / job.total : 0} />
+            <div className="flex items-center gap-3 font-mono text-muted-foreground text-xs leading-[18px]">
+              <span className="flex-1">
+                {searching.join(', ') || 'Retained history'} · {job.done} of {job.total} hours searched
+              </span>
+              <span>{pct}%</span>
+            </div>
+          </div>
+          <LocationRow name="Recent local data" detail={`Last ${fmtWindow(localWindowMs)} · complete`} tone="ok" />
+          {held.map((d) => (
+            <LocationRow key={d.id} name={shown(d.name)} detail={`${range(d)} · searching`} tone="warn" />
+          ))}
+        </Card>
+        <p className="text-muted-foreground text-xs leading-[18px]">
+          Results update as each location finishes. Cancelling keeps the results found so far and marks them incomplete.
+        </p>
+      </section>
+    )
+  }
+
+  if (job?.state === 'incomplete' && job.failures.length) {
+    const f = job.failures[0]
+    const ok = ['recent local data', ...held.filter((d) => !failed.has(d.name)).map((d) => shown(d.name))]
+    return (
+      <section aria-label="Retained history" className="flex flex-col gap-3">
+        <Callout
+          tone="warn"
+          role="status"
+          title="Results are incomplete"
+          action={<OBtn onClick={onStart}>Retry {shown(f.destination)}</OBtn>}
+        >
+          {job.failures
+            .map((x) => `${shown(x.destination)} could not be searched for ${fmtDays(x.from, x.to)}`)
+            .join('. ')}
+          . Results below cover {ok.join(' and ')} only.
+        </Callout>
+        <div className="flex items-center gap-3">
+          <span className="flex-1" />
+          <Tag tone="warn">
+            {held.length + 1 - job.failures.length} of {held.length + 1} locations searched
+          </Tag>
+        </div>
+        <p className="text-muted-foreground text-xs leading-[18px]">
+          A failed location is not the same as no matches. Older related events may be missing from this flow.
+        </p>
+        <ul className="font-mono text-muted-foreground text-xs leading-[18px]">{notes}</ul>
+      </section>
+    )
+  }
+
+  if (job?.state === 'cancelled') {
+    return (
+      <section aria-label="Retained history" className="flex flex-col gap-3">
+        <Callout title="Search cancelled · results are incomplete" action={<OBtn onClick={onStart}>Run again</OBtn>}>
+          {searching.join(' and ') || 'Retained history'} was only partly searched. Results found before cancellation
+          are kept below.
+        </Callout>
+        <div className="flex items-center gap-3">
+          <span className="flex-1 font-medium text-[13px] leading-[18px]">
+            {fmtCount(job.count)} {job.count === 1 ? 'match' : 'matches'} found before cancellation
+          </span>
+          <Tag tone="warn">Search cancelled</Tag>
+        </div>
+        <p className="text-muted-foreground text-xs leading-[18px]">
+          Run the search again to complete the selected date range. These results cover only the locations and times
+          searched before cancellation.
+        </p>
+      </section>
+    )
+  }
+
+  // Not started, or done: the coverage bar (v1.1-19).
   return (
-    <section
-      aria-label="Retained history"
-      className="flex flex-col gap-2 border bg-card px-3 py-2.5 font-mono text-muted-foreground text-xs"
-    >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <ArchiveIcon className="size-3.5 shrink-0" aria-hidden />
-        <span className="font-medium font-sans text-[13px] text-foreground">Retained history</span>
-        <span>
-          {fmtDays(coverage.from, coverage.to)} · {coverage.archived} of {coverage.hours}{' '}
-          {coverage.hours === 1 ? 'hour' : 'hours'} archived
+    <section aria-label="Retained history" className="flex flex-col gap-2">
+      <div className="flex min-h-11 flex-wrap items-center gap-3 border bg-card px-4 py-2">
+        <Dot tone={held.length ? 'ok' : 'idle'} />
+        <span className="text-[13px] leading-[18px]">
+          {from != null ? `History available · ${fmtDay(from)} — now` : 'No retained history in this range'}
+          {job?.state === 'done' &&
+            ` · ${fmtCount(job.count)} ${job.count === 1 ? 'event' : 'events'} from retained history`}
         </span>
         <span className="flex-1" />
-        {retrieving ? (
-          <>
-            <span className="flex items-center gap-1.5 text-foreground" aria-live="polite">
-              <LoaderCircleIcon className="size-3 animate-spin" aria-hidden />
-              Retrieving {job.done} of {job.total} {job.total === 1 ? 'hour' : 'hours'} · {fmtBytes(job.bytes)}
-            </span>
-            <Button variant="outline" size="xs" onClick={onCancel}>
-              <SquareIcon />
-              Cancel
-            </Button>
-          </>
-        ) : job ? (
-          <>
-            <span className={cn(job.state === 'done' ? 'text-foreground' : 'text-status-warn')} aria-live="polite">
-              {job.state === 'cancelled'
-                ? `Cancelled · ${fmtCount(job.count)} found in ${job.done} of ${job.total} hours kept`
-                : job.state === 'incomplete'
-                  ? `Incomplete · ${fmtCount(job.count)} found · ${job.done - job.failures.reduce((n, f) => n + f.hours, 0)} of ${job.total} hours searched`
-                  : `${fmtCount(job.count)} ${job.count === 1 ? 'event' : 'events'} from retained history · ${job.total} hours searched`}
-            </span>
-            {job.count > 0 && (
-              <Button variant="outline" size="xs" render={<a href={historyExportUrl(job.id, 'ndjson')} download />}>
-                <FileDownIcon />
-                Export
-              </Button>
-            )}
-            {job.state !== 'done' && (
-              <Button variant="outline" size="xs" onClick={onStart}>
-                Search again
-              </Button>
-            )}
-          </>
-        ) : coverage.archived > 0 ? (
-          <Button size="xs" onClick={onStart} disabled={starting}>
-            {starting && <LoaderCircleIcon className="animate-spin" />}
-            Search retained history
-          </Button>
-        ) : null}
-      </div>
-      <ul className="flex flex-col gap-1 pl-5.5">
-        {coverage.destinations.map((d) => (
-          <li key={d.id} className="flex flex-wrap items-center gap-x-2">
-            <span className="text-foreground">{d.name}</span>
-            {d.active && <span className="border px-1 text-[10px]">active</span>}
-            {failed.has(d.name) ? (
-              <span className="text-status-warn">
-                {d.name} not searched
-                {(() => {
-                  const f = job?.failures.find((x) => x.destination === d.name)
-                  return f ? ` · ${fmtDays(f.from, f.to)} · ${f.error}` : ''
-                })()}
-              </span>
-            ) : d.first != null && d.last != null ? (
-              <span>
-                covers {fmtDays(d.first, d.last)} · {d.percent}%
-              </span>
-            ) : (
-              <span>holds nothing in this range</span>
-            )}
-            <span aria-hidden className="relative h-1 w-20 bg-secondary">
-              <span className="absolute inset-y-0 left-0 bg-brand/60" style={{ width: `${d.percent}%` }} />
-            </span>
-          </li>
+        <Tag>Recent · {fmtWindow(localWindowMs)}</Tag>
+        {held.map((d) => (
+          <Tag key={d.id}>
+            {shown(d.name)} · {d.active ? 'active' : 'history'}
+          </Tag>
         ))}
-        {coverage.expired_before != null && <li>No retained history before {fmtDay(coverage.expired_before)}.</li>}
-        {coverage.gaps.map((g) => (
-          <li key={g.from}>
-            Not retained {fmtDays(g.from, g.to)}: {gapReasonText(g.reason)}.
-          </li>
-        ))}
-        {coverage.truncated && <li>Searches the newest 168 hours; narrow the range for older ones.</li>}
-        {error && (
-          <li role="alert" className="text-status-err">
-            {error}
-          </li>
+        {!job && held.length > 0 && !coverage.auto && (
+          <PBtn onClick={onStart} disabled={starting}>
+            {starting ? 'Starting…' : 'Search retained history'}
+          </PBtn>
         )}
-      </ul>
+        {job?.state === 'done' && job.count > 0 && (
+          <OBtn render={<a href={historyExportUrl(job.id, 'ndjson')} download />}>
+            <FileDownIcon />
+            Export
+          </OBtn>
+        )}
+      </div>
+      {(coverage.gaps.length > 0 || coverage.truncated || error || coverage.expired_before != null) && (
+        <ul className="font-mono text-muted-foreground text-xs leading-[18px]">
+          {coverage.expired_before != null && <li>No retained history before {fmtDay(coverage.expired_before)}.</li>}
+          {notes}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function LocationRow({ name, detail, tone }: { name: string; detail: string; tone: 'ok' | 'warn' | 'err' }) {
+  return (
+    <div className="flex items-center gap-3 border-t px-4 py-3">
+      <Dot tone={tone} />
+      <span className="w-[200px] shrink-0 text-xs leading-[18px]">{name}</span>
+      <span className="font-mono text-muted-foreground text-xs leading-[18px]">{detail}</span>
+    </div>
+  )
+}
+
+/** v1.1-24: a range wholly before the oldest retained event. */
+export function OutsideHistory({ since, until, earliest }: { since: number; until: number; earliest: number | null }) {
+  return (
+    <section aria-label="Outside available history" className="flex flex-col gap-5">
+      <div className="flex min-h-11 items-center gap-3 border bg-card px-4 py-2">
+        <span className="flex-1 font-mono text-muted-foreground text-xs leading-[18px]">
+          Selected · {fmtDays(since, until)}
+        </span>
+        <Tag tone="warn">Outside available history</Tag>
+      </div>
+      <div className="flex flex-col gap-4 border bg-card px-8 py-12">
+        <h2 className="font-semibold text-xl leading-6 tracking-tight">This time range has no retained history</h2>
+        <p className="text-[13px] text-muted-foreground leading-5">
+          {earliest != null
+            ? `The earliest available event is ${new Date(earliest).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}. `
+            : ''}
+          Earlier data was not retained or has expired.
+        </p>
+        <div className="flex gap-3">
+          <PBtn render={<Link to="/search" search={(s) => ({ ...s, from: undefined, to: undefined, range: '7d' })} />}>
+            Search available history
+          </PBtn>
+          <OBtn render={<Link to="/settings/storage" />}>Storage settings</OBtn>
+        </div>
+      </div>
+      <p className="text-muted-foreground text-xs leading-[18px]">
+        Increasing retention only preserves data that is still available. It cannot restore expired or evicted history.
+      </p>
     </section>
   )
 }

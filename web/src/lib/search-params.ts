@@ -116,6 +116,19 @@ export const sourceSearch = z.object({
 /** `/guide?tab=&source=` (boards v0.1-11.x). */
 export const guideTab = z.enum(['overview', 'agent', 'canonical', 'ids', 'check'])
 export type GuideTab = z.infer<typeof guideTab>
+/** Settings → Storage (v1.1-01…29): the tab, and a sub-view inside it. */
+export const storageTab = z.enum(['overview', 'connectors', 'policy'])
+export const storageScreen = z.enum(['local', 'add', 'connect', 'details', 'edit'])
+export const storageSearch = z.object({
+  tab: storageTab.optional().catch(undefined),
+  screen: storageScreen.optional().catch(undefined),
+  /** The connector kind being connected (`screen=connect`). */
+  kind: z.enum(['garage', 'r2', 's3', 's3_compatible']).optional().catch(undefined),
+  /** The connector shown or edited (`screen=details|edit`). */
+  id: z.coerce.number().int().positive().optional().catch(undefined),
+})
+export type StorageSearch = z.infer<typeof storageSearch>
+
 export const guideSearch = z.object({
   tab: guideTab.optional().catch(undefined),
   source: z.string().max(300).optional().catch(undefined),

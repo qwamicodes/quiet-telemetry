@@ -41,15 +41,26 @@ const job = (over: Partial<HistorySearchJob>): HistorySearchJob => ({
 })
 const panel = (j: HistorySearchJob | null, on = { start: vi.fn(), cancel: vi.fn() }) =>
   render(
-    <HistoryPanel coverage={coverage} job={j} starting={false} error={null} onStart={on.start} onCancel={on.cancel} />,
+    <HistoryPanel
+      coverage={coverage}
+      job={j}
+      starting={false}
+      localWindowMs={86_400_000}
+      error={null}
+      onStart={on.start}
+      onCancel={on.cancel}
+    />,
   )
 
-describe('HistoryPanel (v1.1-19 … 23)', () => {
-  it('says what each destination covers, where history starts and what was not retained', async () => {
+describe('HistoryPanel (v1.1-19, 20, 21, 27)', () => {
+  it('shows where history is available, each location and what was not retained', async () => {
     const on = { start: vi.fn(), cancel: vi.fn() }
     panel(null, on)
-    expect(screen.getByText('covers 09–21 Nov · 62%')).toBeInTheDocument()
-    expect(screen.getByText('holds nothing in this range')).toBeInTheDocument()
+    expect(screen.getByText('History available · 09 Nov — now')).toBeInTheDocument()
+    expect(screen.getByText('Recent · 24h')).toBeInTheDocument()
+    // Only locations holding hours in the range are listed.
+    expect(screen.getByText('Garage · history')).toBeInTheDocument()
+    expect(screen.queryByText(/production-r2/)).not.toBeInTheDocument()
     expect(screen.getByText('No retained history before 09 Nov.')).toBeInTheDocument()
     expect(screen.getByText(/Not retained 14 Nov: the disk cap dropped it first/)).toBeInTheDocument()
     expect(screen.getByText(/newest 168 hours/)).toBeInTheDocument()
@@ -57,11 +68,15 @@ describe('HistoryPanel (v1.1-19 … 23)', () => {
     expect(on.start).toHaveBeenCalled()
   })
 
-  it('shows progress with cancel, then cancelled, incomplete and done', async () => {
+  it('shows retrieval per location with cancel, then cancelled, incomplete and done', async () => {
     const on = { start: vi.fn(), cancel: vi.fn() }
     const { rerender } = panel(job({}), on)
-    expect(screen.getByText(/Retrieving 3 of 13 hours · 4 MB/)).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByText('Searching stored history')).toBeInTheDocument()
+    expect(screen.getByText('Retrieving matching events')).toBeInTheDocument()
+    expect(screen.getByText('Garage · 3 of 13 hours searched')).toBeInTheDocument()
+    expect(screen.getByText('Last 24h · complete')).toBeInTheDocument()
+    expect(screen.getByText(`${fmtDays(NOV9, NOV9 + 13 * 24 * H + H)} · searching`)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel search' }))
     expect(on.cancel).toHaveBeenCalled()
     const re = (j: HistorySearchJob) =>
       rerender(
@@ -69,13 +84,17 @@ describe('HistoryPanel (v1.1-19 … 23)', () => {
           coverage={coverage}
           job={j}
           starting={false}
+          localWindowMs={86_400_000}
           error={null}
           onStart={on.start}
           onCancel={on.cancel}
         />,
       )
     re(job({ state: 'cancelled', count: 4 }))
-    expect(screen.getByText('Cancelled · 4 found in 3 of 13 hours kept')).toBeInTheDocument()
+    expect(screen.getByText('Search cancelled · results are incomplete')).toBeInTheDocument()
+    expect(screen.getByText('4 matches found before cancellation')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Run again' }))
+    expect(on.start).toHaveBeenCalledTimes(1)
     re(
       job({
         state: 'incomplete',
@@ -86,10 +105,13 @@ describe('HistoryPanel (v1.1-19 … 23)', () => {
         ],
       }),
     )
-    expect(screen.getByText(/Incomplete · 2 found · 3 of 13 hours searched/)).toBeInTheDocument()
-    expect(screen.getByText(/garage-local not searched · 09–21 Nov · connection refused/)).toBeInTheDocument()
+    expect(screen.getByText('Results are incomplete')).toBeInTheDocument()
+    expect(screen.getByText(/Garage could not be searched for 09–21 Nov/)).toBeInTheDocument()
+    expect(screen.getByText('1 of 2 locations searched')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Retry Garage' }))
+    expect(on.start).toHaveBeenCalledTimes(2)
     re(job({ state: 'done', done: 13, count: 1 }))
-    expect(screen.getByText('1 event from retained history · 13 hours searched')).toBeInTheDocument()
+    expect(screen.getByText(/1 event from retained history/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Export' })).toHaveAttribute(
       'href',
       '/api/search/history/hs_1/export?format=ndjson',

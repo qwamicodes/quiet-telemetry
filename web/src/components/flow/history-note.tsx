@@ -1,13 +1,14 @@
-import { ArchiveIcon, LoaderCircleIcon, SquareIcon } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Callout, OBtn, PBtn } from '@/components/settings/storage/ui'
 import type { FlowHistory, HistorySearchJob } from '@/gen'
 import { fmtCount } from '@/lib/format'
 import { fmtDays } from '@/lib/history-search'
 
+const shown = (name: string) => (name === 'garage-local' ? 'Garage' : name)
+
 /**
- * "Related history unavailable" (Phase 5c): the flow may continue in
- * retained history that was not loaded. Searching it adds what it finds to
- * the activity list, tagged with where it came from.
+ * Related history in a flow (v1.1-23, 26): the flow may continue in retained
+ * history that was not loaded. Searching it adds what it finds to the
+ * activity list; a location that fails leaves the flow marked incomplete.
  */
 export function FlowHistoryNote({
   history,
@@ -24,52 +25,73 @@ export function FlowHistoryNote({
   onStart: () => void
   onCancel: () => void
 }) {
+  const err = error && (
+    <span role="alert" className="text-status-err">
+      {' '}
+      {error}
+    </span>
+  )
+  if (job?.state === 'retrieving') {
+    return (
+      <Callout role="status" title="Searching retained history" action={<OBtn onClick={onCancel}>Cancel search</OBtn>}>
+        Retrieving {job.done} of {job.total} {job.total === 1 ? 'hour' : 'hours'} of retained history for this flow’s
+        ids.
+      </Callout>
+    )
+  }
+  if (job?.state === 'incomplete' && job.failures.length) {
+    return (
+      <Callout
+        tone="warn"
+        role="status"
+        title="Related history is incomplete"
+        action={<OBtn onClick={onStart}>Retry</OBtn>}
+      >
+        Some matching events could not be loaded from{' '}
+        {[...new Set(job.failures.map((f) => shown(f.destination)))].join(', ')}. This flow may be missing logs or spans
+        from {job.failures.map((f) => fmtDays(f.from, f.to)).join(', ')}.{err}
+      </Callout>
+    )
+  }
+  if (job?.state === 'cancelled') {
+    return (
+      <Callout
+        role="status"
+        title="Search cancelled · related history is incomplete"
+        action={<OBtn onClick={onStart}>Run again</OBtn>}
+      >
+        {fmtCount(job.count)} related {job.count === 1 ? 'event was' : 'events were'} found before cancellation.
+      </Callout>
+    )
+  }
+  if (job) {
+    return (
+      <Callout
+        role="status"
+        title={
+          job.count === 0
+            ? 'No related events in retained history'
+            : `${fmtCount(job.count)} related ${job.count === 1 ? 'event' : 'events'} from retained history added`
+        }
+      >
+        Searched {fmtDays(history.since, history.until)} in retained history.
+      </Callout>
+    )
+  }
   return (
-    <p
+    <Callout
       role="status"
-      className="flex flex-wrap items-center gap-x-2 gap-y-1 border bg-card px-3 py-2 font-mono text-muted-foreground text-xs"
+      title="Related history unavailable"
+      action={
+        <PBtn onClick={onStart} disabled={starting}>
+          {starting ? 'Starting…' : 'Search retained history'}
+        </PBtn>
+      }
     >
-      <ArchiveIcon className="size-3.5 shrink-0" aria-hidden />
-      {job?.state === 'retrieving' ? (
-        <>
-          <span className="flex items-center gap-1.5 text-foreground">
-            <LoaderCircleIcon className="size-3 animate-spin" aria-hidden />
-            Retrieving {job.done} of {job.total} {job.total === 1 ? 'hour' : 'hours'} of retained history
-          </span>
-          <Button variant="outline" size="xs" onClick={onCancel}>
-            <SquareIcon />
-            Cancel
-          </Button>
-        </>
-      ) : job ? (
-        <span className={job.state === 'done' ? 'text-foreground' : 'text-status-warn'}>
-          {job.count === 0
-            ? `No related events in retained history (${fmtDays(history.since, history.until)})`
-            : `${fmtCount(job.count)} related ${job.count === 1 ? 'event' : 'events'} from retained history added`}
-          {job.state === 'cancelled' && ' · cancelled, partial'}
-          {job.state === 'incomplete' &&
-            ` · ${job.failures.map((f) => `${f.destination} not searched · ${fmtDays(f.from, f.to)}`).join(' · ')}`}
-        </span>
-      ) : (
-        <>
-          <span className="text-foreground">Related history unavailable</span>
-          <span>
-            ·{' '}
-            {history.found
-              ? 'retained history holds this flow’s ids'
-              : `this flow may continue before ${fmtDays(history.until - 1, history.until)}`}
-          </span>
-          <Button size="xs" onClick={onStart} disabled={starting}>
-            {starting && <LoaderCircleIcon className="animate-spin" />}
-            Search retained history
-          </Button>
-        </>
-      )}
-      {error && (
-        <span role="alert" className="text-status-err">
-          {error}
-        </span>
-      )}
-    </p>
+      {history.found
+        ? 'Retained history holds this flow’s ids; they were not loaded with the recent window.'
+        : `This flow may continue before ${fmtDays(history.until - 1, history.until)}, in retained history.`}
+      {err}
+    </Callout>
   )
 }

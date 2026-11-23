@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ExportDialog } from '@/components/export-dialog'
 import { MutedNote } from '@/components/muted-note'
 import { Histogram } from '@/components/search/histogram'
-import { HistoryPanel } from '@/components/search/history-panel'
+import { HistoryPanel, OutsideHistory } from '@/components/search/history-panel'
 import { QueryInput } from '@/components/search/query-input'
 import { SearchResults } from '@/components/search/results'
 import { TimeRange } from '@/components/search/time-range'
@@ -128,6 +128,15 @@ export function SearchPage() {
   const words = useMemo(() => terms(q), [q])
   const matchKeys = useMemo(() => fieldFilters(q), [q])
   const head = at != null ? overview.data : first
+  // v1.1-24: the whole range is older than any retained history.
+  const outside =
+    coverage != null &&
+    coverage.archived === 0 &&
+    coverage.expired_before != null &&
+    coverage.expired_before >= coverage.to &&
+    head != null &&
+    head.until <= coverage.to
+  const outsideEarliest = coverage?.expired_before ?? null
   const total = ((at != null ? head?.total : first?.total) ?? local.length) + (history.job?.count ?? 0)
 
   // Histogram click → that time in the results (loaded already: scroll; else
@@ -340,6 +349,7 @@ export function SearchPage() {
       {coverage && !loading && (
         <HistoryPanel
           coverage={coverage}
+          localWindowMs={retentionMs}
           job={history.job}
           starting={history.starting}
           error={history.error}
@@ -358,6 +368,8 @@ export function SearchPage() {
         <p role="alert" className="border border-status-err/30 bg-status-err/10 p-3 text-status-err">
           {res.error.message}
         </p>
+      ) : outside && head ? (
+        <OutsideHistory since={head.since} until={head.until} earliest={outsideEarliest} />
       ) : empty ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-4 pb-24">
           <div className="flex max-w-md flex-col items-center gap-3 border border-dashed p-10 text-center">

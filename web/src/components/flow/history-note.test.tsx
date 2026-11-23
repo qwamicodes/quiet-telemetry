@@ -57,6 +57,7 @@ describe('FlowHistoryNote', () => {
       />,
     )
     expect(screen.getByText(/Retrieving 2 of 6 hours of retained history/)).toBeInTheDocument()
+    expect(screen.getByText('Searching retained history')).toBeInTheDocument()
     rerender(
       <FlowHistoryNote
         history={history}
