@@ -129,6 +129,8 @@ export const sourceSettings = z.object({
   // Redaction before storage (06.3); older servers omit them.
   redact_fields: z.array(z.string()).default([]),
   redact_pii: z.array(piiKind).default([]),
+  // Left out of retained history (Phase 5a); absent = included.
+  exclude_history: z.boolean().optional(),
   muted: z.array(muteRule).catch([]),
   search_include_muted: z.boolean().nullable().catch(null),
   muted_global_off: z.array(globalOffSchema).catch([]),
@@ -196,7 +198,15 @@ const rejection = z.object({
 }) satisfies z.ZodType<Rejection>
 
 const issue = z.object({
-  kind: z.enum(['docker_unavailable', 'disk_near_cap', 'disk_at_cap', 'disk_low', 'store_errors', 'ingest_rejected']),
+  kind: z.enum([
+    'docker_unavailable',
+    'disk_near_cap',
+    'disk_at_cap',
+    'disk_low',
+    'store_errors',
+    'ingest_rejected',
+    'history_unavailable',
+  ]),
   severity: z.enum(['warn', 'error']),
   title: z.string(),
   detail: z.string(),

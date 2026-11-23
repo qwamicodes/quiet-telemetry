@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { AlertTriangleIcon, Trash2Icon } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
 import { Caps, PageHeader, Panel, ReadOnlyNote, SettingRow } from '@/components/settings/kit'
+import { RetainedHistory } from '@/components/settings/retained-history'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import {
@@ -381,6 +382,8 @@ export function Storage() {
           </form>
         </SettingRow>
       </div>
+
+      <RetainedHistory sqlite={r.store === 'sqlite'} />
 
       <Panel title="Volume by source" aside={`${fmtCount(r.lines)} lines · ${gb(r.used)}`}>
         <table className="w-full text-sm">

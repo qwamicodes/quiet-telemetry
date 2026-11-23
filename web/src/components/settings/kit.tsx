@@ -41,7 +41,7 @@ export function SettingRow({
 }) {
   return (
     <div className="flex items-center justify-between gap-6 border-b py-4">
-      <div className="flex min-w-0 max-w-xl flex-col gap-1">
+      <div className="flex min-w-48 max-w-xl flex-col gap-1">
         {htmlFor ? (
           <label htmlFor={htmlFor} className="font-medium text-sm">
             {label}
@@ -51,9 +51,11 @@ export function SettingRow({
         )}
         {hint && <span className="text-muted-foreground text-xs leading-[18px]">{hint}</span>}
       </div>
-      <div className="flex shrink-0 flex-col items-end gap-1.5">
+      <div className="flex min-w-0 max-w-[55%] shrink-0 flex-col items-end gap-1.5">
         {children}
-        {under && <span className="font-mono text-[11px] text-muted-foreground">{under}</span>}
+        {under && (
+          <span className="max-w-full break-all text-right font-mono text-[11px] text-muted-foreground">{under}</span>
+        )}
       </div>
     </div>
   )
