@@ -23,7 +23,7 @@ use crate::settings::{
     UpdateGrouping, UpdateStorage,
 };
 use crate::store::{HourUsage, SourceUsage};
-use crate::system::{self, Readings, Rejection};
+use crate::system::{self, DroppedRecords, Readings, Rejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -588,6 +588,12 @@ pub struct SourceActivity {
     /// Lines dropped while ingest was paused (since the server started).
     #[ts(type = "number")]
     pub paused_dropped: u64,
+    /// Dropped or cut records (06.6), newest first, grouped per minute,
+    /// last 24h (at most 100 groups). Payloads are never kept.
+    pub dropped: Vec<DroppedRecords>,
+    /// Dropped or cut lines in the last 24h.
+    #[ts(type = "number")]
+    pub dropped_24h: u64,
 }
 
 async fn activity(State(s): State<AppState>, Path(name): Path<String>) -> Response {
@@ -597,6 +603,8 @@ async fn activity(State(s): State<AppState>, Path(name): Path<String>) -> Respon
         rejections: sys.rejections(Some(&name), 100),
         rejected_15m: sys.rejected_since(now - 15 * 60_000, Some(&name)),
         paused_dropped: sys.paused_dropped(&name),
+        dropped: sys.drops(Some(&name), 100),
+        dropped_24h: sys.dropped_since(now - 24 * 3_600_000, Some(&name)),
         source: name,
     })
     .into_response()
@@ -939,6 +947,7 @@ mod tests {
         let st = state();
         *st.docker.lock().unwrap() = DockerStatus::Unavailable {
             error: "permission denied".into(),
+            retry_at: None,
         };
         let now = chrono::Utc::now().timestamp_millis();
         st.pipeline

@@ -41,9 +41,40 @@ pub struct Rejection {
     pub count: u64,
 }
 
+/// Why ingest dropped or cut part of a line (board 06.6 reason chips).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DropReason {
+    /// Plain text dropped: Settings → General → "Keep non-JSON lines" is off.
+    TextPolicy,
+    /// JSON nested past the parser's limit; kept as raw text, fields lost.
+    ParseLimit,
+    /// Over the line size cap; the rest of the line was cut.
+    SizeLimit,
+    /// A key appeared twice; the earlier value was dropped (last wins).
+    DuplicateKey,
+}
+
+/// Dropped or cut records, grouped per minute (payloads are never kept).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct DroppedRecords {
+    /// Start of the minute, unix ms.
+    pub minute: i64,
+    pub source: String,
+    pub reason: DropReason,
+    /// Whether the line was still stored (cut, or kept as text) or not at all.
+    pub stored: bool,
+    #[ts(type = "number")]
+    pub count: u64,
+    /// Bytes the lines had when they arrived.
+    #[ts(type = "number")]
+    pub bytes: u64,
+}
+
 #[derive(Debug, Default)]
 struct Inner {
     rejections: VecDeque<Rejection>,
+    drops: VecDeque<DroppedRecords>,
     paused: HashMap<String, u64>,
     /// Lines dropped by the cap since start, and when it last dropped.
     capped_lines: u64,
@@ -120,6 +151,57 @@ impl SystemState {
             .filter(|r| r.minute + MINUTE > since)
             .filter(|r| source.is_none_or(|s| r.source.as_deref() == Some(s)))
             .map(|r| r.count)
+            .sum()
+    }
+
+    /// Count one dropped or cut line.
+    pub fn dropped(&self, now: i64, source: &str, reason: DropReason, stored: bool, bytes: u64) {
+        let minute = now.div_euclid(MINUTE) * MINUTE;
+        let mut g = self.inner.lock().unwrap();
+        let hit = g.drops.iter_mut().rev().take(50).find(|d| {
+            d.minute == minute && d.source == source && d.reason == reason && d.stored == stored
+        });
+        match hit {
+            Some(d) => {
+                d.count += 1;
+                d.bytes += bytes;
+            }
+            None => g.drops.push_back(DroppedRecords {
+                minute,
+                source: source.into(),
+                reason,
+                stored,
+                count: 1,
+                bytes,
+            }),
+        }
+        while g.drops.len() > MAX_GROUPS
+            || g.drops.front().is_some_and(|d| d.minute < now - KEEP_MS)
+        {
+            g.drops.pop_front();
+        }
+    }
+
+    /// Newest first, optionally for one source, at most `limit` groups.
+    pub fn drops(&self, source: Option<&str>, limit: usize) -> Vec<DroppedRecords> {
+        let g = self.inner.lock().unwrap();
+        g.drops
+            .iter()
+            .rev()
+            .filter(|d| source.is_none_or(|s| d.source == s))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    /// Dropped or cut lines since `since` (unix ms), optionally for one source.
+    pub fn dropped_since(&self, since: i64, source: Option<&str>) -> u64 {
+        let g = self.inner.lock().unwrap();
+        g.drops
+            .iter()
+            .filter(|d| d.minute + MINUTE > since)
+            .filter(|d| source.is_none_or(|s| d.source == s))
+            .map(|d| d.count)
             .sum()
     }
 
@@ -379,7 +461,7 @@ pub fn status(sys: &SystemState, r: Readings) -> SystemStatus {
     };
 
     let mut issues = Vec::new();
-    if let DockerStatus::Unavailable { error } = &r.docker {
+    if let DockerStatus::Unavailable { error, .. } = &r.docker {
         issues.push(Issue {
             kind: IssueKind::DockerUnavailable,
             severity: Severity::Error,
@@ -498,7 +580,11 @@ mod tests {
     fn readings(used: u64, cap: u64) -> Readings {
         Readings {
             now: 10 * 3_600_000,
-            docker: DockerStatus::Connected { containers: 2 },
+            docker: DockerStatus::Connected {
+                containers: 2,
+                endpoint: "/var/run/docker.sock".into(),
+                engine: Some("27.3.1".into()),
+            },
             store_kind: "sqlite".into(),
             store_health: StoreHealth::default(),
             used,
@@ -559,6 +645,7 @@ mod tests {
         let mut r = readings(0, 10_000);
         r.docker = DockerStatus::Unavailable {
             error: "permission denied".into(),
+            retry_at: None,
         };
         r.fs = Some((100_000_000, 100_000_000_000));
         let st = status(&SystemState::default(), r);

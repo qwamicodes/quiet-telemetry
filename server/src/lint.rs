@@ -61,7 +61,27 @@ pub struct LintCheck {
     pub detail: String,
     /// How to fix it (empty on pass).
     pub fix: String,
+    /// A few records that miss this check (11.6 "Failing fields · excerpt"),
+    /// newest first; empty on pass, `na` and checks over groups of records.
+    pub failing: Vec<FailingRecord>,
 }
+
+/// One record a check failed on, for the excerpt panel.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct FailingRecord {
+    #[ts(type = "number")]
+    pub line_id: u64,
+    /// Event time, unix ms.
+    pub ts: i64,
+    /// What is wrong with it (`missing request_id`, `error is a string`).
+    pub note: String,
+    /// The raw record, sanitized again and cut to [`EXCERPT_CHARS`].
+    pub excerpt: String,
+}
+
+/// Records kept per failing check.
+pub const FAILING_PER_CHECK: usize = 3;
+const EXCERPT_CHARS: usize = 320;
 
 /// `GET /api/sources/:name/lint`.
 #[derive(Debug, Clone, Serialize, TS)]
@@ -234,6 +254,7 @@ fn check(
             share: None,
             detail: format!("no {what} in the sample"),
             fix: String::new(),
+            failing: Vec::new(),
         };
     }
     let share = hits as f64 / total as f64;
@@ -249,7 +270,46 @@ fn check(
         } else {
             fix.into()
         },
+        failing: Vec::new(),
     }
+}
+
+/// An excerpt of `l` for the failing-records panel: the raw record run
+/// through the built-in redaction again (older records predate it), cut.
+fn failing_record(l: &Line, note: impl Into<String>) -> FailingRecord {
+    let red = crate::redact::Redactor::default();
+    let raw = match serde_json::from_str::<Value>(&l.raw) {
+        Ok(mut v @ Value::Object(_)) => {
+            red.value(&mut v);
+            v.to_string()
+        }
+        _ => red.text(&l.raw).0,
+    };
+    let mut excerpt: String = raw.chars().take(EXCERPT_CHARS).collect();
+    if raw.chars().count() > EXCERPT_CHARS {
+        excerpt.push('…');
+    }
+    FailingRecord {
+        line_id: l.id,
+        ts: l.ts,
+        note: note.into(),
+        excerpt,
+    }
+}
+
+/// Up to [`FAILING_PER_CHECK`] failing records (newest first).
+fn take_failing<'a>(it: impl Iterator<Item = (&'a Line, String)>) -> Vec<FailingRecord> {
+    it.take(FAILING_PER_CHECK)
+        .map(|(l, n)| failing_record(l, n))
+        .collect()
+}
+
+/// Attach failing records unless the check passed or didn't apply.
+fn with_failing(mut c: LintCheck, f: impl FnOnce() -> Vec<FailingRecord>) -> LintCheck {
+    if !matches!(c.status, LintStatus::Pass | LintStatus::Na) {
+        c.failing = f();
+    }
+    c
 }
 
 /// A warn/fail the sample can't settle becomes `review`; the fix stays.
@@ -273,28 +333,36 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
     let n = objs.len();
     let mut out = Vec::new();
 
-    out.push(check(
-        "json",
-        "JSON lines",
-        n,
-        total,
-        (0.95, 0.5),
-        "records parse",
-        "Configure the existing logger to print one JSON object per line to stdout.",
+    out.push(with_failing(
+        check(
+            "json",
+            "JSON lines",
+            n,
+            total,
+            (0.95, 0.5),
+            "records parse",
+            "Configure the existing logger to print one JSON object per line to stdout.",
+        ),
+        || {
+            take_failing(
+                lines
+                    .iter()
+                    .filter(|l| !matches!(l.fields, Some(Value::Object(_))))
+                    .map(|l| (l, "not a JSON object".to_string())),
+            )
+        },
     ));
 
     // Exactly one timestamp key, written once, that quiet could read.
-    let ts_ok = objs
-        .iter()
-        .filter(|(l, m)| {
-            TS_KEYS.iter().filter(|k| m.contains_key(**k)).count() == 1
-                && !l.flags.iter().any(|f| {
-                    f.starts_with("ts:")
-                        || f.strip_prefix("duplicate_key:")
-                            .is_some_and(|k| TS_KEYS.contains(&k))
-                })
-        })
-        .count();
+    let ts_good = |l: &Line, m: &Map<String, Value>| {
+        TS_KEYS.iter().filter(|k| m.contains_key(**k)).count() == 1
+            && !l.flags.iter().any(|f| {
+                f.starts_with("ts:")
+                    || f.strip_prefix("duplicate_key:")
+                        .is_some_and(|k| TS_KEYS.contains(&k))
+            })
+    };
+    let ts_ok = objs.iter().filter(|(l, m)| ts_good(l, m)).count();
     let mut c = check(
         "timestamp",
         "One timestamp",
@@ -307,7 +375,17 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
     if c.status != LintStatus::Na && ts_ok < n {
         c.detail = format!("{} records have two timestamp keys", n - ts_ok);
     }
-    out.push(c);
+    out.push(with_failing(c, || {
+        take_failing(objs.iter().filter(|(l, m)| !ts_good(l, m)).map(|(l, m)| {
+            let keys = TS_KEYS.iter().filter(|k| m.contains_key(**k)).count();
+            let note = match keys {
+                0 => "no timestamp key".to_string(),
+                1 => "timestamp quiet could not read".to_string(),
+                k => format!("{k} timestamp keys"),
+            };
+            (*l, note)
+        }))
+    }));
 
     let level_ok = objs.iter().filter(|(l, _)| l.level.is_some()).count();
     let numeric = objs
@@ -325,7 +403,13 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
     if c.status == LintStatus::Pass && numeric {
         c.detail = "pino levels map to debug / info / warn / error".into();
     }
-    out.push(c);
+    out.push(with_failing(c, || {
+        take_failing(
+            objs.iter()
+                .filter(|(l, _)| l.level.is_none())
+                .map(|(l, _)| (*l, "no level quiet could read".to_string())),
+        )
+    }));
 
     // service plus a deployment marker (version or commit), set once in the
     // logger base.
@@ -360,7 +444,18 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
         }
         c.detail = parts.join(" · ");
     }
-    out.push(c);
+    out.push(with_failing(c, || {
+        take_failing(objs.iter().filter_map(|(l, m)| {
+            let missing: Vec<&str> = [
+                (!present(m, SERVICE_KEYS)).then_some("service"),
+                (!present(m, VERSION_KEYS)).then_some("version"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            (!missing.is_empty()).then(|| (*l, format!("missing {}", missing.join(", "))))
+        }))
+    }));
 
     // One canonical completion event per request: of the request ids seen,
     // how many have exactly one record carrying both a status and duration_ms.
@@ -405,14 +500,23 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
         .iter()
         .filter(|(l, _)| has_id(l, &IdKey::RequestId))
         .count();
-    out.push(check(
-        "request_id",
-        "request_id on request records",
-        http_req,
-        http.len(),
-        (0.95, 0.6),
-        "request records",
-        "Accept `x-request-id` only from trusted upstreams, otherwise generate one; keep it request-local and return it as a header.",
+    out.push(with_failing(
+        check(
+            "request_id",
+            "request_id on request records",
+            http_req,
+            http.len(),
+            (0.95, 0.6),
+            "request records",
+            "Accept `x-request-id` only from trusted upstreams, otherwise generate one; keep it request-local and return it as a header.",
+        ),
+        || {
+            take_failing(
+                http.iter()
+                    .filter(|(l, _)| !has_id(l, &IdKey::RequestId))
+                    .map(|(l, _)| (*l, "missing request_id".to_string())),
+            )
+        },
     ));
 
     let jobish: Vec<_> = objs
@@ -435,7 +539,14 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
     if c.status == LintStatus::Pass {
         c.detail = "native id and queue on each attempt".into();
     }
-    out.push(c);
+    out.push(with_failing(c, || {
+        take_failing(
+            jobish
+                .iter()
+                .filter(|(l, _)| !has_id(l, &IdKey::JobId))
+                .map(|(l, _)| (*l, "job record without job_id".to_string())),
+        )
+    }));
 
     let job_lines: Vec<_> = jobish
         .iter()
@@ -459,21 +570,42 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
     if c.status == LintStatus::Pass {
         c.detail = "native id + queue + service present".into();
     }
-    out.push(c);
+    out.push(with_failing(c, || {
+        take_failing(job_lines.iter().filter_map(|(l, m)| {
+            let missing: Vec<&str> = [
+                (!present(m, QUEUE_KEYS)).then_some("queue"),
+                (!present(m, SERVICE_KEYS)).then_some("service"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            (!missing.is_empty()).then(|| (*l, format!("missing {}", missing.join(", "))))
+        }))
+    }));
 
     let job_req = job_lines
         .iter()
         .filter(|(l, _)| has_id(l, &IdKey::RequestId))
         .count();
-    out.push(as_review(check(
-        "job_request_id",
-        "Parent request_id on jobs",
-        job_req,
-        job_lines.len(),
-        (0.8, 0.3),
-        "job records",
-        "Check expected parents: propagate `request_id` into job data when a request enqueues the job. Standalone jobs are valid without one.",
-    )));
+    out.push(with_failing(
+        as_review(check(
+            "job_request_id",
+            "Parent request_id on jobs",
+            job_req,
+            job_lines.len(),
+            (0.8, 0.3),
+            "job records",
+            "Check expected parents: propagate `request_id` into job data when a request enqueues the job. Standalone jobs are valid without one.",
+        )),
+        || {
+            take_failing(
+                job_lines
+                    .iter()
+                    .filter(|(l, _)| !has_id(l, &IdKey::RequestId))
+                    .map(|(l, _)| (*l, "no parent request_id (fine for a standalone job)".to_string())),
+            )
+        },
+    ));
 
     let attempts = job_lines
         .iter()
@@ -491,7 +623,18 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
     if c.status == LintStatus::Pass {
         c.detail = "on every attempt record".into();
     }
-    out.push(c);
+    out.push(with_failing(c, || {
+        take_failing(job_lines.iter().filter_map(|(l, m)| {
+            let missing: Vec<&str> = [
+                num(m, "duration_ms").is_none().then_some("duration_ms"),
+                (!present(m, ATTEMPT_KEYS)).then_some("attempt"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            (!missing.is_empty()).then(|| (*l, format!("missing {}", missing.join(", "))))
+        }))
+    }));
 
     let errors: Vec<_> = objs
         .iter()
@@ -517,7 +660,24 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
             of(structured, errors.len(), "typed")
         );
     }
-    out.push(c);
+    out.push(with_failing(c, || {
+        take_failing(
+            errors
+                .iter()
+                .filter(|(_, m)| !typed_error(m))
+                .map(|(l, m)| {
+                    let note = match m.get("error").or_else(|| m.get("err")) {
+                        None => "error record without an error object",
+                        Some(Value::String(s)) if stringified_json(s) => {
+                            "error is stringified JSON"
+                        }
+                        Some(Value::String(_)) => "error is a string",
+                        Some(_) => "error object missing code or reason",
+                    };
+                    (*l, note.to_string())
+                }),
+        )
+    }));
 
     // Terminal evidence per logical job: at least one attempt finished with a
     // measured duration. Missing completion is unknown, not failure.
@@ -595,11 +755,20 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
     // matching can't prove a record holds no secret.
     let mut found = BTreeSet::new();
     let mut leaky = 0usize;
-    for (_, m) in &objs {
+    let mut leaks: Vec<FailingRecord> = Vec::new();
+    for (l, m) in &objs {
         let mut mine = BTreeSet::new();
         secret_paths(&Value::Object((*m).clone()), "", 0, &mut mine);
         if !mine.is_empty() {
             leaky += 1;
+            if leaks.len() < FAILING_PER_CHECK {
+                let paths: Vec<_> = mine.iter().cloned().collect();
+                // The excerpt is redacted again, so the value never shows.
+                leaks.push(failing_record(
+                    l,
+                    format!("unredacted: {}", paths.join(", ")),
+                ));
+            }
         }
         found.extend(mine);
     }
@@ -613,6 +782,7 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
             share: None,
             detail: "no patterns found; this is not a privacy guarantee".into(),
             fix: String::new(),
+            failing: Vec::new(),
         }
     } else {
         let shown: Vec<_> = found.iter().take(6).cloned().collect();
@@ -627,6 +797,7 @@ pub fn lint(lines: &[Line]) -> Vec<LintCheck> {
                 if found.len() > 6 { ", …" } else { "" }
             ),
             fix: "Redact credentials and configured fields as `[REDACTED]` before the log is written. Email and phone stay visible unless a source rule hides them.".into(),
+            failing: leaks,
         }
     });
     out
@@ -834,6 +1005,34 @@ mod tests {
         }
         let empty = lint(&[]);
         assert!(empty.iter().all(|c| c.status == LintStatus::Na));
+    }
+
+    #[test]
+    fn failing_checks_carry_a_few_sanitized_records() {
+        let fill = crate::redact::fixtures::fill;
+        let raw = [
+            r#"{"time":1,"level":"error","service":"api","version":"1","method":"GET","path":"/a","status_code":500,"error":"boom"}"#.to_string(),
+            r#"{"time":2,"level":"info","service":"api","method":"GET","path":"/b","status_code":200}"#.to_string(),
+            fill(r#"{"time":3,"level":"info","service":"api","version":"1","authorization":"BEARER"}"#),
+            "plain text".to_string(),
+        ];
+        let r = lint(&lines(&raw.iter().map(String::as_str).collect::<Vec<_>>()));
+        let notes = |id: &str| -> Vec<String> {
+            get(&r, id).failing.iter().map(|f| f.note.clone()).collect()
+        };
+        assert_eq!(notes("request_id"), vec!["missing request_id"; 2]);
+        assert_eq!(notes("deployment"), vec!["missing version"]);
+        assert_eq!(notes("error_object"), vec!["error is a string"]);
+        assert_eq!(notes("json"), vec!["not a JSON object"]);
+        let secret = &get(&r, "secrets").failing[0];
+        assert_eq!(secret.note, "unredacted: authorization");
+        assert!(secret.excerpt.contains("[REDACTED]"));
+        assert!(
+            !secret.excerpt.contains(&"q".repeat(16)),
+            "the value never shows"
+        );
+        // Passing checks list nothing.
+        assert!(get(&r, "level").failing.is_empty());
     }
 
     #[test]

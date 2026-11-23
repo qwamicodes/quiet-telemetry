@@ -208,14 +208,35 @@ pub fn plan_migration(namings: &[Naming], stored: &HashSet<String>) -> Migration
 pub enum DockerStatus {
     Disabled,
     Connecting,
-    Connected { containers: usize },
-    Unavailable { error: String },
+    Connected {
+        containers: usize,
+        /// Where quiet reached the engine (`/var/run/docker.sock`, a
+        /// `DOCKER_HOST`, a context socket).
+        #[serde(default)]
+        endpoint: String,
+        /// The engine's version (`27.3.1`), when it said.
+        #[serde(default)]
+        #[ts(type = "string | null")]
+        engine: Option<String>,
+    },
+    Unavailable {
+        error: String,
+        /// When the next reconnect attempt starts, unix ms (03.7 countdown).
+        #[serde(default)]
+        #[ts(type = "number | null")]
+        retry_at: Option<i64>,
+    },
 }
+
+/// Seconds between reconnect attempts while the engine is unreachable.
+pub const RECONNECT_SECS: u64 = 5;
 
 pub struct DockerReceiver {
     pipeline: Arc<Pipeline>,
     pub status: Arc<Mutex<DockerStatus>>,
     following: Arc<Mutex<HashSet<String>>>,
+    /// Endpoint and engine version of the current session.
+    engine: Arc<Mutex<(String, Option<String>)>>,
 }
 
 #[async_trait]
@@ -235,13 +256,16 @@ impl Receiver for DockerReceiver {
                 Ok(()) => tracing::warn!("docker event stream ended; reconnecting"),
                 Err(e) => {
                     tracing::warn!(error = %e, "docker unavailable");
+                    let retry_at =
+                        chrono::Utc::now().timestamp_millis() + RECONNECT_SECS as i64 * 1000;
                     *self.status.lock().unwrap() = DockerStatus::Unavailable {
                         error: e.to_string(),
+                        retry_at: Some(retry_at),
                     };
                 }
             }
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                _ = tokio::time::sleep(Duration::from_secs(RECONNECT_SECS)) => {}
                 _ = shutdown.cancelled() => return Ok(()),
             }
         }
@@ -340,6 +364,7 @@ impl DockerReceiver {
             pipeline,
             status: Arc::new(Mutex::new(DockerStatus::Connecting)),
             following: Arc::new(Mutex::new(HashSet::new())),
+            engine: Arc::new(Mutex::new((String::new(), None))),
         }
     }
 
@@ -349,7 +374,9 @@ impl DockerReceiver {
             .ping()
             .await
             .map_err(|e| anyhow::anyhow!("{endpoint}: {e}"))?;
-        tracing::info!(%endpoint, "docker connected");
+        let engine = docker.version().await.ok().and_then(|v| v.version);
+        tracing::info!(%endpoint, engine = engine.as_deref().unwrap_or("?"), "docker connected");
+        *self.engine.lock().unwrap() = (endpoint.clone(), engine);
 
         // Subscribe to start events before listing so nothing slips between.
         let mut filters = HashMap::new();
@@ -407,7 +434,12 @@ impl DockerReceiver {
 
     fn update_status(&self) {
         let n = self.following.lock().unwrap().len();
-        *self.status.lock().unwrap() = DockerStatus::Connected { containers: n };
+        let (endpoint, engine) = self.engine.lock().unwrap().clone();
+        *self.status.lock().unwrap() = DockerStatus::Connected {
+            containers: n,
+            endpoint,
+            engine,
+        };
     }
 
     /// Once per data directory: carry sources named by the bare service
@@ -538,8 +570,8 @@ impl DockerReceiver {
             // every reader of `status`) until quiet stopped answering /ready.
             {
                 let mut st = status.lock().unwrap();
-                if let DockerStatus::Connected { .. } = *st {
-                    *st = DockerStatus::Connected { containers: n };
+                if let DockerStatus::Connected { containers, .. } = &mut *st {
+                    *containers = n;
                 }
             }
             tracing::info!(container = %short, "stopped following");
