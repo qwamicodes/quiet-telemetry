@@ -118,6 +118,8 @@ export const guideTab = z.enum(['overview', 'agent', 'canonical', 'ids', 'check'
 export type GuideTab = z.infer<typeof guideTab>
 export const guideSearch = z.object({
   tab: guideTab.optional().catch(undefined),
+  /** Instrument with an agent: the step shown (`setup`, `review`, `examples`), so a link or Back lands on it. */
+  step: z.enum(['setup', 'review', 'examples']).optional().catch(undefined),
   source: z.string().max(300).optional().catch(undefined),
 })
 export type GuideSearch = z.infer<typeof guideSearch>
