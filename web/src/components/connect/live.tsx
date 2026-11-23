@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { LogTable, type RowActions } from '@/components/stream/log-table'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
-import type { LogLine, SourceInfo } from '@/gen'
+import type { LogLine, SourceFields, SourceInfo } from '@/gen'
 import type { ConnectKind } from '@/lib/connect'
 import { fmtTime } from '@/lib/format'
 import { copyPrompt, stackNow } from '@/lib/guide'
@@ -14,6 +14,14 @@ import { cn } from '@/lib/utils'
 
 /** "HH:MM:SS" from a full stream time. */
 const hms = (ts: number) => fmtTime(ts).slice(0, 8)
+
+/** 02.4 banner: how the source writes its level, from the server's sample. */
+const LEVEL_SCHEME: Record<SourceFields['level_scheme'], string> = {
+  pino: 'pino levels',
+  names: 'levels',
+  mixed: 'mixed levels',
+  none: 'levels',
+}
 
 function Stat({
   label,
@@ -146,7 +154,7 @@ export function Live({
           <span className="truncate font-mono text-[11px] text-muted-foreground">
             first line {fmtTime(first)} · {count.toLocaleString()} lines in {secs}s
             {json != null && (json >= 0.5 ? ' · json ✓' : ' · plain text')}
-            {levels && (leveled > 0 ? ' · levels ✓' : ' · no levels')}
+            {levels && (leveled > 0 ? ` · ${LEVEL_SCHEME[fields?.level_scheme ?? 'none']} ✓` : ' · no levels')}
           </span>
         </div>
         <Button size="sm" variant="outline" onClick={onAnother}>

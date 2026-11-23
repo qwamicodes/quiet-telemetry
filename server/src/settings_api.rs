@@ -948,6 +948,7 @@ mod tests {
         *st.docker.lock().unwrap() = DockerStatus::Unavailable {
             error: "permission denied".into(),
             retry_at: None,
+            attempt: 1,
         };
         let now = chrono::Utc::now().timestamp_millis();
         st.pipeline

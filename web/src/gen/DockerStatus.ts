@@ -13,4 +13,8 @@ engine: string | null, } | { "state": "unavailable", error: string,
 /**
  * When the next reconnect attempt starts, unix ms (03.7 countdown).
  */
-retry_at: number | null, };
+retry_at: number | null, 
+/**
+ * Failed attempts in a row, counting the one that just failed.
+ */
+attempt: number, };

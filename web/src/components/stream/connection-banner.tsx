@@ -2,6 +2,7 @@ import { CableIcon, RefreshCwIcon, TriangleAlertIcon, UnplugIcon } from 'lucide-
 import { useEffect, useState } from 'react'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import type { DockerStatus } from '@/gen'
 import { useConnection } from '@/lib/connection'
 import { fmtTime } from '@/lib/format'
 
@@ -50,12 +51,20 @@ export function ServerUnreachableBanner() {
 export function SourceLostBanner({
   source,
   lastTs,
+  docker,
   onRetry,
 }: {
   source: string
   lastTs: number | null
+  /** The server's Docker receiver state: its reconnect schedule (03.7). */
+  docker?: DockerStatus
   onRetry: () => void
 }) {
+  const retryAt = docker?.state === 'unavailable' ? docker.retry_at : null
+  const secs = useCountdown(retryAt)
+  const attempt = docker?.state === 'unavailable' ? docker.attempt : 0
+  // 03.7: "reconnecting in 4s (attempt 3)".
+  const reconnecting = `reconnecting${secs != null && secs > 0 ? ` in ${secs}s` : ''}${attempt > 0 ? ` (attempt ${attempt})` : ''}`
   return (
     <div
       role="alert"
@@ -66,8 +75,8 @@ export function SourceLostBanner({
         Lost the docker stream for <span className="font-medium">{source}</span>
         <span className="font-mono text-muted-foreground">
           {' '}
-          · reconnecting{lastTs ? ` · last line ${fmtTime(lastTs).slice(0, 8)}` : ''} · on reconnect quiet backfills
-          from Docker's log
+          · {reconnecting}
+          {lastTs ? ` · last line ${fmtTime(lastTs).slice(0, 8)}` : ''} · on reconnect quiet backfills from Docker's log
         </span>
       </span>
       <span className="flex-1" />

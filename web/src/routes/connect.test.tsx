@@ -14,7 +14,7 @@ const health: Health = {
   ok: true,
   version: '0.1.0',
   started: 0,
-  docker: { state: 'connected', containers: 9 },
+  docker: { state: 'connected', containers: 9, endpoint: '/var/run/docker.sock', engine: null },
   store: 'sqlite',
   retention_ms: 86_400_000,
   disk_bytes: 0,

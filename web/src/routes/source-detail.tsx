@@ -38,7 +38,14 @@ import { Input } from '@/components/ui/input'
 import { Kbd } from '@/components/ui/kbd'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import type { Level, PiiKind, RemovedSource, SourceInfo, SourceSettings } from '@/gen'
+import type {
+  DroppedRecords as DroppedRecordsT,
+  Level,
+  PiiKind,
+  RemovedSource,
+  SourceInfo,
+  SourceSettings,
+} from '@/gen'
 import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { kindLabel } from '@/lib/connect'
@@ -619,6 +626,79 @@ function MalformedPanel({ name }: { name: string }) {
   )
 }
 
+/** Reason chips for Dropped records (06.6). */
+const DROP_REASON: Record<DroppedRecordsT['reason'], { label: string; help: string }> = {
+  text_policy: {
+    label: 'text policy',
+    help: 'Plain text dropped: "Keep non-JSON lines" is off in Settings → General.',
+  },
+  parse_limit: { label: 'parse limit', help: 'JSON nested past the parser limit; kept as raw text without fields.' },
+  size_limit: { label: 'size limit', help: 'Over the line size cap; the rest of the line was cut.' },
+  duplicate_key: { label: 'duplicate key', help: 'A key appeared twice; the earlier value was dropped (last wins).' },
+}
+
+/** Dropped records (06.6): what ingest dropped or cut, per minute. Payloads are never kept. */
+function DroppedRecords({ name, dropped }: { name: string; dropped: DroppedRecordsT[] }) {
+  const [all, setAll] = useState(false)
+  const rows = all ? dropped : dropped.slice(0, 6)
+  const total = dropped.reduce((n, d) => n + d.count, 0)
+  return (
+    <Panel
+      title="Dropped records"
+      aside={
+        <span className="flex items-center gap-3">
+          grouped per minute · payloads not stored · last 24h
+          {dropped.length > 6 && (
+            <Button variant="ghost" size="xs" onClick={() => setAll((v) => !v)}>
+              {all ? 'Show fewer' : `View all ${fmtCount(total)}`}
+              <ChevronRightIcon className={cn(all && '-rotate-90')} />
+            </Button>
+          )}
+        </span>
+      }
+    >
+      {rows.length === 0 ? (
+        <p className="px-4 py-6 text-center text-muted-foreground text-sm">
+          Nothing dropped or cut from {name}. Lines over the size cap, plain text while "Keep non-JSON lines" is off,
+          JSON past the parse limit and duplicate keys show up here.
+        </p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left">
+              {['Time', 'Reason', 'Stored', 'Size', 'Count'].map((h) => (
+                <th key={h} className="px-4 py-2 font-normal">
+                  <Caps>{h}</Caps>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((d) => (
+              <tr key={`${d.minute}-${d.reason}-${d.stored}`} className="border-b last:border-b-0">
+                <td className="px-4 py-2 font-mono">{fmtClock(d.minute)}</td>
+                <td className="px-4 py-2">
+                  <span
+                    title={DROP_REASON[d.reason].help}
+                    className="border bg-secondary px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                  >
+                    {DROP_REASON[d.reason].label}
+                  </span>
+                </td>
+                <td className="px-4 py-2 text-muted-foreground text-xs">
+                  {d.stored ? (d.reason === 'size_limit' ? 'cut' : 'kept') : 'not stored'}
+                </td>
+                <td className="px-4 py-2 font-mono text-muted-foreground text-xs">{fmtBytes(d.bytes)}</td>
+                <td className="px-4 py-2 font-mono">{d.count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Panel>
+  )
+}
+
 function Rejected({ name, info, rejecting }: { name: string; info?: SourceInfo; rejecting: boolean }) {
   const a = useActivity(name).data
   const f = useSourceFields(name).data
@@ -661,9 +741,10 @@ function Rejected({ name, info, rejecting }: { name: string; info?: SourceInfo; 
           sub={`~${(a.rejected_15m / 900).toFixed(2)} req/s${newest && a.rejected_15m > 0 ? ` · ${newest.status}` : ''}`}
         />
         <Stat
-          label={`Malformed ${fmtWindow(health24(stats))}`}
-          value={f ? fmtCount(f.malformed_total) : '…'}
-          sub={f && total ? `${fmtPct(f.malformed_total / total)} · kept as raw text` : 'kept as raw text'}
+          label="Dropped 24h"
+          value={fmtCount(a.dropped_24h)}
+          tone={a.dropped_24h > 0 ? 'warn' : undefined}
+          sub="payloads not stored"
         />
         <Stat
           label={`Lines ${fmtWindow(health24(stats))}`}
@@ -715,26 +796,17 @@ function Rejected({ name, info, rejecting }: { name: string; info?: SourceInfo; 
           </table>
         )}
       </Panel>
-      <Panel
-        title="Malformed lines"
-        aside={
-          <span className="flex items-center gap-3">
-            kept as raw text, shown in the stream as raw rows
-            {f && f.malformed_total > 4 && (
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={() => navigate({ search: { tab: 'malformed' }, replace: true })}
-              >
-                View all {fmtCount(f.malformed_total)}
-                <ChevronRightIcon />
-              </Button>
-            )}
-          </span>
-        }
-      >
-        <MalformedRows name={name} max={4} />
-      </Panel>
+      <DroppedRecords name={name} dropped={a.dropped} />
+      {f && f.malformed_total > 0 && (
+        <button
+          type="button"
+          onClick={() => navigate({ search: { tab: 'malformed' }, replace: true })}
+          className="flex items-center gap-1 self-start font-mono text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          {fmtCount(f.malformed_total)} malformed lines are stored as raw text · Malformed tab
+          <ChevronRightIcon className="size-3" />
+        </button>
+      )}
     </div>
   )
 }

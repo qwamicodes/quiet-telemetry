@@ -646,6 +646,7 @@ mod tests {
         r.docker = DockerStatus::Unavailable {
             error: "permission denied".into(),
             retry_at: None,
+            attempt: 1,
         };
         r.fs = Some((100_000_000, 100_000_000_000));
         let st = status(&SystemState::default(), r);

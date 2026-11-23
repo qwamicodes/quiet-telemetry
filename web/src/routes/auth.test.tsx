@@ -165,7 +165,7 @@ describe('first-run setup', () => {
     state = authState(null, {
       setup_required: true,
       host: {
-        docker: { state: 'connected', containers: 9 },
+        docker: { state: 'connected', containers: 9, endpoint: '/var/run/docker.sock', engine: null },
         store: 'sqlite',
         data_dir: '/data',
         data_dir_writable: true,

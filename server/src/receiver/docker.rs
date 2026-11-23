@@ -225,6 +225,9 @@ pub enum DockerStatus {
         #[serde(default)]
         #[ts(type = "number | null")]
         retry_at: Option<i64>,
+        /// Failed attempts in a row, counting the one that just failed.
+        #[serde(default)]
+        attempt: u32,
     },
 }
 
@@ -247,20 +250,30 @@ impl Receiver for DockerReceiver {
 
     /// Runs until shutdown; reconnects every 5s if the socket goes away.
     async fn run(self: Arc<Self>, shutdown: CancellationToken) -> anyhow::Result<()> {
+        let mut attempt = 0u32;
         loop {
             let result = tokio::select! {
                 r = self.session(&shutdown) => r,
                 _ = shutdown.cancelled() => return Ok(()),
             };
             match result {
-                Ok(()) => tracing::warn!("docker event stream ended; reconnecting"),
+                Ok(()) => {
+                    attempt = 0;
+                    tracing::warn!("docker event stream ended; reconnecting");
+                }
                 Err(e) => {
-                    tracing::warn!(error = %e, "docker unavailable");
+                    // A session that got as far as connecting starts the count over.
+                    if matches!(*self.status.lock().unwrap(), DockerStatus::Connected { .. }) {
+                        attempt = 0;
+                    }
+                    attempt += 1;
+                    tracing::warn!(error = %e, attempt, "docker unavailable");
                     let retry_at =
                         chrono::Utc::now().timestamp_millis() + RECONNECT_SECS as i64 * 1000;
                     *self.status.lock().unwrap() = DockerStatus::Unavailable {
                         error: e.to_string(),
                         retry_at: Some(retry_at),
+                        attempt,
                     };
                 }
             }

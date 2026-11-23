@@ -17,6 +17,7 @@ import {
   useLatestRelease,
 } from '@/lib/about-api'
 import { isOwner, useMe } from '@/lib/auth-api'
+import { dockerEndpoint, dockerEngine } from '@/lib/docker'
 import { fmtBytes, fmtDay, fmtTime, getDisplayTimeZone, publicOrigin } from '@/lib/format'
 import { useSaveGeneral, useSettings } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
@@ -31,9 +32,12 @@ export function fmtUptime(ms: number): string {
   return `${Math.max(0, m)}m`
 }
 
+// 07.6: "/var/run/docker.sock · engine 27.3" (containers when the engine didn't say).
 const dockerLine = (d: DockerStatus) =>
   d.state === 'connected'
-    ? `docker.sock · ${d.containers} ${d.containers === 1 ? 'container' : 'containers'}`
+    ? `${dockerEndpoint(d)} · ${
+        dockerEngine(d) || `${d.containers} ${d.containers === 1 ? 'container' : 'containers'}`
+      }`
     : d.state === 'unavailable'
       ? `unavailable · ${d.error}`
       : d.state

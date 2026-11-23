@@ -33,4 +33,10 @@ group_id?: string,
  * Where it sits without a custom group (what "Automatic" puts it back
  * to); sent only when it was moved into a custom group.
  */
-auto_group?: string, auto_group_kind?: GroupKind, lines: number, last_ts: number | null, };
+auto_group?: string, auto_group_kind?: GroupKind, lines: number, last_ts: number | null, 
+/**
+ * The id key its newest line with an id showed on the row
+ * (`request_id`, `job_id`); ⌘K source rows show it (03.9, 08.1).
+ * Since the server started.
+ */
+id_key?: string, };
