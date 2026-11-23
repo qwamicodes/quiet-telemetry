@@ -114,14 +114,19 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let export_hold = exports.hold();
     // Retained history lives next to the lines: only the SQLite store has
     // hourly partitions to archive.
+    let garage = crate::history::garage::GarageEnv::from_env();
     let history = if args.store == StoreKind::Sqlite {
         let dir = args.data_dir.clone();
-        Arc::new(tokio::task::spawn_blocking(move || History::open(&dir)).await??)
+        let h = tokio::task::spawn_blocking(move || History::open(&dir)).await??;
+        Arc::new(match garage.clone() {
+            Some(env) => h.with_garage(env),
+            None => h,
+        })
     } else {
         Arc::new(History::memory())
     };
     let history_for_retention = (args.store == StoreKind::Sqlite).then(|| history.clone());
-    if let Some(env) = crate::history::garage::GarageEnv::from_env() {
+    if let Some(env) = garage {
         tokio::spawn(crate::history::garage::bootstrap(history.clone(), env));
     }
     let state = AppState::new(pipeline, docker_status)
@@ -146,6 +151,16 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
                 tracing::error!(receiver = name, error = %e, "receiver stopped");
             }
         });
+    }
+    if let Some(h) = history_for_retention.clone() {
+        // Retention, eviction, backfill, copy and delete jobs (5b).
+        tasks.spawn(crate::history::jobs::run(
+            h,
+            store.clone(),
+            settings.clone(),
+            system.clone(),
+            shutdown.clone(),
+        ));
     }
     tasks.spawn(retention::run(
         store.clone(),

@@ -83,9 +83,9 @@ struct Inner {
     /// Ingest batches the store refused (writer gone, disk full).
     append_errors: u64,
     last_append_error: Option<(i64, String)>,
-    /// Retained history can't be written (destination unreachable): set and
-    /// cleared by the retention job.
-    history: Option<Issue>,
+    /// Retained history issues, one per kind (unreachable, full, cleanup
+    /// blocked): set and cleared by the retention job and history worker.
+    history: Vec<Issue>,
 }
 
 #[derive(Debug, Default)]
@@ -237,12 +237,38 @@ impl SystemState {
         }
     }
 
-    /// Set (or clear) the retained-history banner.
+    /// Set (or clear) the "destination unreachable" banner.
     pub fn set_history_issue(&self, issue: Option<Issue>) {
-        self.inner.lock().unwrap().history = issue;
+        self.set_history_issue_of(IssueKind::HistoryUnavailable, issue);
     }
 
+    /// Set (or clear) one kind of retained-history banner.
+    pub fn set_history_issue_of(&self, kind: IssueKind, issue: Option<Issue>) {
+        let mut g = self.inner.lock().unwrap();
+        g.history.retain(|i| i.kind != kind);
+        if let Some(i) = issue {
+            g.history.push(i);
+        }
+    }
+
+    /// The "destination unreachable" banner.
+    #[cfg(test)]
     pub fn history_issue(&self) -> Option<Issue> {
+        self.history_issue_of(IssueKind::HistoryUnavailable)
+    }
+
+    #[cfg(test)]
+    pub fn history_issue_of(&self, kind: IssueKind) -> Option<Issue> {
+        self.inner
+            .lock()
+            .unwrap()
+            .history
+            .iter()
+            .find(|i| i.kind == kind)
+            .cloned()
+    }
+
+    pub fn history_issues(&self) -> Vec<Issue> {
         self.inner.lock().unwrap().history.clone()
     }
 
@@ -329,6 +355,10 @@ pub enum IssueKind {
     /// The active retained-history destination can't be reached; hours wait
     /// on local disk.
     HistoryUnavailable,
+    /// The active destination is full and the policy says stop archiving.
+    HistoryAtCapacity,
+    /// A destination refused deletes: expired or evicted hours can't go.
+    HistoryCleanupBlocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -541,9 +571,7 @@ pub fn status(sys: &SystemState, r: Readings) -> SystemStatus {
             ),
         });
     }
-    if let Some(h) = sys.history_issue() {
-        issues.push(h);
-    }
+    issues.extend(sys.history_issues());
     if rejected_15m > 0 {
         issues.push(Issue {
             kind: IssueKind::IngestRejected,

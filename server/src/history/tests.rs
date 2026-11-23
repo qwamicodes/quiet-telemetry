@@ -197,20 +197,12 @@ async fn create_verifies_activates_and_never_returns_the_secret() {
         h.activate(d2.id, false, 4_000).await,
         Err(HistoryError::Conflict("verify_failed", _))
     ));
-    // Copy history and deleting history are 5b; the active one can't go.
+    // The active one can't go.
     assert!(matches!(
-        h.activate(d2.id, true, 4_000).await,
-        Err(HistoryError::NotYet(_))
-    ));
-    assert!(matches!(
-        h.remove(d.id, false),
+        h.remove(d.id, false, 4_000),
         Err(HistoryError::Conflict("active", _))
     ));
-    assert!(matches!(
-        h.remove(d2.id, true),
-        Err(HistoryError::NotYet(_))
-    ));
-    h.remove(d2.id, false).unwrap();
+    assert!(h.remove(d2.id, false, 4_000).unwrap().is_none());
     assert_eq!(h.destinations().unwrap().len(), 1);
 }
 
@@ -425,4 +417,590 @@ async fn the_retention_job_holds_old_hours_while_the_destination_is_down() {
     assert_eq!(h.status().unwrap().gap_hours, 0);
     shutdown.cancel();
     job.await.unwrap();
+}
+
+// ── 5b: retention policy, capacity, cleanup, backfill, copy, delete ────────
+
+use super::jobs::{classify, OpError};
+use async_trait::async_trait;
+use futures_util::stream::BoxStream;
+use futures_util::StreamExt as _;
+use object_store::{
+    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+    PutMultipartOptions, PutOptions, PutResult,
+};
+
+/// An in-memory bucket that can refuse deletes (AccessDenied) and counts them.
+#[derive(Debug)]
+struct Refusing {
+    inner: Arc<InMemory>,
+    refuse: Arc<AtomicBool>,
+    deletes: Arc<AtomicUsize>,
+}
+
+impl std::fmt::Display for Refusing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Refusing({})", self.inner)
+    }
+}
+
+#[async_trait]
+impl ObjectStore for Refusing {
+    async fn put_opts(
+        &self,
+        location: &ObjPath,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjPath,
+        opts: PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &ObjPath,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, object_store::Result<ObjPath>>,
+    ) -> BoxStream<'static, object_store::Result<ObjPath>> {
+        if self.refuse.load(Ordering::SeqCst) {
+            let n = self.deletes.clone();
+            return locations
+                .map(move |l| {
+                    n.fetch_add(1, Ordering::SeqCst);
+                    let path = l?.to_string();
+                    Err(object_store::Error::PermissionDenied {
+                        path,
+                        source: "AccessDenied: object lock".into(),
+                    })
+                })
+                .boxed();
+        }
+        let n = self.deletes.clone();
+        let out = self.inner.delete_stream(
+            locations
+                .inspect(move |_| {
+                    n.fetch_add(1, Ordering::SeqCst);
+                })
+                .boxed(),
+        );
+        out
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&ObjPath>,
+    ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&ObjPath>,
+    ) -> object_store::Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &ObjPath,
+        to: &ObjPath,
+        options: CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+struct Guarded {
+    mem: Arc<InMemory>,
+    refuse: Arc<AtomicBool>,
+    deletes: Arc<AtomicUsize>,
+}
+
+fn guarded() -> (Guarded, Connector) {
+    let mem = Arc::new(InMemory::new());
+    let refuse = Arc::new(AtomicBool::new(false));
+    let deletes = Arc::new(AtomicUsize::new(0));
+    let (m, r, d) = (mem.clone(), refuse.clone(), deletes.clone());
+    let conn: Connector = Arc::new(move |_, _| {
+        Ok(Arc::new(Refusing {
+            inner: m.clone(),
+            refuse: r.clone(),
+            deletes: d.clone(),
+        }) as Remote)
+    });
+    (
+        Guarded {
+            mem,
+            refuse,
+            deletes,
+        },
+        conn,
+    )
+}
+
+async fn keys(mem: &InMemory) -> Vec<String> {
+    let mut v: Vec<String> = mem
+        .list(None)
+        .filter_map(|m| async move { m.ok().map(|m| m.location.to_string()) })
+        .collect()
+        .await;
+    v.sort();
+    v
+}
+
+/// `n` archived hours from `first` in the active destination of `h`.
+async fn archived(h: &History, s: &SqliteStore, first: i64, n: i64) {
+    fill(s, first, n).await;
+    let sys = SystemState::default();
+    let now = (first + n) * H;
+    let pass = h.pass(s, now, &[], now, &sys).await;
+    assert_eq!(pass.archived.len() as i64, n, "{pass:?}");
+}
+
+#[test]
+fn refused_deletes_are_told_apart_from_network_errors() {
+    let denied = object_store::Error::PermissionDenied {
+        path: "x".into(),
+        source: "nope".into(),
+    };
+    assert!(matches!(classify(&denied), OpError::Refused(_)));
+    let generic = object_store::Error::Generic {
+        store: "S3",
+        source: "Error performing DELETE: 403 Forbidden: AccessDenied".into(),
+    };
+    assert!(matches!(classify(&generic), OpError::Refused(_)));
+    let net = object_store::Error::Generic {
+        store: "S3",
+        source: "error sending request: connection reset".into(),
+    };
+    assert!(matches!(classify(&net), OpError::Transient(_)));
+    assert_eq!(
+        crate::history::garage::quota_of(
+            &serde_json::json!({"quotas": {"maxSize": 5_000_000_000u64, "maxObjects": null}})
+        ),
+        Some(5_000_000_000)
+    );
+    assert_eq!(
+        crate::history::garage::quota_of(&serde_json::json!({"quotas": {"maxSize": null}})),
+        None
+    );
+    assert_eq!(fmt_bytes(5_000_000_000), "5 GB");
+    assert_eq!(fmt_bytes(1_260_000), "1.3 MB");
+}
+
+#[tokio::test]
+async fn a_shorter_history_window_previews_needs_confirming_then_deletes() {
+    let dir = tmp();
+    let s = store(&dir);
+    let (b, conn) = bucket();
+    let h = History::memory().with_connector(conn);
+    let (d, _) = h.create(new_dest("garage-local", true), 0).await.unwrap();
+    archived(&h, &s, 482_950, 10).await;
+    assert_eq!(
+        keys(&b.mem).await.len(),
+        10 * 2 + 1,
+        "segments, manifests, instance.json"
+    );
+    // Two days, five hours after the first archived hour: 482950 … 482954 go.
+    let now = (482_950 + 48 + 5) * H + 1;
+    // Indefinitely (the default) deletes nothing.
+    assert_eq!(h.status_at(now).unwrap().policy.retention_days, None);
+    assert_eq!(h.preview(None, now).unwrap().hours, 0);
+    let p = h.preview(Some(2), now).unwrap();
+    assert_eq!((p.hours, p.lines), (5, 10));
+    assert_eq!(p.before, Some((482_955) * H));
+    assert_eq!(p.destinations.len(), 1);
+    assert_eq!(p.destinations[0].name, "garage-local");
+    let policy = HistoryPolicy {
+        retention_days: Some(2),
+        at_capacity: AtCapacity::Evict,
+    };
+    match h.set_policy(policy, false, now) {
+        Err(HistoryError::ConfirmRequired(p)) => assert_eq!(p.hours, 5),
+        other => panic!("expected confirm_required, got {other:?}"),
+    }
+    assert!(matches!(
+        h.set_policy(
+            HistoryPolicy {
+                retention_days: Some(0),
+                ..policy
+            },
+            true,
+            now
+        ),
+        Err(HistoryError::Invalid(_))
+    ));
+    h.set_policy(policy, true, now).unwrap();
+    let st = h.status_at(now).unwrap();
+    assert_eq!((st.expired_hours, st.retained_from), (5, Some(482_955 * H)));
+    let w = h.work(&s, &[], now, &SystemState::default()).await.unwrap();
+    assert_eq!(w.deleted, 5);
+    let left: Vec<i64> = h
+        .catalog
+        .hours_of(d.id)
+        .unwrap()
+        .iter()
+        .map(|r| r.hour)
+        .collect();
+    assert_eq!(left, (482_955..482_960).collect::<Vec<_>>());
+    let k = keys(&b.mem).await;
+    assert_eq!(k.len(), 5 * 2 + 1);
+    assert!(!k.iter().any(|k| k.contains("482950")));
+    assert_eq!(h.status_at(now).unwrap().expired_hours, 0);
+    // Nothing more to do.
+    assert!(!h
+        .work(&s, &[], now, &SystemState::default())
+        .await
+        .unwrap()
+        .busy());
+}
+
+#[tokio::test]
+async fn at_capacity_evicts_oldest_or_stops_archiving() {
+    let dir = tmp();
+    let s = store(&dir);
+    let (_b, conn) = bucket();
+    let h = History::memory().with_connector(conn);
+    let (d, _) = h.create(new_dest("garage-local", true), 0).await.unwrap();
+    archived(&h, &s, 482_950, 6).await;
+    let per = h.catalog.hours_of(d.id).unwrap()[0].bytes_stored;
+    // Garage's quota is the capacity of garage-local unless an owner set one.
+    h.set_garage_quota(Some(per * 100));
+    let view = h.destination(d.id).unwrap();
+    assert_eq!(view.capacity_source, Some(CapacitySource::Garage));
+    assert!(!view.at_capacity);
+    // Owner-set wins: room for about three hours → the three oldest go.
+    let held = h.catalog.held(d.id).unwrap().bytes_stored;
+    let cap = held - 2 * per - per / 2;
+    let view = h.set_capacity(d.id, Some(cap.max(1_000_000))).unwrap();
+    assert_eq!(view.capacity_source, Some(CapacitySource::Owner));
+    assert!(matches!(
+        h.set_capacity(d.id, Some(10)),
+        Err(HistoryError::Invalid(_))
+    ));
+    // Segments here are tiny: compare against the stored total instead.
+    h.catalog.set_capacity(d.id, Some(cap)).unwrap();
+    assert!(h.destination(d.id).unwrap().at_capacity);
+    let now = 482_960 * H;
+    let w = h.work(&s, &[], now, &SystemState::default()).await.unwrap();
+    assert_eq!(w.deleted, 3);
+    let left: Vec<i64> = h
+        .catalog
+        .hours_of(d.id)
+        .unwrap()
+        .iter()
+        .map(|r| r.hour)
+        .collect();
+    assert_eq!(left, vec![482_953, 482_954, 482_955]);
+    // A capacity smaller than one hour never evicts the newest hour.
+    h.catalog.set_capacity(d.id, Some(1)).unwrap();
+    h.work(&s, &[], now, &SystemState::default()).await.unwrap();
+    assert_eq!(h.catalog.hours_of(d.id).unwrap().len(), 1);
+
+    // Stop archiving: expiring hours wait, the banner says why, and once
+    // the disk cap drops them they are `at_capacity` gaps.
+    h.set_policy(
+        HistoryPolicy {
+            retention_days: None,
+            at_capacity: AtCapacity::Stop,
+        },
+        true,
+        now,
+    )
+    .unwrap();
+    fill(&s, 482_970, 2).await;
+    let sys = SystemState::default();
+    let now = 482_980 * H;
+    let before = s.hours().await.unwrap();
+    let pass = h.pass(&s, now, &[], now, &sys).await;
+    assert!(pass.hold && pass.at_capacity);
+    assert_eq!(pass.waiting, vec![482_970, 482_971]);
+    assert_eq!(s.hours().await.unwrap().len(), 2, "held locally");
+    let issue = sys.history_issue_of(IssueKind::HistoryAtCapacity).unwrap();
+    assert!(issue.detail.contains("2 hours waiting"), "{}", issue.detail);
+    h.record_gaps(&before, &[], now, &pass, now).unwrap();
+    assert_eq!(h.catalog.gaps(1).unwrap()[0].1, GapReason::AtCapacity);
+    // Room again: the banner clears on the next pass.
+    h.catalog.set_capacity(d.id, None).unwrap();
+    h.set_garage_quota(None);
+    fill(&s, 482_972, 1).await;
+    let pass = h.pass(&s, now, &[], now, &sys).await;
+    assert!(!pass.at_capacity);
+    assert!(sys.history_issue_of(IssueKind::HistoryAtCapacity).is_none());
+}
+
+#[tokio::test]
+async fn refused_deletes_block_cleanup_with_backoff_until_retry() {
+    let dir = tmp();
+    let s = store(&dir);
+    let (g, conn) = guarded();
+    let h = History::memory().with_connector(conn);
+    let (d, v) = h.create(new_dest("r2-prod", true), 0).await.unwrap();
+    assert!(v.ok);
+    archived(&h, &s, 482_950, 4).await;
+    h.set_policy(
+        HistoryPolicy {
+            retention_days: Some(1),
+            at_capacity: AtCapacity::Evict,
+        },
+        true,
+        0,
+    )
+    .unwrap();
+    g.refuse.store(true, Ordering::SeqCst);
+    let sys = SystemState::default();
+    let now = (482_960 + 48) * H;
+    let w = h.work(&s, &[], now, &sys).await.unwrap();
+    assert_eq!(w.deleted, 0);
+    let view = h.destination(d.id).unwrap();
+    assert_eq!(view.cleanup_blocked_hours, 4);
+    assert!(view
+        .cleanup_error
+        .as_deref()
+        .unwrap()
+        .contains("AccessDenied"));
+    assert_eq!(view.cleanup_retry_at, Some(now + 5 * 60_000));
+    let issue = sys
+        .history_issue_of(IssueKind::HistoryCleanupBlocked)
+        .unwrap();
+    assert!(issue.title.contains("r2-prod"), "{}", issue.title);
+    assert!(
+        issue.detail.starts_with("4 hours can't be deleted"),
+        "{}",
+        issue.detail
+    );
+    // No tight loop: before the retry time nothing is attempted.
+    let tried = g.deletes.load(Ordering::SeqCst);
+    h.work(&s, &[], now + 60_000, &sys).await.unwrap();
+    assert_eq!(g.deletes.load(Ordering::SeqCst), tried);
+    // The second refusal doubles the wait.
+    h.work(&s, &[], now + 5 * 60_000, &sys).await.unwrap();
+    assert_eq!(
+        h.destination(d.id).unwrap().cleanup_retry_at,
+        Some(now + 5 * 60_000 + 10 * 60_000)
+    );
+    // Permissions fixed, Retry: the hours go and the banner clears.
+    g.refuse.store(false, Ordering::SeqCst);
+    h.retry_cleanup(d.id).unwrap();
+    let w = h.work(&s, &[], now + 6 * 60_000, &sys).await.unwrap();
+    assert_eq!(w.deleted, 4);
+    let view = h.destination(d.id).unwrap();
+    assert_eq!(
+        (view.cleanup_blocked_hours, view.cleanup_error.clone()),
+        (0, None)
+    );
+    assert!(sys
+        .history_issue_of(IssueKind::HistoryCleanupBlocked)
+        .is_none());
+    assert_eq!(keys(&g.mem).await.len(), 1, "only instance.json");
+}
+
+#[tokio::test]
+async fn backfill_archives_the_local_window_now_and_expiry_reuses_it() {
+    let dir = tmp();
+    let s = store(&dir);
+    let (b, conn) = bucket();
+    let h = History::memory().with_connector(conn);
+    let now = 482_954 * H + 10 * 60_000;
+    // Nothing active: no backfill.
+    assert!(matches!(
+        h.backfill(&s, now).await,
+        Err(HistoryError::Conflict("no_destination", _))
+    ));
+    let (d, _) = h.create(new_dest("garage-local", true), 0).await.unwrap();
+    fill(&s, 482_950, 5).await; // the last hour (482954) is still open
+    assert_eq!(
+        h.backfill_candidates(&s, now).await.unwrap(),
+        vec![482_950, 482_951, 482_952, 482_953]
+    );
+    assert_eq!(h.status_with(&s, now).await.unwrap().backfill_hours, 4);
+    let job = h.backfill(&s, now).await.unwrap();
+    assert_eq!(
+        (job.kind, job.state, job.total),
+        (JobKind::Backfill, JobState::Running, 4)
+    );
+    // Asking again returns the same job.
+    assert_eq!(h.backfill(&s, now).await.unwrap().id, job.id);
+    let w = h.work(&s, &[], now, &SystemState::default()).await.unwrap();
+    assert_eq!(w.archived, 4);
+    let job = h.job(job.id).unwrap();
+    assert_eq!((job.state, job.done), (JobState::Done, 4));
+    assert!(job.bytes > 0);
+    // Local hours are untouched: the window still serves them.
+    assert_eq!(s.hours().await.unwrap().len(), 5);
+    assert_eq!(h.catalog.hours_of(d.id).unwrap().len(), 4);
+    assert!(matches!(
+        h.backfill(&s, now).await,
+        Err(HistoryError::Conflict("nothing_to_backfill", _))
+    ));
+    // When they expire, the unchanged hours are not uploaded again.
+    let first = h.catalog.hour_of(d.id, 482_950).unwrap().unwrap();
+    let before = keys(&b.mem).await;
+    let pass = h
+        .pass(&s, 482_952 * H, &[], 482_999 * H, &SystemState::default())
+        .await;
+    assert_eq!(pass.archived, vec![482_950, 482_951]);
+    assert_eq!(
+        h.catalog
+            .hour_of(d.id, 482_950)
+            .unwrap()
+            .unwrap()
+            .archived_at,
+        first.archived_at
+    );
+    assert_eq!(keys(&b.mem).await, before);
+}
+
+#[tokio::test]
+async fn switching_destinations_copies_history_and_resumes_after_a_restart() {
+    let dir = tmp();
+    let s = store(&dir);
+    let (b, conn) = bucket();
+    let h = History::open(&dir).unwrap().with_connector(conn.clone());
+    let (a, _) = h.create(new_dest("garage-local", true), 0).await.unwrap();
+    archived(&h, &s, 482_950, 6).await;
+    let mut r2 = new_dest("r2-prod", false);
+    r2.kind = DestinationKind::R2;
+    r2.endpoint = Some("https://acct.r2.cloudflarestorage.com".into());
+    r2.bucket = "other".into(); // not the same bucket: download → upload
+    r2.prefix = Some("r2/".into());
+    let (r, _) = h.create(r2, 0).await.unwrap();
+    let now = 482_999 * H;
+    h.activate(r.id, true, now).await.unwrap();
+    let st = h.status_at(now).unwrap();
+    assert_eq!(st.active, Some(r.id));
+    let job = st.jobs[0].clone();
+    assert_eq!((job.kind, job.total, job.done), (JobKind::Copy, 6, 0));
+    assert_eq!(
+        (job.source.as_deref(), job.destination.as_deref()),
+        (Some("garage-local"), Some("r2-prod"))
+    );
+    // Two hours, then the server stops.
+    let w = h
+        .work_budget(&s, &[], now, &SystemState::default(), 2)
+        .await
+        .unwrap();
+    assert_eq!(w.copied, 2);
+    drop(h);
+    let h = History::open(&dir).unwrap().with_connector(conn);
+    let job = h.job(job.id).unwrap();
+    assert_eq!((job.state, job.done), (JobState::Running, 2));
+    let w = h
+        .work(&s, &[], now + 1, &SystemState::default())
+        .await
+        .unwrap();
+    assert_eq!(w.copied, 4);
+    let job = h.job(job.id).unwrap();
+    assert_eq!((job.state, job.done), (JobState::Done, 6));
+    // Both hold every hour; the copies live under r2/ with their manifests.
+    assert_eq!(h.catalog.hours_of(a.id).unwrap().len(), 6);
+    let copies = h.catalog.hours_of(r.id).unwrap();
+    assert_eq!(copies.len(), 6);
+    assert!(
+        copies[0].key.starts_with("r2/v1/hours/"),
+        "{}",
+        copies[0].key
+    );
+    let k = keys(&b.mem).await;
+    assert!(k.contains(&"r2/v1/manifest/482950.json".to_string()));
+    assert_eq!(
+        get(&b.mem, &copies[0].key).await.len() as u64,
+        copies[0].bytes_stored
+    );
+    // Cancelling a finished job is refused.
+    assert!(matches!(
+        h.cancel_job(job.id, now),
+        Err(HistoryError::Conflict("finished", _))
+    ));
+}
+
+#[tokio::test]
+async fn removing_a_destination_can_delete_its_history_first() {
+    let dir = tmp();
+    let s = store(&dir);
+    let (b, conn) = bucket();
+    let h = History::memory().with_connector(conn);
+    let (a, _) = h.create(new_dest("garage-local", true), 0).await.unwrap();
+    archived(&h, &s, 482_950, 3).await;
+    let mut other = new_dest("r2-prod", true);
+    other.prefix = Some("r2/".into());
+    let (r, _) = h.create(other, 0).await.unwrap();
+    assert!(h.destination(r.id).unwrap().active);
+    // The active destination can't go until another is active or history is off.
+    assert!(matches!(
+        h.remove(r.id, true, 1),
+        Err(HistoryError::Conflict("active", _))
+    ));
+    let job = h.remove(a.id, true, 1).unwrap().unwrap();
+    assert_eq!((job.kind, job.total), (JobKind::Delete, 3));
+    assert!(h.destination(a.id).unwrap().removing);
+    assert!(matches!(
+        h.activate(a.id, false, 1).await,
+        Err(HistoryError::Conflict("removing", _))
+    ));
+    // Asking again returns the running job.
+    assert_eq!(h.remove(a.id, true, 1).unwrap().unwrap().id, job.id);
+    let w = h.work(&s, &[], 2, &SystemState::default()).await.unwrap();
+    assert_eq!(w.deleted, 3);
+    // Next step: nothing left, so it is forgotten and instance.json goes.
+    h.work(&s, &[], 3, &SystemState::default()).await.unwrap();
+    assert!(matches!(h.destination(a.id), Err(HistoryError::NotFound)));
+    assert_eq!(h.job(job.id).unwrap().state, JobState::Done);
+    let inst = h.catalog.instance_id().unwrap();
+    assert!(!keys(&b.mem)
+        .await
+        .iter()
+        .any(|k| k.starts_with(&format!("quiet/{inst}/"))));
+    // History off, then the last destination can be removed (keeping data).
+    h.turn_off().unwrap();
+    assert!(h.remove(r.id, false, 4).unwrap().is_none());
+    assert!(h.destinations().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_delete_job_is_blocked_and_cancel_keeps_what_is_left() {
+    let dir = tmp();
+    let s = store(&dir);
+    let (g, conn) = guarded();
+    let h = History::memory().with_connector(conn);
+    let (a, _) = h.create(new_dest("garage-local", true), 0).await.unwrap();
+    archived(&h, &s, 482_950, 2).await;
+    h.turn_off().unwrap();
+    g.refuse.store(true, Ordering::SeqCst);
+    let job = h.remove(a.id, true, 10).unwrap().unwrap();
+    h.work(&s, &[], 10, &SystemState::default()).await.unwrap();
+    let j = h.job(job.id).unwrap();
+    assert_eq!(j.state, JobState::Blocked);
+    assert!(j.error.unwrap().contains("AccessDenied"));
+    assert_eq!(j.next_retry, Some(10 + 5 * 60_000));
+    // Cancel: the destination stays, read-only, with its hours.
+    h.cancel_job(job.id, 11).unwrap();
+    let d = h.destination(a.id).unwrap();
+    assert!(!d.removing);
+    assert_eq!(d.hours, 2);
+    // Retry on a cancelled job is refused; a new removal starts a new job.
+    assert!(matches!(
+        h.retry_job(job.id, 12),
+        Err(HistoryError::Conflict("finished", _))
+    ));
+    g.refuse.store(false, Ordering::SeqCst);
+    let again = h.remove(a.id, true, 13).unwrap().unwrap();
+    assert_ne!(again.id, job.id);
+    h.retry_cleanup(a.id).unwrap();
+    h.work(&s, &[], 14, &SystemState::default()).await.unwrap();
+    h.work(&s, &[], 15, &SystemState::default()).await.unwrap();
+    assert!(matches!(h.destination(a.id), Err(HistoryError::NotFound)));
 }

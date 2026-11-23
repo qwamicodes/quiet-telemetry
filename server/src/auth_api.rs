@@ -1931,8 +1931,49 @@ mod tests {
                 &owner,
             )
             .await;
-        assert_eq!(r.status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(r.body["code"], "not_yet");
+        // Already active, nothing to copy from: just stays active.
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.body["active"], true);
+        // History policy (5b): everyone reads it, only owners change it.
+        let r = t.get("/api/settings/history", &member).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.body["retention_days"], serde_json::Value::Null);
+        for (who, want) in [(&member, StatusCode::FORBIDDEN), (&owner, StatusCode::OK)] {
+            let r = t
+                .call(
+                    Method::PUT,
+                    "/api/settings/history",
+                    Some(json!({"retention_days": 90, "at_capacity": "stop"})),
+                    who,
+                )
+                .await;
+            assert_eq!(r.status, want);
+        }
+        let r = t.get("/api/settings/history", &member).await;
+        assert_eq!(
+            (
+                r.body["retention_days"].as_i64(),
+                r.body["at_capacity"].as_str()
+            ),
+            (Some(90), Some("stop"))
+        );
+        let r = t
+            .post(
+                "/api/settings/history/preview",
+                json!({"retention_days": 30}),
+                &member,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.body["hours"], 0);
+        for path in [
+            format!("/api/storage/destinations/{id}/retry-cleanup"),
+            "/api/storage/history/off".to_string(),
+            "/api/storage/history/backfill".to_string(),
+        ] {
+            let r = t.post(&path, json!({}), &member).await;
+            assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}");
+        }
         let r = t
             .call(
                 Method::DELETE,
