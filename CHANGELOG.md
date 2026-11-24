@@ -4,6 +4,7 @@
 
 - **Image tags.** Releases publish `ghcr.io/qwamicodes/quiet-telemetry:vX.Y.Z`, `:vX.Y` and `:latest`; pushes to main publish `:edge` instead of `sha-<sha>`. The Connect snippet uses `:vX.Y.Z`. A `retag` workflow adds these tags to images already published (0.1.0, 0.1.1).
 - **Faster image builds.** arm64 builds on a native GitHub runner instead of under QEMU, in parallel with amd64 (a release went from about an hour to the length of one build); each architecture keeps its own build cache, and a version bump no longer rebuilds every dependency (the Dockerfile masks quiet's own version in the dependency layer). `edge` is now multi-arch too.
+- **Lighter CI.** Checks run on pull requests only, not again on merge to main; docs-only changes skip CI and the image build.
 - **No deploy job.** The release workflow only builds and publishes images; production pulls a tag and is redeployed from Dokploy.
 
 ## 0.1.1 (2026-11-24)

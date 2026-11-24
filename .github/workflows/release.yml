@@ -7,6 +7,12 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # Docs-only merges don't change the image. (Tag pushes ignore path filters.)
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "examples/**"
+      - "LICENSE*"
 
 permissions:
   contents: read
