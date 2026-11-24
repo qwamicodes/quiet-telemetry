@@ -58,6 +58,7 @@ export const destination = z.object({
   bytes_stored: z.number(),
   first: z.number().nullable(),
   last: z.number().nullable(),
+  last_event: z.number().nullable().default(null),
   last_upload: z.number().nullable().default(null),
   error: z.string().nullable(),
   next_retry: z.number().nullable(),
@@ -69,6 +70,11 @@ export const destination = z.object({
   cleanup_error: z.string().nullable(),
   cleanup_retry_at: z.number().nullable(),
   cleanup_blocked_hours: z.number(),
+  cleanup_blocked_bytes: z.number().default(0),
+  recent_eviction: z
+    .object({ hours: z.number(), bytes: z.number(), from: z.number().nullable(), to: z.number().nullable() })
+    .nullable()
+    .default(null),
 }) satisfies z.ZodType<Destination>
 
 const gapReason = z.enum([
@@ -130,6 +136,8 @@ export const historyStatus = z.object({
   gaps: z.array(historyGap),
   gap_hours: z.number(),
   waiting_hours: z.number(),
+  waiting_lines: z.number().default(0),
+  waiting_bytes: z.number().default(0),
   policy: historyPolicy,
   retained_from: z.number().nullable(),
   expired_hours: z.number(),

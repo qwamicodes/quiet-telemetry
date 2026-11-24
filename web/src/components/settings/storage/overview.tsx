@@ -5,6 +5,7 @@ import {
   Card,
   connectorName,
   connectorTag,
+  fmtD,
   fmtDT,
   fmtDYT,
   fmtLimit,
@@ -23,7 +24,7 @@ import {
 } from '@/components/settings/storage/ui'
 import type { Destination, HistoryJob, HistoryStatus, StorageReport } from '@/gen'
 import { isOwner, useMe } from '@/lib/auth-api'
-import { fmtAgo, fmtClock, fmtCount, fmtWindow } from '@/lib/format'
+import { fmtAgo, fmtClock, fmtCount, fmtTime, fmtWindow } from '@/lib/format'
 import { useHistory, useRetryCleanup, useVerifyDestination } from '@/lib/history-api'
 import { useStorage } from '@/lib/settings-api'
 import { toast } from '@/lib/toast'
@@ -31,6 +32,20 @@ import { toast } from '@/lib/toast'
 // Settings → Storage → Overview (v1.1-01, 13, 14, 15, 16, 18).
 
 const DAY = 86_400_000
+
+/** `14,280`. */
+const num = (n: number) => n.toLocaleString('en-US')
+
+/** What waits on local disk: `143 MB · 14,280 events` (hours when the store can't tell). */
+function waitingText(h: HistoryStatus): string {
+  if (h.waiting_lines > 0) return `${fmtSize(h.waiting_bytes)} · ${num(h.waiting_lines)} events`
+  return `${h.waiting_hours} ${h.waiting_hours === 1 ? 'hour' : 'hours'}`
+}
+
+/** `16 Nov, 09:42–10:42`. */
+function fmtSpan(from: number, to: number): string {
+  return fmtD(from) === fmtD(to) ? `${fmtDT(from)}–${fmtClock(to)}` : `${fmtDT(from)} – ${fmtDT(to)}`
+}
 
 type State = 'copying' | 'unavailable' | 'evicting' | 'stopped' | 'cleanup' | 'ok'
 
@@ -157,12 +172,14 @@ function ActiveOverview({
       : state === 'evicting' && d.first != null
         ? `Oldest available · ${fmtDT(d.first)} · ${Math.max(1, Math.round((now - d.first) / DAY))} days of history`
         : state === 'stopped' && d.last != null
-          ? `Stored through · ${fmtDT(d.last + 3_600_000 - 1)}`
-          : d.first != null
-            ? state === 'ok'
-              ? `Oldest event · ${fmtDYT(d.first)}`
-              : `Oldest stored · ${fmtDT(d.first)}`
-            : 'Nothing archived yet'
+          ? `Stored through · ${fmtDT(d.last_event ?? d.last + 3_600_000 - 1)}`
+          : state === 'cleanup' && d.cleanup_blocked_bytes > 0
+            ? `${fmtSize(Math.max(0, d.bytes_stored - d.cleanup_blocked_bytes))} retained · ${fmtSize(d.cleanup_blocked_bytes)} awaiting cleanup`
+            : d.first != null
+              ? state === 'ok'
+                ? `Oldest event · ${fmtDYT(d.first)}`
+                : `Oldest stored · ${fmtDT(d.first)}`
+              : 'Nothing archived yet'
 
   return (
     <>
@@ -287,12 +304,13 @@ function ActiveOverview({
               )
             }
           >
-            <Row k="Pending data">
-              {h.waiting_hours} {h.waiting_hours === 1 ? 'hour' : 'hours'}
-            </Row>
+            <Row k="Pending data">{waitingText(h)}</Row>
             <Row k="Local headroom">
               {fmtSize(Math.max(0, local.settings.max_disk - local.used))} before the local disk cap
             </Row>
+            {d.last_event != null && (
+              <Row k="Last stored event">{`${fmtD(d.last_event)}, ${fmtTime(d.last_event).slice(0, 8)}`}</Row>
+            )}
           </Card>
           <p className="text-muted-foreground text-xs leading-[18px]">
             Pending data is not yet retained in {KIND_SHORT[d.kind]}. Local eviction can create a history gap; Quiet
@@ -313,6 +331,14 @@ function ActiveOverview({
           >
             <div className="flex flex-col gap-3 p-4">
               <KVLine k="Oldest event now">{d.first != null ? fmtDYT(d.first) : '–'}</KVLine>
+              {d.recent_eviction && (
+                <KVLine k="Removed in last hour">
+                  {fmtSize(d.recent_eviction.bytes)}
+                  {d.recent_eviction.from != null &&
+                    d.recent_eviction.to != null &&
+                    ` · ${fmtSpan(d.recent_eviction.from, d.recent_eviction.to)}`}
+                </KVLine>
+              )}
               <p className="text-muted-foreground text-xs leading-[18px]">
                 The size limit is taking effect before age-based retention. Events in the removed period are no longer
                 searchable.
@@ -331,9 +357,7 @@ function ActiveOverview({
           <Card title="History gap" aside={<Tag tone="warn">Open gap</Tag>}>
             <div className="flex flex-col gap-3 p-4">
               <KVLine k="Not stored since">{d.last != null ? fmtDYT(d.last + 3_600_000) : '–'}</KVLine>
-              <KVLine k="Waiting locally">
-                {h.waiting_hours} {h.waiting_hours === 1 ? 'hour' : 'hours'}
-              </KVLine>
+              <KVLine k="Waiting locally">{waitingText(h)}</KVLine>
               <p className="text-muted-foreground text-xs leading-[18px]">
                 New events remain available within the recent local window. They can expire there before history storage
                 resumes.
@@ -360,7 +384,10 @@ function ActiveOverview({
                   : 'Hours removed by the size limit'}
               </Row>
               <Row k="Objects remaining">
-                {fmtCount(d.cleanup_blocked_hours * 2)} objects · {d.cleanup_blocked_hours} hours
+                {fmtCount(d.cleanup_blocked_hours * 2)} objects ·{' '}
+                {d.cleanup_blocked_bytes > 0
+                  ? fmtSize(d.cleanup_blocked_bytes)
+                  : `${d.cleanup_blocked_hours} ${d.cleanup_blocked_hours === 1 ? 'hour' : 'hours'}`}
               </Row>
               <Row k="Provider response">{d.cleanup_error ?? '–'}</Row>
               <Row k="Next action">

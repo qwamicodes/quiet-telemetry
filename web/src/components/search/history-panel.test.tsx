@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { HistoryCoverage, HistorySearchJob } from '@/gen'
 import { fmtDays } from '@/lib/history-search'
-import { HistoryPanel } from './history-panel'
+import { CoverageFootnote, CoverageStatus, HistoryPanel } from './history-panel'
 
 const H = 3_600_000
 const NOV9 = Date.UTC(2026, 10, 9)
@@ -107,7 +107,6 @@ describe('HistoryPanel (v1.1-19, 20, 21, 27)', () => {
     )
     expect(screen.getByText('Results are incomplete')).toBeInTheDocument()
     expect(screen.getByText(/Garage could not be searched for 09–21 Nov/)).toBeInTheDocument()
-    expect(screen.getByText('1 of 2 locations searched')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Retry Garage' }))
     expect(on.start).toHaveBeenCalledTimes(2)
     re(job({ state: 'done', done: 13, count: 1 }))
@@ -116,6 +115,30 @@ describe('HistoryPanel (v1.1-19, 20, 21, 27)', () => {
       'href',
       '/api/search/history/hs_1/export?format=ndjson',
     )
+  })
+
+  it('next to the count: locations searched and View coverage (v1.1-21)', async () => {
+    const failed = job({
+      state: 'incomplete',
+      done: 13,
+      failures: [
+        { destination: 'garage-local', from: NOV9, to: NOV9 + 13 * 24 * H, hours: 10, error: 'connection refused' },
+      ],
+    })
+    render(
+      <>
+        <CoverageStatus coverage={coverage} job={failed} localWindowMs={86_400_000} />
+        <CoverageFootnote job={failed} />
+      </>,
+    )
+    expect(screen.getByText('1 of 2 locations searched')).toBeInTheDocument()
+    expect(screen.getByText(/A failed location is not the same as no matches/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'View coverage' }))
+    const list = await screen.findByRole('list', { name: 'Coverage' })
+    expect(list).toHaveTextContent('Recent local data')
+    expect(list).toHaveTextContent('Last 24h · searched')
+    expect(list).toHaveTextContent('09–21 Nov · not searched · connection refused')
+    expect(list).toHaveTextContent('Before 09 Nov · no retained history')
   })
 
   it('formats day ranges', () => {

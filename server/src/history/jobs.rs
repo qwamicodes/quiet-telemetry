@@ -298,6 +298,9 @@ impl History {
                     }
                     if !evict.is_empty() {
                         let c = self.cleanup(&d, &evict, now, &mut budget).await?;
+                        // Deletes run oldest first and stop at the first failure.
+                        let gone = &evict[..(c.deleted as usize).min(evict.len())];
+                        self.catalog.record_evictions(d.id, gone, now)?;
                         if c.deleted > 0 {
                             tracing::info!(hours = c.deleted, destination = %d.name, "history: evicted oldest hours at capacity");
                         }
@@ -334,7 +337,7 @@ impl History {
     fn cleanup_banner(&self, system: &SystemState) -> anyhow::Result<()> {
         let mut blocked = Vec::new();
         for d in self.catalog.destinations()? {
-            let n = self.catalog.blocked_hours(d.id)?;
+            let (n, _) = self.catalog.blocked_hours(d.id)?;
             if n > 0 {
                 blocked.push((d, n));
             }

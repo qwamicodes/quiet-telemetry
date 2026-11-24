@@ -17,9 +17,10 @@ enabled: boolean, enabled_at: number | null, instance_id: string, active: number
  */
 gaps: Array<HistoryGap>, gap_hours: number, 
 /**
- * Hours past the local window still waiting to be archived.
+ * Hours past the local window still waiting to be archived, and the
+ * lines and raw bytes they hold (v1.1-14, 16).
  */
-waiting_hours: number, policy: HistoryPolicy, 
+waiting_hours: number, waiting_lines: number, waiting_bytes: number, policy: HistoryPolicy, 
 /**
  * Archived hours older than this are deleted (`null`: kept indefinitely).
  */

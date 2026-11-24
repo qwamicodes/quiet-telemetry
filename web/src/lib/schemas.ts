@@ -326,6 +326,7 @@ export const flowResponse = z.object({
   until: z.number(),
   took_ms: z.number(),
   history: flowHistory.optional(),
+  retained: z.object({ location: z.string(), at: z.number(), lines: z.number() }).optional(),
 }) satisfies z.ZodType<FlowResponse>
 
 export const closeMatch = z.object({

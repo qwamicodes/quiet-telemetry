@@ -391,6 +391,8 @@ pub struct Destination {
     /// Start of the oldest / newest archived hour, unix ms.
     pub first: Option<i64>,
     pub last: Option<i64>,
+    /// The newest archived event (Overview: "Last stored event"), unix ms.
+    pub last_event: Option<i64>,
     /// When the newest upload here finished (Overview: "Last upload 4s ago").
     #[ts(type = "number | null")]
     pub last_upload: Option<i64>,
@@ -409,9 +411,25 @@ pub struct Destination {
     /// The last refused (or failed) delete and when cleanup tries again.
     pub cleanup_error: Option<String>,
     pub cleanup_retry_at: Option<i64>,
-    /// Hours whose delete was refused ("cleanup blocked").
+    /// Hours whose delete was refused ("cleanup blocked"), and their bytes.
     #[ts(type = "number")]
     pub cleanup_blocked_hours: u64,
+    #[ts(type = "number")]
+    pub cleanup_blocked_bytes: u64,
+    /// What eviction at capacity removed in the last hour (v1.1-15).
+    pub recent_eviction: Option<RecentEviction>,
+}
+
+/// Hours evicted at capacity in the last hour.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct RecentEviction {
+    #[ts(type = "number")]
+    pub hours: u64,
+    #[ts(type = "number")]
+    pub bytes: u64,
+    /// Oldest and newest event removed, unix ms.
+    pub from: Option<i64>,
+    pub to: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
@@ -503,9 +521,14 @@ pub struct HistoryStatus {
     pub gaps: Vec<HistoryGap>,
     #[ts(type = "number")]
     pub gap_hours: u64,
-    /// Hours past the local window still waiting to be archived.
+    /// Hours past the local window still waiting to be archived, and the
+    /// lines and raw bytes they hold (v1.1-14, 16).
     #[ts(type = "number")]
     pub waiting_hours: u64,
+    #[ts(type = "number")]
+    pub waiting_lines: u64,
+    #[ts(type = "number")]
+    pub waiting_bytes: u64,
     pub policy: HistoryPolicy,
     /// Archived hours older than this are deleted (`null`: kept indefinitely).
     pub retained_from: Option<i64>,
@@ -552,6 +575,8 @@ struct Unavailable {
 struct Runtime {
     unavailable: Option<Unavailable>,
     waiting: u64,
+    /// Which hours wait (the last pass's).
+    waiting_list: Vec<i64>,
     /// The Garage bucket's quota (bytes) when quiet set Garage up, and when
     /// it was last read.
     garage_quota: Option<u64>,
@@ -697,7 +722,10 @@ impl History {
 
     fn view(&self, d: &DestinationRow) -> anyhow::Result<Destination> {
         let held = self.catalog.held(d.id)?;
-        let blocked = self.catalog.blocked_hours(d.id)?;
+        let (blocked, blocked_bytes) = self.catalog.blocked_hours(d.id)?;
+        let evicted = self
+            .catalog
+            .evicted_since(d.id, chrono::Utc::now().timestamp_millis() - HOUR)?;
         let cap = self.capacity(d);
         let rt = self.runtime.lock().unwrap();
         let down = rt
@@ -727,6 +755,7 @@ impl History {
             bytes_stored: held.bytes_stored,
             first: held.first_hour.map(|h| h * HOUR),
             last: held.last_hour.map(|h| h * HOUR),
+            last_event: held.last_event,
             last_upload: held.last_archived_at,
             error: down.map(|u| u.error.clone()),
             next_retry: down.map(|u| u.next_retry),
@@ -738,6 +767,13 @@ impl History {
             cleanup_error: d.cleanup_error.clone(),
             cleanup_retry_at: d.cleanup_retry_at,
             cleanup_blocked_hours: blocked,
+            cleanup_blocked_bytes: blocked_bytes,
+            recent_eviction: (evicted.hours > 0).then_some(RecentEviction {
+                hours: evicted.hours,
+                bytes: evicted.bytes,
+                from: evicted.min_ts,
+                to: evicted.max_ts,
+            }),
         })
     }
 
@@ -789,6 +825,8 @@ impl History {
                 .collect(),
             gap_hours: self.catalog.gap_count()?,
             waiting_hours: self.runtime.lock().unwrap().waiting,
+            waiting_lines: 0,
+            waiting_bytes: 0,
             policy,
             retained_from: before.map(|b| b * HOUR),
             expired_hours,
@@ -803,6 +841,22 @@ impl History {
     pub async fn status_with(&self, store: &dyn Store, now: i64) -> anyhow::Result<HistoryStatus> {
         let mut st = self.status_at(now)?;
         st.backfill_hours = self.backfill_candidates(store, now).await?.len() as u64;
+        let waiting: HashSet<i64> = self
+            .runtime
+            .lock()
+            .unwrap()
+            .waiting_list
+            .iter()
+            .copied()
+            .collect();
+        if !waiting.is_empty() {
+            for h in store.storage().await?.hours {
+                if waiting.contains(&h.start.div_euclid(HOUR)) {
+                    st.waiting_lines += h.lines;
+                    st.waiting_bytes += h.bytes;
+                }
+            }
+        }
         Ok(st)
     }
 
@@ -1549,6 +1603,19 @@ impl History {
     /// before `cutoff`, oldest first, archived then dropped. Stops at the
     /// first failure and holds the rest locally (with backoff).
     pub async fn pass(
+        &self,
+        store: &dyn Store,
+        cutoff: i64,
+        exclude: &[String],
+        now: i64,
+        system: &SystemState,
+    ) -> Pass {
+        let pass = self.pass_inner(store, cutoff, exclude, now, system).await;
+        self.runtime.lock().unwrap().waiting_list = pass.waiting.clone();
+        pass
+    }
+
+    async fn pass_inner(
         &self,
         store: &dyn Store,
         cutoff: i64,

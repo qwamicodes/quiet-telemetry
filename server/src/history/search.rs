@@ -806,3 +806,263 @@ impl HistorySearch {
         }))
     }
 }
+
+// ── Flows in retained history (v1.1-23) ─────────────────────────────────────
+
+/// Hours either side of the opened event a flow loads from retained history.
+pub const FLOW_SPAN_HOURS: i64 = 3;
+
+/// Archived hours downloaded for one flow. Answers id lookups from each
+/// segment's id index and remembers where every line came from.
+#[derive(Default)]
+pub struct SegmentSet {
+    segs: Vec<(PathBuf, i64, String)>,
+    origin: Mutex<HashMap<u64, String>>,
+}
+
+impl SegmentSet {
+    pub fn is_empty(&self) -> bool {
+        self.segs.is_empty()
+    }
+
+    /// Start of the oldest hour loaded, unix ms.
+    pub fn since(&self) -> Option<i64> {
+        self.segs.iter().map(|s| s.1).min().map(|h| h * HOUR)
+    }
+
+    /// The destination a line was read from (`None`: not from history).
+    pub fn location(&self, line: u64) -> Option<String> {
+        self.origin.lock().unwrap().get(&line).cloned()
+    }
+
+    /// One archived line by id.
+    pub async fn line(&self, id: u64) -> anyhow::Result<Option<Line>> {
+        let segs = self.segs.clone();
+        let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<(String, Line)>> {
+            for (p, h, n) in segs {
+                if let Some(l) = crate::store::segment_line(&p, h, id)? {
+                    return Ok(Some((n, l)));
+                }
+            }
+            Ok(None)
+        })
+        .await??;
+        Ok(got.map(|(n, l)| {
+            self.origin.lock().unwrap().insert(l.id, n);
+            l
+        }))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::flow::IdLookup for SegmentSet {
+    async fn lines_with_ids(
+        &self,
+        ids: &[String],
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Line>> {
+        let (segs, ids) = (self.segs.clone(), ids.to_vec());
+        let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(String, Line)>> {
+            let mut out = Vec::new();
+            for (p, h, n) in segs {
+                for l in crate::store::segment_with_ids(&p, h, &ids, since, until, limit)? {
+                    out.push((n.clone(), l));
+                }
+            }
+            Ok(out)
+        })
+        .await??;
+        let mut origin = self.origin.lock().unwrap();
+        let mut lines: Vec<Line> = got
+            .into_iter()
+            .map(|(n, l)| {
+                origin.insert(l.id, n);
+                l
+            })
+            .collect();
+        lines.sort_by_key(|l| (l.ts, l.id));
+        lines.truncate(limit);
+        Ok(lines)
+    }
+}
+
+/// The local window and archived hours together (an hour that was backfilled
+/// can be in both: each line once).
+pub struct Combined<'a> {
+    pub local: &'a dyn crate::store::Store,
+    pub history: &'a SegmentSet,
+}
+
+#[async_trait::async_trait]
+impl crate::flow::IdLookup for Combined<'_> {
+    async fn lines_with_ids(
+        &self,
+        ids: &[String],
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Line>> {
+        let mut lines = self.local.with_ids(ids, since, until, limit).await?;
+        let seen: HashSet<u64> = lines.iter().map(|l| l.id).collect();
+        lines.extend(
+            self.history
+                .lines_with_ids(ids, since, until, limit)
+                .await?
+                .into_iter()
+                .filter(|l| !seen.contains(&l.id)),
+        );
+        lines.sort_by_key(|l| (l.ts, l.id));
+        lines.truncate(limit);
+        Ok(lines)
+    }
+}
+
+impl HistorySearch {
+    /// The archived hours a flow opened at `at` (unix ms) may span:
+    /// [`FLOW_SPAN_HOURS`] either side, older than the local window
+    /// (`local_first`), downloaded into the cache. Without `at`, the hours
+    /// whose cached segment's id index holds one of `ids` say where to look
+    /// (nothing is downloaded to find them). Hours that fail to download are
+    /// left out.
+    pub async fn flow_segments(
+        &self,
+        history: &History,
+        at: Option<i64>,
+        ids: &[String],
+        local_first: Option<i64>,
+        now: i64,
+    ) -> anyhow::Result<SegmentSet> {
+        let at = match at {
+            Some(at) => at,
+            None => {
+                let edge = local_first.unwrap_or(i64::MAX);
+                let hours = history.catalog.hours_before(edge)?;
+                let hit = hours.iter().rev().find(|h| {
+                    self.cache.get(&h.sha256).is_some_and(|p| {
+                        crate::store::segment_has_ids(&p, h.hour, ids).unwrap_or(false)
+                    })
+                });
+                match hit {
+                    Some(h) => h.hour * HOUR + HOUR / 2,
+                    None => return Ok(SegmentSet::default()),
+                }
+            }
+        };
+        let span = FLOW_SPAN_HOURS * HOUR;
+        let Some((_, planned)) = history.coverage(at - span, at + span, local_first, now)? else {
+            return Ok(SegmentSet::default());
+        };
+        let mut segs = Vec::new();
+        for p in planned {
+            match self.cache.segment(history, &p.destination, &p.rec).await {
+                Ok((path, _)) => segs.push((path, p.hour, p.destination.name.clone())),
+                Err(e) => tracing::warn!(
+                    hour = p.hour,
+                    destination = %p.destination.name,
+                    error = %format!("{e:#}"),
+                    "history: an hour of a flow could not be loaded"
+                ),
+            }
+        }
+        Ok(SegmentSet {
+            segs,
+            origin: Mutex::new(HashMap::new()),
+        })
+    }
+}
+
+// ── Timeline (v1.1-22) ──────────────────────────────────────────────────────
+
+/// Bars in the time-range menu's "AVAILABLE HISTORY" strip.
+pub const TIMELINE_BARS: usize = 48;
+
+/// One bar of the timeline: events stored in `[start, end)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct TimelineBar {
+    pub start: i64,
+    pub end: i64,
+    #[ts(type = "number")]
+    pub lines: u64,
+    /// In the local window (else retained history).
+    pub local: bool,
+}
+
+/// What Search can reach, oldest to now: retained history, then the local
+/// window (`GET /api/search/timeline`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct HistoryTimeline {
+    /// The oldest searchable moment (retained history's first hour, else
+    /// the local window's), unix ms.
+    pub from: i64,
+    /// Where the local window starts, unix ms (`null`: nothing local).
+    pub local_from: Option<i64>,
+    pub now: i64,
+    pub bars: Vec<TimelineBar>,
+}
+
+impl History {
+    /// The timeline over every destination's archived hours (within the
+    /// history retention) and the local hours `local` (`(hour, lines)`).
+    /// `None` before history was ever enabled.
+    pub fn timeline(
+        &self,
+        local: &[(i64, u64)],
+        now: i64,
+    ) -> anyhow::Result<Option<HistoryTimeline>> {
+        if self.catalog.enabled_at()?.is_none() {
+            return Ok(None);
+        }
+        let cut = retention_before(&self.catalog.policy()?, now);
+        let mut by_hour: BTreeMap<i64, u64> = BTreeMap::new();
+        for r in self.catalog.hours_before(i64::MAX)? {
+            if cut.is_some_and(|c| r.hour < c) {
+                continue;
+            }
+            let e = by_hour.entry(r.hour).or_default();
+            *e = (*e).max(r.lines);
+        }
+        let local_first = local.iter().map(|(h, _)| *h).min();
+        for (h, n) in local {
+            let e = by_hour.entry(*h).or_default();
+            *e = (*e).max(*n);
+        }
+        let Some(first) = by_hour.keys().next().copied() else {
+            return Ok(Some(HistoryTimeline {
+                from: now,
+                local_from: None,
+                now,
+                bars: Vec::new(),
+            }));
+        };
+        let from = first * HOUR;
+        let span = (now - from).max(1);
+        let width = (span + TIMELINE_BARS as i64 - 1) / TIMELINE_BARS as i64;
+        let local_from = local_first.map(|h| h * HOUR);
+        let mut bars: Vec<TimelineBar> = (0..TIMELINE_BARS as i64)
+            .map(|i| {
+                let start = from + i * width;
+                TimelineBar {
+                    start,
+                    end: (start + width).min(now),
+                    lines: 0,
+                    local: local_from.is_some_and(|l| start + width > l),
+                }
+            })
+            .filter(|b| b.start < now)
+            .collect();
+        for (h, n) in by_hour {
+            let i = (((h * HOUR - from) / width) as usize).min(bars.len().saturating_sub(1));
+            if let Some(b) = bars.get_mut(i) {
+                b.lines += n;
+            }
+        }
+        Ok(Some(HistoryTimeline {
+            from,
+            local_from,
+            now,
+            bars,
+        }))
+    }
+}

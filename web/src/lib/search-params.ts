@@ -26,6 +26,14 @@ export type StreamSearch = z.infer<typeof streamSearch>
 /** `/flow/$id` and `/line/$lineId` — `line` is the step whose field card is open. */
 export const flowSearch = z.object({
   line: z.coerce.number().int().positive().optional().catch(undefined),
+  /** Opened from a retained-history result: when it happened, so the flow is read from there (v1.1-23). */
+  at: z.coerce.number().int().positive().optional().catch(undefined),
+  /** The search it was opened from (`/search?…`), for "Back to results". */
+  back: z
+    .string()
+    .refine((s) => s.startsWith('/search'))
+    .optional()
+    .catch(undefined),
   /** `card=diagram`: open the selected line's card on its Diagram tab, wide (Stream preview → Diagram, `D`). */
   card: z.enum(['diagram']).optional().catch(undefined),
 })
@@ -45,7 +53,7 @@ export const flowParams = z.object({ id: z.string().trim().min(1).max(256) })
 export const lineParams = z.object({ lineId: z.coerce.number().int().positive() })
 
 /** Time ranges the picker offers; `from`/`to` (unix ms) override them. */
-export const RANGES = ['15m', '1h', '6h', '24h', '3d', '7d'] as const
+export const RANGES = ['15m', '1h', '6h', '24h', '3d', '7d', '30d'] as const
 export type Range = (typeof RANGES)[number]
 export const RANGE_MS: Record<Range, number> = {
   '15m': 15 * 60_000,
@@ -54,6 +62,8 @@ export const RANGE_MS: Record<Range, number> = {
   '24h': 24 * 3_600_000,
   '3d': 3 * 24 * 3_600_000,
   '7d': 7 * 24 * 3_600_000,
+  /** Reaches into retained history (v1.1-22). */
+  '30d': 30 * 24 * 3_600_000,
 }
 
 const ms = z.coerce.number().int().positive().optional().catch(undefined)
