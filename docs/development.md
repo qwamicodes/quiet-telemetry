@@ -91,7 +91,8 @@ make build   # optional: one release binary at server/target/release/quiet with 
 
 `main` is production. There is no staging branch: testing happens locally. Every change goes **local → main → release**: built and checked locally (`make check`, `make up`), merged to `main` by PR, then released with a version tag.
 
-- Every push to `main` publishes `ghcr.io/qwamicodes/quiet-telemetry:edge`; a `vX.Y.Z` tag on `main` publishes `:vX.Y.Z`, `:vX.Y` and `:latest`. Both are amd64 + arm64: each architecture builds on its own native runner in parallel, with its own build cache, and a merge job tags the multi-arch image. The job summary prints the digest. To add these tags to an image that is already published, run the `retag` workflow with its version.
+- CI (`ci.yml`) runs on pull requests only; a merge doesn't run it again. Docs-only changes (`*.md`, `docs/`, `examples/`) skip CI and the image build.
+- Every push to `main` that changes code publishes `ghcr.io/qwamicodes/quiet-telemetry:edge`; a `vX.Y.Z` tag on `main` publishes `:vX.Y.Z`, `:vX.Y` and `:latest`. Both are amd64 + arm64: each architecture builds on its own native runner in parallel, with its own build cache, and a merge job tags the multi-arch image. The job summary prints the digest. To add these tags to an image that is already published, run the `retag` workflow with its version.
 - CI does not deploy. Production pulls a tag (`:latest`, or `:vX.Y.Z` to hold a version) and is redeployed from its host (Dokploy).
 - `deploy/docker-compose.prod.yml` is the reference for running it yourself (loopback port, healthcheck, memory limit).
 - Releases are tagged on `main` and published as GitHub releases with the matching [CHANGELOG](../CHANGELOG.md) section.

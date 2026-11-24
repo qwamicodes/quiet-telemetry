@@ -1,8 +1,13 @@
 name: ci
+# Pull requests only: main gets each change through a PR that already passed
+# here, and release.yml builds the image on main. Docs-only changes skip it.
 on:
   pull_request:
-  push:
-    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "examples/**"
+      - "LICENSE*"
 
 concurrency:
   group: ci-${{ github.ref }}
