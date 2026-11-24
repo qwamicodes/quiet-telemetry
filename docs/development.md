@@ -89,11 +89,11 @@ make build   # optional: one release binary at server/target/release/quiet with 
 
 ## Releases and deploys
 
-`main` is production. There is no staging branch: testing happens locally. Every change goes **local → main → prod**: built and checked locally (`make check`, `make up`), merged to `main` by PR, then deployed once the `production` environment approves it.
+`main` is production. There is no staging branch: testing happens locally. Every change goes **local → main → release**: built and checked locally (`make check`, `make up`), merged to `main` by PR, then released with a version tag.
 
-- Every push to `main` publishes `ghcr.io/qwamicodes/quiet-telemetry:edge` (amd64). A `vX.Y.Z` tag on `main` publishes `:vX.Y.Z`, `:vX.Y` and `:latest` for amd64 and arm64. Production always deploys by digest, never by tag; the job summary prints it. To add these tags to an image that is already published, run the `retag` workflow with its version.
-- The `deploy-production` job waits for approval on the `production` GitHub Environment, then points the Dokploy app at the image **by digest** and deploys. It skips cleanly until the Dokploy secrets exist.
-- `deploy/docker-compose.prod.yml` is the reference for running it yourself (digest-pinned, loopback port, healthcheck, memory limit).
+- Every push to `main` publishes `ghcr.io/qwamicodes/quiet-telemetry:edge` (amd64). A `vX.Y.Z` tag on `main` publishes `:vX.Y.Z`, `:vX.Y` and `:latest` for amd64 and arm64. The job summary prints the digest. To add these tags to an image that is already published, run the `retag` workflow with its version.
+- CI does not deploy. Production pulls a tag (`:latest`, or `:vX.Y.Z` to hold a version) and is redeployed from its host (Dokploy).
+- `deploy/docker-compose.prod.yml` is the reference for running it yourself (loopback port, healthcheck, memory limit).
 - Releases are tagged on `main` and published as GitHub releases with the matching [CHANGELOG](../CHANGELOG.md) section.
 
 Technical decisions per slice: [decisions.md](decisions.md).

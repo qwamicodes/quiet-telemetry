@@ -1,7 +1,6 @@
 name: release
-# local → main → prod. Every push to main publishes `edge`; a vX.Y.Z tag
-# publishes `vX.Y.Z`, `vX.Y` and `latest` (amd64 + arm64). Production deploys
-# the image by digest after the `production` environment is approved.
+# Every push to main publishes `edge`; a vX.Y.Z tag publishes `vX.Y.Z`, `vX.Y`
+# and `latest` (amd64 + arm64). Deploying is outside CI: production pulls a tag.
 on:
   push:
     branches: [main]
@@ -71,32 +70,3 @@ jobs:
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-  deploy-production:
-    needs: image
-    runs-on: ubuntu-latest
-    # Required reviewers are set on the `production` environment in repo settings.
-    environment:
-      name: production
-      url: ${{ vars.PROD_URL }}
-    env:
-      DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
-      DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
-      APP_ID: ${{ secrets.DOKPLOY_PROD_APP_ID }}
-      IMAGE_REF: ghcr.io/qwamicodes/quiet-telemetry@${{ needs.image.outputs.digest }}
-    steps:
-      - name: skip (Dokploy secrets not set)
-        if: env.DOKPLOY_URL == '' || env.DOKPLOY_API_KEY == '' || env.APP_ID == ''
-        run: |
-          echo "Dokploy secrets are not configured; nothing deployed. Image: $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
-      - name: point the Dokploy app at the new digest and deploy
-        if: env.DOKPLOY_URL != '' && env.DOKPLOY_API_KEY != '' && env.APP_ID != ''
-        run: |
-          set -euo pipefail
-          api() {
-            curl -fsS -X POST "${DOKPLOY_URL%/}/api/$1" \
-              -H "x-api-key: ${DOKPLOY_API_KEY}" -H 'Content-Type: application/json' -d "$2"
-          }
-          api application.saveDockerProvider "$(jq -nc --arg id "$APP_ID" --arg img "$IMAGE_REF" '{applicationId:$id, dockerImage:$img}')"
-          api application.deploy "$(jq -nc --arg id "$APP_ID" '{applicationId:$id}')"
-          echo "Deployed \`$IMAGE_REF\` to production." >> "$GITHUB_STEP_SUMMARY"

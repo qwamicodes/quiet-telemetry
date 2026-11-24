@@ -1,11 +1,10 @@
-# Production on Dokploy (deploy.legivent.com). Reference for a Compose app;
-# with a Dokploy Application, release.yml sets the same image by digest.
-# Pin by digest (from the release job summary), never by tag.
+# Production on Dokploy (deploy.legivent.com). Reference for a Compose app.
+# `latest` follows releases; use `vX.Y.Z` to hold a version.
 name: quiet-prod
 services:
   quiet:
-    image: ghcr.io/qwamicodes/quiet-telemetry@sha256:REPLACE_WITH_RELEASE_DIGEST
-    pull_policy: missing
+    image: ghcr.io/qwamicodes/quiet-telemetry:latest
+    pull_policy: always
     restart: unless-stopped
     environment:
       QUIET_ADDR: 0.0.0.0:7070

@@ -36,9 +36,9 @@ Thanks for helping with quiet. Bug reports, fixes, docs and features are all wel
 
 `main` is production; there is no staging branch.
 
-1. A merged PR publishes `ghcr.io/qwamicodes/quiet-telemetry:edge` and prints its digest.
-2. The `deploy-production` job waits for approval on the `production` environment, then deploys that digest.
-3. Releases are tagged on `main` as `vX.Y.Z` (`git tag -a v0.1.1 -m "quiet v0.1.1" && git push origin v0.1.1`), which publishes `:X.Y.Z` for amd64 and arm64 and goes through the same approval. The GitHub release uses the matching CHANGELOG section.
+1. A merged PR publishes `ghcr.io/qwamicodes/quiet-telemetry:edge` (amd64) and prints its digest.
+2. Releases are tagged on `main` as `vX.Y.Z` (`git tag -a v0.1.1 -m "quiet v0.1.1" && git push origin v0.1.1`), which publishes `:vX.Y.Z`, `:vX.Y` and `:latest` for amd64 and arm64. The GitHub release uses the matching CHANGELOG section.
+3. CI does not deploy; production pulls the tag it runs.
 
 ## License
 

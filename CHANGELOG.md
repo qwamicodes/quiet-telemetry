@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Image tags.** Releases publish `ghcr.io/qwamicodes/quiet-telemetry:vX.Y.Z`, `:vX.Y` and `:latest`; pushes to main publish `:edge` instead of `sha-<sha>`. The Connect snippet uses `:vX.Y.Z`. A `retag` workflow adds these tags to images already published (0.1.0, 0.1.1).
+- **No deploy job.** The release workflow only builds and publishes images; production pulls a tag and is redeployed from Dokploy.
 
 ## 0.1.1 (2026-11-24)
 
