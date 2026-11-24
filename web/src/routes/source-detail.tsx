@@ -216,7 +216,7 @@ export function SourceDetailPage() {
               navigate({ search: (x) => ({ ...x, tab: t === 'overview' ? undefined : t }), replace: true })
             }
             className={cn(
-              '-mb-px border-transparent border-b-2 px-3 py-2 text-muted-foreground text-sm hover:text-foreground',
+              '-mb-px border-transparent border-b-2 px-2.5 py-2 font-medium text-muted-foreground text-xs leading-4 hover:text-foreground',
               tab === t && 'border-foreground text-foreground',
             )}
           >
@@ -1029,7 +1029,7 @@ export function SourceSettingsForm({
     <form className="flex flex-col gap-4" onSubmit={submit} aria-label={`Settings for ${name}`}>
       <fieldset disabled={!owner} className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="flex flex-col gap-4">
-          <Panel title="Identity">
+          <Panel flush title="Identity">
             <div className="flex flex-col gap-2 p-4">
               <label htmlFor="display-name" className="text-sm">
                 Display name
@@ -1052,6 +1052,7 @@ export function SourceSettingsForm({
             </div>
           </Panel>
           <Panel
+            flush
             title="Correlation id order"
             aside={
               <button
@@ -1078,6 +1079,7 @@ export function SourceSettingsForm({
             </div>
           </Panel>
           <Panel
+            flush
             title="Muted lines"
             aside={`${saved.muted.length} ${saved.muted.length === 1 ? 'rule' : 'rules'} here · ${globalCount} global`}
           >
@@ -1096,7 +1098,7 @@ export function SourceSettingsForm({
               </Button>
             </div>
           </Panel>
-          <Panel title="Stream & retention">
+          <Panel flush title="Stream & retention">
             <div className="flex flex-col gap-3 p-4">
               <div className="flex items-center justify-between gap-4 text-sm">
                 <span className="flex flex-col">
@@ -1188,7 +1190,7 @@ export function SourceSettingsForm({
               />
             </div>
           </Panel>
-          <Panel title="Mask in members' exports" aside="owner only">
+          <Panel flush title="Mask in members' exports" aside="owner only">
             <div className="flex flex-col p-4">
               <span className="pb-2 text-muted-foreground text-xs">
                 Members' exports of this source also mask these. Owners export what is stored.

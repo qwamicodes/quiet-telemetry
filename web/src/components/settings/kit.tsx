@@ -66,17 +66,25 @@ export function Panel({
   aside,
   children,
   className,
+  flush = false,
 }: {
   title?: ReactNode
   aside?: ReactNode
   children: ReactNode
   className?: string
+  /** Title inline with the body, no divider (v0.1.1-06.3 cards). */
+  flush?: boolean
 }) {
   return (
     <section className={cn('border bg-card', className)}>
       {(title || aside) && (
-        <div className="flex items-center justify-between gap-4 border-b px-4 py-3">
-          <span className="font-medium">{title}</span>
+        <div
+          className={cn(
+            'flex items-center justify-between gap-4 px-4',
+            flush ? '-mb-1 pt-4 text-[13px] leading-[18px]' : 'border-b py-3',
+          )}
+        >
+          <span className={flush ? 'font-semibold' : 'font-medium'}>{title}</span>
           {aside && <span className="font-mono text-[11px] text-muted-foreground">{aside}</span>}
         </div>
       )}

@@ -62,9 +62,25 @@ fn job_err(e: JobError) -> Response {
     }
 }
 
-/// The first hour still in the local window, if any.
+/// The first hour of the local window, if anything is stored locally.
+///
+/// Normally the oldest stored hour. When that is newer than the start of the
+/// local retention window and history never archived (or recorded a gap for)
+/// the hours in between, those hours simply never held lines (a fresh
+/// install, a quiet night): they belong to the local window, not to retained
+/// history, so search doesn't call them "not retained".
 pub(crate) async fn local_first(s: &AppState) -> Option<i64> {
-    s.pipeline.store().hours().await.ok()?.into_iter().min()
+    let first = s.pipeline.store().hours().await.ok()?.into_iter().min()?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let window = s.pipeline.settings().storage().retention_ms;
+    let window_start = (now - window).div_euclid(crate::history::HOUR);
+    if first <= window_start {
+        return Some(first);
+    }
+    match s.history.catalog.touched_between(window_start, first) {
+        Ok(false) => Some(window_start),
+        _ => Some(first),
+    }
 }
 
 async fn timeline(State(s): State<AppState>) -> Response {

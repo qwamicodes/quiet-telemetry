@@ -1562,3 +1562,13 @@ async fn the_policy_size_limit_is_each_connectors_capacity() {
         Some((100_000_000_000, CapacitySource::Policy))
     );
 }
+
+#[test]
+fn touched_between_sees_archived_hours_and_gaps_only() {
+    let h = History::memory();
+    assert!(!h.catalog.touched_between(100, 200).unwrap());
+    h.catalog.add_gap(150, GapReason::DiskCap, 1).unwrap();
+    assert!(h.catalog.touched_between(100, 200).unwrap());
+    assert!(!h.catalog.touched_between(151, 200).unwrap());
+    assert!(!h.catalog.touched_between(100, 150).unwrap());
+}

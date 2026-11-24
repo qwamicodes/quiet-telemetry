@@ -460,6 +460,19 @@ impl Catalog {
         Ok(v)
     }
 
+    /// Whether retained history archived, or recorded a gap for, any hour
+    /// in `[from_hour, to_hour)`.
+    pub fn touched_between(&self, from_hour: i64, to_hour: i64) -> anyhow::Result<bool> {
+        let db = self.db.lock().unwrap();
+        let n: i64 = db.query_row(
+            "SELECT (SELECT COUNT(*) FROM history_hours WHERE hour >= ?1 AND hour < ?2)
+                  + (SELECT COUNT(*) FROM history_gaps WHERE hour >= ?1 AND hour < ?2)",
+            params![from_hour, to_hour],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn remove_hour(&self, destination_id: i64, hour: i64) -> anyhow::Result<()> {
         self.db.lock().unwrap().execute(
             "DELETE FROM history_hours WHERE destination_id = ?1 AND hour = ?2",
