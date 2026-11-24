@@ -3,9 +3,10 @@ import { CheckIcon, ChevronDownIcon, ClockIcon } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import type { Bucket } from '@/gen'
+import type { Bucket, HistoryTimeline } from '@/gen'
 import { fetchJson } from '@/lib/api'
 import { fmtClock, fmtWindow } from '@/lib/format'
+import { fmtDay, useHistoryTimeline } from '@/lib/history-search'
 import { searchResponse } from '@/lib/schemas'
 import { toQuery } from '@/lib/search-api'
 import { RANGE_MS, RANGES, type Range } from '@/lib/search-params'
@@ -84,6 +85,56 @@ export function WindowBrush({
   )
 }
 
+/**
+ * v1.1-22: what Search can reach, from the oldest retained hour to now.
+ * Local-window bars are brand; retained ones grey. A bar picks its span.
+ */
+export function AvailableHistory({
+  timeline,
+  retentionMs,
+  onPick,
+}: {
+  timeline: HistoryTimeline
+  retentionMs: number
+  onPick: (from: number, to: number | undefined) => void
+}) {
+  const max = Math.max(1, ...timeline.bars.map((b) => b.lines))
+  return (
+    <figure aria-label="Available history" className="flex flex-col gap-1.5">
+      <div className="flex h-6 items-end gap-0.5">
+        {timeline.bars.map((b) => (
+          <button
+            key={b.start}
+            type="button"
+            data-testid="history-bar"
+            data-local={b.local || undefined}
+            title={`${fmtDay(b.start)} ${fmtClock(b.start)} · ${b.lines.toLocaleString('en-US')} events${b.local ? ' · recent' : ' · stored'}`}
+            aria-label={`Search from ${fmtDay(b.start)} ${fmtClock(b.start)}`}
+            onClick={() => onPick(b.start, b.end >= timeline.now ? undefined : b.end)}
+            className="flex h-full flex-1 items-end outline-none hover:opacity-80 focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <span
+              className={cn('w-full', b.local ? 'bg-brand' : 'bg-muted-foreground/35')}
+              // Log scale: a busy recent window shouldn't flatten older days.
+              style={{ height: `${b.lines ? 25 + (75 * Math.log1p(b.lines)) / Math.log1p(max) : 8}%` }}
+            />
+          </button>
+        ))}
+      </div>
+      <figcaption className="flex flex-col gap-3 font-mono text-[11px] text-muted-foreground leading-[14px]">
+        <span className="flex justify-between">
+          <span>{fmtDay(timeline.from)}</span>
+          <span>now</span>
+        </span>
+        <span className="flex justify-between">
+          <span>Recent · {fmtWindow(retentionMs)}</span>
+          <span>Stored · {fmtDay(timeline.from)} — now</span>
+        </span>
+      </figcaption>
+    </figure>
+  )
+}
+
 const LABEL: Record<Range, string> = {
   '15m': 'Last 15 minutes',
   '1h': 'Last 1 hour',
@@ -91,6 +142,7 @@ const LABEL: Record<Range, string> = {
   '24h': 'Last 24 hours',
   '3d': 'Last 3 days',
   '7d': 'Last 7 days',
+  '30d': 'Last 30 days',
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -170,7 +222,10 @@ export function TimeRange({
         { signal },
       ),
   })
-  const ranges = RANGES.filter((r) => RANGE_MS[r] <= retentionMs)
+  // Retained history (v1.1-22) reaches further than the local window.
+  const timeline = useHistoryTimeline().data ?? null
+  const reach = Math.max(retentionMs, timeline ? Date.now() - timeline.from : 0)
+  const ranges = RANGES.filter((r) => RANGE_MS[r] <= reach || (r === '30d' && timeline != null))
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
   const [start, setStart] = useState(() => fmtRangeField(from ?? Date.now() - RANGE_MS[range]))
   const [end, setEnd] = useState(() => (to ? fmtRangeField(to) : 'now'))
@@ -196,7 +251,7 @@ export function TimeRange({
         {label}
         <ChevronDownIcon className="text-muted-foreground" />
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 gap-0 p-0">
+      <PopoverContent align="end" className={cn('gap-0 p-0', timeline ? 'w-[420px]' : 'w-80')}>
         <div className="flex flex-col p-1" role="listbox" aria-label="Time range">
           {ranges.map((r) => {
             const on = !from && r === range
@@ -216,7 +271,7 @@ export function TimeRange({
                 <span className="flex-1">{LABEL[r]}</span>
                 <span className="font-mono text-muted-foreground text-xs">
                   {r}
-                  {RANGE_MS[r] === retentionMs ? ' · whole window' : ''}
+                  {!timeline && RANGE_MS[r] === retentionMs ? ' · whole window' : ''}
                 </span>
               </button>
             )
@@ -224,9 +279,18 @@ export function TimeRange({
         </div>
         <div className="border-t p-3">
           <p className="mb-2 font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">
-            {fmtWindow(retentionMs)} window
+            {timeline ? 'Available history' : `${fmtWindow(retentionMs)} window`}
           </p>
-          {hist.data?.histogram ? (
+          {timeline ? (
+            <AvailableHistory
+              timeline={timeline}
+              retentionMs={retentionMs}
+              onPick={(a, b) => {
+                onCustom(Math.round(a), b && Math.round(b))
+                setOpen(false)
+              }}
+            />
+          ) : hist.data?.histogram ? (
             <WindowBrush
               buckets={hist.data.histogram}
               since={hist.data.since}
@@ -268,8 +332,10 @@ export function TimeRange({
           </div>
           <p className="mt-2 text-muted-foreground text-xs">
             Times in {tz}
-            {tzShort ? ` (${tzShort})` : ''}. Events older than this source's {fmtWindow(retentionMs)} retention have
-            expired.
+            {tzShort ? ` (${tzShort})` : ''}.{' '}
+            {timeline
+              ? 'Older ranges are searched in connected storage.'
+              : `Events older than this source's ${fmtWindow(retentionMs)} retention have expired.`}
           </p>
         </div>
       </PopoverContent>

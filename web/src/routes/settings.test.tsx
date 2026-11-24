@@ -111,6 +111,7 @@ const dest = (over: Partial<Destination>): Destination => ({
   bytes_stored: 23_800_000_000,
   first: NOW - 13 * 24 * H,
   last: NOW - 2 * H,
+  last_event: NOW - 2 * H + 1_000,
   last_upload: NOW - 4_000,
   error: null,
   next_retry: null,
@@ -122,6 +123,8 @@ const dest = (over: Partial<Destination>): Destination => ({
   cleanup_error: null,
   cleanup_retry_at: null,
   cleanup_blocked_hours: 0,
+  cleanup_blocked_bytes: 0,
+  recent_eviction: null,
   ...over,
 })
 
@@ -155,6 +158,8 @@ const freshHistory = () => {
     gaps: [],
     gap_hours: 0,
     waiting_hours: 0,
+    waiting_lines: 0,
+    waiting_bytes: 0,
     policy: {
       retention_days: 30,
       at_capacity: 'evict',
@@ -530,11 +535,14 @@ describe('Settings → Storage tabs (v1.1-01…29)', () => {
   it('Overview: an unreachable destination says uploads are delayed and retries on demand', async () => {
     history.destinations[0] = dest({ state: 'unavailable', error: 'connection refused', next_retry: NOW + 28_000 })
     history.waiting_hours = 3
+    history.waiting_lines = 14_280
+    history.waiting_bytes = 143_000_000
     const user = userEvent.setup()
     renderAt('/settings/storage')
     expect(await screen.findByText('History uploads are delayed')).toBeInTheDocument()
     expect(screen.getByText('Waiting to upload')).toBeInTheDocument()
-    expect(screen.getByText('3 hours')).toBeInTheDocument()
+    expect(screen.getByText('143 MB · 14,280 events')).toBeInTheDocument()
+    expect(screen.getByText('Last stored event')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Retry now' }))
     await waitFor(() => expect(calls.some((c) => c.url === '/api/storage/destinations/1/verify')).toBe(true))
   })
@@ -546,6 +554,33 @@ describe('Settings → Storage tabs (v1.1-01…29)', () => {
     expect(await screen.findByText('New history is not being stored')).toBeInTheDocument()
     expect(screen.getByText('History writes stopped')).toBeInTheDocument()
     expect(screen.getByText('History gap')).toBeInTheDocument()
+    expect(screen.getByText('Waiting locally')).toBeInTheDocument()
+  })
+
+  it('Overview: evicting at capacity shows what the last hour removed', async () => {
+    const at = NOW - 6 * 24 * H
+    history.destinations[0] = dest({
+      at_capacity: true,
+      bytes_stored: 100_000_000_000,
+      recent_eviction: { hours: 1, bytes: 820_000_000, from: at, to: at + H },
+    })
+    renderAt('/settings/storage')
+    expect(await screen.findByText('History size limit reached')).toBeInTheDocument()
+    expect(screen.getByText('Removed in last hour')).toBeInTheDocument()
+    expect(screen.getByText(/^820 MB · /)).toBeInTheDocument()
+  })
+
+  it('Overview: blocked cleanup counts what awaits deletion', async () => {
+    history.destinations[0] = dest({
+      bytes_stored: 28_200_000_000,
+      cleanup_blocked_hours: 96,
+      cleanup_blocked_bytes: 4_100_000_000,
+      cleanup_error: 'ObjectLockedByBucketPolicy',
+    })
+    renderAt('/settings/storage')
+    expect(await screen.findByText('Some objects could not be removed')).toBeInTheDocument()
+    expect(screen.getByText('24.1 GB retained · 4.10 GB awaiting cleanup')).toBeInTheDocument()
+    expect(screen.getByText(/192 objects · 4\.10 GB/)).toBeInTheDocument()
   })
 
   it('Connectors: the shared policy, each connector, and activating one copies the local window', async () => {

@@ -2,6 +2,7 @@
 import type { CapacitySource } from "./CapacitySource";
 import type { DestinationKind } from "./DestinationKind";
 import type { DestinationState } from "./DestinationState";
+import type { RecentEviction } from "./RecentEviction";
 import type { VerifyResult } from "./VerifyResult";
 
 /**
@@ -20,6 +21,10 @@ hours: number, lines: number, bytes_stored: number,
  * Start of the oldest / newest archived hour, unix ms.
  */
 first: number | null, last: number | null, 
+/**
+ * The newest archived event (Overview: "Last stored event"), unix ms.
+ */
+last_event: number | null, 
 /**
  * When the newest upload here finished (Overview: "Last upload 4s ago").
  */
@@ -45,6 +50,10 @@ removing: boolean,
  */
 cleanup_error: string | null, cleanup_retry_at: number | null, 
 /**
- * Hours whose delete was refused ("cleanup blocked").
+ * Hours whose delete was refused ("cleanup blocked"), and their bytes.
  */
-cleanup_blocked_hours: number, };
+cleanup_blocked_hours: number, cleanup_blocked_bytes: number, 
+/**
+ * What eviction at capacity removed in the last hour (v1.1-15).
+ */
+recent_eviction: RecentEviction | null, };

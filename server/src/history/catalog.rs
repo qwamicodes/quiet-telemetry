@@ -51,6 +51,18 @@ pub struct Held {
     pub last_hour: Option<i64>,
     /// When the newest upload finished, unix ms.
     pub last_archived_at: Option<i64>,
+    /// The newest archived event, unix ms.
+    pub last_event: Option<i64>,
+}
+
+/// Hours evicted at capacity, summed (v1.1-15 "Removed in last hour").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Evicted {
+    pub hours: u64,
+    pub bytes: u64,
+    /// Oldest and newest event removed, unix ms.
+    pub min_ts: Option<i64>,
+    pub max_ts: Option<i64>,
 }
 
 const SCHEMA: &str = "
@@ -67,6 +79,9 @@ CREATE TABLE IF NOT EXISTS history_hours (
     lines INTEGER NOT NULL, bytes_raw INTEGER NOT NULL, bytes_stored INTEGER NOT NULL,
     sources TEXT NOT NULL, min_ts INTEGER, max_ts INTEGER, sha256 TEXT NOT NULL,
     archived_at INTEGER NOT NULL, PRIMARY KEY (hour, destination_id));
+CREATE TABLE IF NOT EXISTS history_evictions (
+    at INTEGER NOT NULL, destination_id INTEGER NOT NULL, hour INTEGER NOT NULL,
+    bytes INTEGER NOT NULL, min_ts INTEGER, max_ts INTEGER);
 CREATE TABLE IF NOT EXISTS history_gaps (
     hour INTEGER PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS history_jobs (
@@ -389,7 +404,7 @@ impl Catalog {
     pub fn held(&self, destination_id: i64) -> anyhow::Result<Held> {
         Ok(self.db.lock().unwrap().query_row(
             "SELECT COUNT(*), COALESCE(SUM(lines), 0), COALESCE(SUM(bytes_stored), 0),
-                    MIN(hour), MAX(hour), MAX(archived_at)
+                    MIN(hour), MAX(hour), MAX(archived_at), MAX(max_ts)
              FROM history_hours WHERE destination_id = ?",
             [destination_id],
             |r| {
@@ -400,6 +415,7 @@ impl Catalog {
                     first_hour: r.get(3)?,
                     last_hour: r.get(4)?,
                     last_archived_at: r.get(5)?,
+                    last_event: r.get(6)?,
                 })
             },
         )?)
@@ -471,12 +487,62 @@ impl Catalog {
         Ok(())
     }
 
-    pub fn blocked_hours(&self, destination_id: i64) -> anyhow::Result<u64> {
+    /// Hours whose delete was refused, and their stored bytes.
+    pub fn blocked_hours(&self, destination_id: i64) -> anyhow::Result<(u64, u64)> {
         Ok(self.db.lock().unwrap().query_row(
-            "SELECT COUNT(*) FROM history_hours WHERE destination_id = ? AND cleanup_blocked IS NOT NULL",
+            "SELECT COUNT(*), COALESCE(SUM(bytes_stored), 0) FROM history_hours
+             WHERE destination_id = ? AND cleanup_blocked IS NOT NULL",
             [destination_id],
-            |r| r.get::<_, i64>(0),
-        )? as u64)
+            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
+        )?)
+    }
+
+    /// Note hours evicted at capacity (kept a day, for the Overview).
+    pub fn record_evictions(
+        &self,
+        destination_id: i64,
+        hours: &[HourRecord],
+        at: i64,
+    ) -> anyhow::Result<()> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        for h in hours {
+            tx.execute(
+                "INSERT INTO history_evictions (at, destination_id, hour, bytes, min_ts, max_ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    at,
+                    destination_id,
+                    h.hour,
+                    h.bytes_stored as i64,
+                    h.min_ts,
+                    h.max_ts
+                ],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM history_evictions WHERE at < ?",
+            [at - 86_400_000],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// What eviction removed from one destination since `since`.
+    pub fn evicted_since(&self, destination_id: i64, since: i64) -> anyhow::Result<Evicted> {
+        Ok(self.db.lock().unwrap().query_row(
+            "SELECT COUNT(*), COALESCE(SUM(bytes), 0), MIN(min_ts), MAX(max_ts)
+             FROM history_evictions WHERE destination_id = ?1 AND at >= ?2",
+            params![destination_id, since],
+            |r| {
+                Ok(Evicted {
+                    hours: r.get::<_, i64>(0)? as u64,
+                    bytes: r.get::<_, i64>(1)? as u64,
+                    min_ts: r.get(2)?,
+                    max_ts: r.get(3)?,
+                })
+            },
+        )?)
     }
 
     pub fn set_capacity(&self, id: i64, bytes: Option<u64>) -> anyhow::Result<()> {

@@ -60,6 +60,7 @@ fn export_into(dir: &Path) {
     crate::history::HistoryPreview::export_all(&cfg).unwrap();
     crate::history::HistoryJob::export_all(&cfg).unwrap();
     crate::history::search::HistorySearchJob::export_all(&cfg).unwrap();
+    crate::history::search::HistoryTimeline::export_all(&cfg).unwrap();
     crate::history_search_api::HistorySearchRequest::export_all(&cfg).unwrap();
     crate::settings::AddMuteRule::export_all(&cfg).unwrap();
     crate::settings::AddedMuteRule::export_all(&cfg).unwrap();

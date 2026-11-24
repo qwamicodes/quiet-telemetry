@@ -145,7 +145,13 @@ describe('search across retained history', () => {
         '7',
       ]),
     )
-    expect(screen.getByTitle('From retained history in garage-local')).toBeInTheDocument()
+    // Headings by day and location instead of a tag per row (v1.1-19).
+    expect(screen.getByText(/ · GARAGE$/)).toBeInTheDocument()
+    expect(screen.getByText(/ · RECENT$/)).toBeInTheDocument()
+    // An archived line's flow opens in retained history, with the way back (v1.1-23).
+    const open = document.querySelector('[data-line-id="7"] a[aria-label="Open as flow"]')
+    expect(open?.getAttribute('href')).toMatch(/at=\d+/)
+    expect(open?.getAttribute('href')).toContain('back=')
     expect(screen.getByText('2 lines')).toBeInTheDocument()
   })
 

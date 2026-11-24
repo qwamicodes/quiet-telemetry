@@ -15,7 +15,9 @@ mod sqlite;
 pub use memory::MemoryStore;
 #[cfg(test)]
 pub use memory::DEFAULT_RING_MEMORY;
-pub use sqlite::{search_segment, segment_has_ids, SqliteOptions, SqliteStore};
+pub use sqlite::{
+    search_segment, segment_has_ids, segment_line, segment_with_ids, SqliteOptions, SqliteStore,
+};
 
 use crate::hub::{Line, SourceKind};
 use crate::normalize::{CorrId, Level};

@@ -77,9 +77,37 @@ pub enum Seed<'a> {
     Line(Line),
 }
 
+/// What a walk reads: lines by id. Every [`Store`] is one; retained history
+/// adds archived hours ([`crate::history::search::SegmentSet`]).
+#[async_trait::async_trait]
+pub trait IdLookup: Send + Sync {
+    /// Lines carrying any of `ids`, event time in `[since, until]`, oldest
+    /// first, at most `limit` (see [`Store::with_ids`]).
+    async fn lines_with_ids(
+        &self,
+        ids: &[String],
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Line>>;
+}
+
+#[async_trait::async_trait]
+impl<T: Store + ?Sized> IdLookup for T {
+    async fn lines_with_ids(
+        &self,
+        ids: &[String],
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Line>> {
+        self.with_ids(ids, since, until, limit).await
+    }
+}
+
 /// Walk the id index from `seed` within `[since, until]`.
-pub async fn stitch(
-    store: &dyn Store,
+pub async fn stitch<S: IdLookup + ?Sized>(
+    store: &S,
     seed: Seed<'_>,
     since: i64,
     until: i64,
@@ -118,7 +146,7 @@ pub async fn stitch(
         let room = limits.lines.saturating_sub(lines.len());
         // Ask for one more than fits (plus what we hold) to know it was cut.
         let got = store
-            .with_ids(&frontier, since, until, room + lines.len() + 1)
+            .lines_with_ids(&frontier, since, until, room + lines.len() + 1)
             .await?;
         let mut next: Vec<String> = Vec::new();
         let asked: HashSet<&String> = frontier.iter().collect();

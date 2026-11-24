@@ -231,7 +231,10 @@ export function ActivityList({
   full = false,
   onFull,
   window = '24h',
+  scope,
 }: {
+  /** Replaces `last 24h` in the footer (a flow from retained history: `12 Nov · retained history`). */
+  scope?: string
   /** Full screen (04.17): the activity list and inspector cover the app. */
   full?: boolean
   onFull?: () => void
@@ -310,7 +313,7 @@ export function ActivityList({
             }`
           : jobs.some((j) => j.children.length)
             ? 'Execution times belong to the selected attempt · open Timing for wait and total'
-            : `${a.completions} completion ${a.completions === 1 ? 'event' : 'events'} · last ${window} · select a row to inspect its event`}
+            : `${a.completions} completion ${a.completions === 1 ? 'event' : 'events'} · ${scope ?? `last ${window}`} · select a row to inspect its event`}
       </footer>
     </section>
   )

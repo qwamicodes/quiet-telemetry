@@ -252,6 +252,8 @@ beforeEach(() => {
       if (url.startsWith('/api/flow?')) {
         const p = new URL(url, 'http://x').searchParams
         const ok = (flow: Flow): FlowResponse => ({ flow, since: T - 86_400_000, until: T, took_ms: 3 })
+        if (p.get('id') === 'req_old' && p.get('at'))
+          return json({ ...ok(multi), retained: { location: 'garage-local', at: T - 12 * 86_400_000, lines: 3 } })
         if (p.get('id') === 'req_1' || p.get('id') === 'payout:1' || p.get('line') === '3') return json(ok(multi))
         if (p.get('id') === 'req_9' || p.get('line') === '7') return json(ok(one))
         if (p.get('id') === 'trace_1') return json(ok(traced))
@@ -296,6 +298,20 @@ function renderAt(path: string) {
 }
 
 describe('flow route', () => {
+  it('a flow from retained history says where it came from and goes back to the search (v1.1-23)', async () => {
+    const back = `/search?q=dealer_id%3A88&range=30d`
+    renderAt(`/flow/req_old?at=${T - 12 * 86_400_000}&back=${encodeURIComponent(back)}`)
+    const strip = await screen.findByRole('region', { name: 'Retained history' })
+    expect(within(strip).getByText(/ · Garage$/)).toBeInTheDocument()
+    expect(within(strip).getByText(/^Search · /)).toBeInTheDocument()
+    expect(within(strip).getByText('Back to results').closest('a')).toHaveAttribute('href', back)
+    expect(calls.some((c) => c.startsWith('/api/flow?id=req_old&at='))).toBe(true)
+    expect(screen.getByText('Open in search').closest('a')).toHaveAttribute('href', back)
+    expect(screen.getByText('Search', { selector: 'a' })).toHaveAttribute('href', back)
+    expect(screen.queryByRole('button', { name: /Export flow/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/retained history · select a row/)).toBeInTheDocument()
+  })
+
   it('a trace reads as a span tree: child edges name the parent span', async () => {
     renderAt('/flow/trace_1')
     expect(await screen.findByText(/span tree/)).toBeInTheDocument()

@@ -3,4 +3,10 @@
 /**
  * `?id=` or `?line=`, exactly one.
  */
-export type FlowParams = { id?: string, line?: number, };
+export type FlowParams = { id?: string, line?: number, 
+/**
+ * When the opened event happened (a retained-history search result):
+ * older than the local window, the flow is read from the archived
+ * hours around it (v1.1-23).
+ */
+at?: number, };
