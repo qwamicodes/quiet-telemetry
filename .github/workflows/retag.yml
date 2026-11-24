@@ -1,0 +1,54 @@
+name: retag
+# Adds the release tags (`vX.Y.Z`, `vX.Y`, and optionally `latest`) to an image
+# that is already published, without rebuilding it. Used for releases built
+# before the tag naming changed (v0.1.0 and v0.1.1 were published as `X.Y.Z`).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to retag, without the v (e.g. 0.1.1)"
+        required: true
+      from:
+        description: "Existing tag to copy (defaults to the version)"
+        required: false
+      latest:
+        description: "Also move `latest` to it"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/qwamicodes/quiet-telemetry
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: copy the manifest list to the release tags
+        env:
+          VERSION: ${{ inputs.version }}
+          FROM: ${{ inputs.from || inputs.version }}
+          LATEST: ${{ inputs.latest }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must be X.Y.Z"; exit 1; }
+          minor="${VERSION%.*}"
+          names=("v$VERSION" "v$minor")
+          [ "$LATEST" = true ] && names+=(latest)
+          args=()
+          for n in "${names[@]}"; do args+=(-t "$IMAGE:$n"); done
+          docker buildx imagetools create "${args[@]}" "$IMAGE:$FROM"
+          docker buildx imagetools inspect "$IMAGE:v$VERSION"
+          {
+            echo "### Retagged \`$IMAGE:$FROM\`"
+            for n in "${names[@]}"; do echo "- \`$IMAGE:$n\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"

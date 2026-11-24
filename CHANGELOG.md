@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Image tags.** Releases publish `ghcr.io/qwamicodes/quiet-telemetry:vX.Y.Z`, `:vX.Y` and `:latest`; pushes to main publish `:edge` instead of `sha-<sha>`. The Connect snippet uses `:vX.Y.Z`. A `retag` workflow adds these tags to images already published (0.1.0, 0.1.1).
+
 ## 0.1.1 (2026-11-24)
 
 Canonical completion events, safe request/response context and retained history. Scope and slices: `docs/v0.1.1-plan.md`.
