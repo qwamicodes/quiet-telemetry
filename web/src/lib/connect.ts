@@ -51,7 +51,7 @@ export function snippets(
           code: [
             'services:',
             '  quiet:',
-            `    image: ghcr.io/qwamicodes/quiet-telemetry:${version}`,
+            `    image: ghcr.io/qwamicodes/quiet-telemetry:v${version}`,
             '    volumes:',
             '      - /var/run/docker.sock:/var/run/docker.sock:ro',
             '      - quiet-data:/data',

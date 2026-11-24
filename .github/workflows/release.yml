@@ -1,7 +1,7 @@
 name: release
-# local → main → prod. Every push to main publishes `sha-<sha>`; a v* tag
-# publishes `<version>`. Production deploys the image by digest after the
-# `production` environment is approved.
+# local → main → prod. Every push to main publishes `edge`; a vX.Y.Z tag
+# publishes `vX.Y.Z`, `vX.Y` and `latest` (amd64 + arm64). Production deploys
+# the image by digest after the `production` environment is approved.
 on:
   push:
     branches: [main]
@@ -35,8 +35,10 @@ jobs:
           images: ${{ env.IMAGE }}
           flavor: latest=false
           tags: |
-            type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}}
+            type=edge,branch=main
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
       - id: date
         run: echo "d=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - id: build
