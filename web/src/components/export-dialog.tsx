@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import type { ExportFormat, ExportJob, MutedMode, SearchParams } from '@/gen'
 import { fetchJson, sendJson, useHealth } from '@/lib/api'
+import { isOwner, useMe } from '@/lib/auth-api'
 import { fmtBytes, fmtClock, fmtCount, fmtWindow } from '@/lib/format'
 import { exportJob, searchResponse } from '@/lib/schemas'
 import { copyCurl, type ExportOptions, exportFileName, exportQuery, toQuery } from '@/lib/search-api'
@@ -31,10 +32,16 @@ const SUGGESTED = ['job_id', 'method', 'path', 'user_id', 'error.message']
 /** Over this many lines the server prepares the file first, with progress (design 05.7). */
 export const LARGE = 100_000
 
-const FORMATS: { value: ExportFormat; title: string; hint: string }[] = [
-  { value: 'ndjson', title: 'NDJSON', hint: 'Raw lines exactly as received, one per line.' },
-  { value: 'json', title: 'JSON array', hint: 'One array of parsed lines with their fields.' },
-  { value: 'csv', title: 'CSV', hint: 'Nested values stay JSON. Missing fields stay empty.' },
+// Every format holds the sanitized stored records: redaction ran before storage (05.4 … 05.6).
+const FORMATS: { value: ExportFormat; title: string; hint: string; picked?: string }[] = [
+  { value: 'ndjson', title: 'NDJSON', hint: 'Sanitized stored events, one JSON object per line.' },
+  { value: 'json', title: 'JSON array', hint: 'One array of sanitized events and captured fields.' },
+  {
+    value: 'csv',
+    title: 'CSV',
+    hint: 'Pick columns. Opens in any spreadsheet.',
+    picked: 'Nested values stay JSON. Missing fields stay empty.',
+  },
 ]
 
 // ---- server-side preparing (05.7 / 05.8; survives closing the dialog) ------------------
@@ -218,7 +225,7 @@ function Option({
     // biome-ignore lint/a11y/noLabelWithoutControl: the Switch inside is the control
     <label className="flex items-center justify-between gap-6 border-b py-3 last:border-b-0">
       <span>
-        <span className="block font-medium text-sm">{title}</span>
+        <span className={cn('block font-medium text-sm', disabled && 'text-muted-foreground')}>{title}</span>
         <span className="block text-muted-foreground text-xs">{hint}</span>
       </span>
       <Switch aria-label={title} checked={checked} onCheckedChange={onChange} disabled={disabled} />
@@ -276,10 +283,11 @@ export function ExportDialog({
   muted?: MutedMode
 }) {
   const retention = useHealth().data?.retention_ms ?? 86_400_000
-  const [opts, setOpts] = useState<ExportOptions>({
+  // Owners export what is stored (already sanitized); members' exports also mask personal data.
+  const member = !isOwner(useMe())
+  const [state, setOpts] = useState<Omit<ExportOptions, 'mask'>>({
     format: 'ndjson',
     gzip: defaultGzip,
-    mask: true,
     raw: false,
     columns: DEFAULT_COLUMNS,
   })
@@ -288,7 +296,8 @@ export function ExportDialog({
   const [busy, setBusy] = useState(false)
   const [drag, setDrag] = useState<string | null>(null)
   const running = useJob()
-  const set = (o: Partial<ExportOptions>) => {
+  const opts: ExportOptions = { ...state, mask: member }
+  const set = (o: Partial<Omit<ExportOptions, 'mask'>>) => {
     setOpts((p) => ({ ...p, ...o }))
     setCurl(null)
   }
@@ -424,7 +433,9 @@ export function ExportDialog({
                       <span className="border px-1 font-mono text-[10px] text-muted-foreground">default</span>
                     )}
                   </span>
-                  <span className="block text-muted-foreground text-xs">{f.hint}</span>
+                  <span className="block text-muted-foreground text-xs">
+                    {opts.format === f.value && f.picked ? f.picked : f.hint}
+                  </span>
                 </span>
               </label>
             ))}
@@ -484,22 +495,27 @@ export function ExportDialog({
         <section>
           <h3 className="font-mono text-[11px] text-muted-foreground uppercase tracking-[0.06em]">Options</h3>
           <Option
-            title="Include raw line"
+            title="Include stored JSON"
             hint={
               opts.format === 'ndjson'
-                ? 'NDJSON already is the raw line.'
-                : 'Adds the line exactly as received, next to its fields.'
+                ? 'Already included in NDJSON.'
+                : 'Adds sanitized JSON. Objects and arrays stay JSON.'
             }
             checked={opts.raw && opts.format !== 'ndjson'}
             disabled={opts.format === 'ndjson'}
             onChange={(raw) => set({ raw })}
           />
-          <Option
-            title="Mask PII fields"
-            hint="email, phone, name, ip_address, user_agent, plus emails and IPs inside text · on because PII masking is on for these sources."
-            checked={opts.mask}
-            onChange={(mask) => set({ mask })}
-          />
+          <div className="flex items-center justify-between gap-6 border-b py-3">
+            <span>
+              <span className="block font-medium text-sm">Redaction always applied</span>
+              <span className="block text-muted-foreground text-xs">
+                {member
+                  ? 'Secrets stay redacted. Members’ exports also mask email, phone, name, IP and user agent.'
+                  : 'Secrets stay redacted. Email and phone stay visible unless your source rules hide them.'}
+              </span>
+            </span>
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">Always on</span>
+          </div>
           <Option
             title="Gzip"
             hint="Compress the download. The file ends in .gz."

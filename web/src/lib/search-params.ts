@@ -108,7 +108,7 @@ export type SourcesSearch = z.infer<typeof sourcesSearch>
 
 /** `/sources/$name?tab=` */
 export const sourceSearch = z.object({
-  tab: z.enum(['rejected', 'malformed', 'settings']).optional().catch(undefined),
+  tab: z.enum(['rejected', 'malformed', 'settings', 'redaction', 'setup']).optional().catch(undefined),
   /** The edit sheet (06.3 / 06.13), open on this tab. */
   edit: z.enum(['general', 'ids', 'muted']).optional().catch(undefined),
 })

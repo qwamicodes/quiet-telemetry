@@ -169,6 +169,8 @@ export type Setup = {
   project: string
   /** Product type: the recommended product pack. */
   productType: string
+  /** The queue / worker library, if the owner named it (Sources → Logging setup, 06.4). */
+  queue: string
   goals: Goal[]
   /** Routine (ordinary-completion) sample rate in percent. */
   sample: number
@@ -183,6 +185,7 @@ export const SETUP_DEFAULTS: Setup = {
   app: '',
   project: '',
   productType: '',
+  queue: '',
   goals: [],
   sample: 100,
   otherRules: '',
@@ -201,6 +204,15 @@ export function readSetup(): Setup {
     return { ...SETUP_DEFAULTS, ...v, goals: Array.isArray(v.goals) ? v.goals : [] }
   } catch {
     return SETUP_DEFAULTS
+  }
+}
+
+/** Change the remembered setup outside a `useSetup` (a link that also picks the project). */
+export function patchSetup(patch: Partial<Setup>) {
+  try {
+    localStorage.setItem(SETUP_KEY, JSON.stringify({ ...readSetup(), ...patch }))
+  } catch {
+    // private mode: nothing remembered
   }
 }
 
@@ -458,7 +470,7 @@ export function reviewedInputs(id: StackId, s: Setup): string {
     '## Reviewed inputs',
     `Language/framework: ${STACK_LINE[id]}`,
     `Service/environment: ${s.app.trim() || 'detect from the codebase'}`,
-    `Queue: inspect the codebase${jobs.length ? ` and map ${jobs.map((g) => g.name || g.appliesTo).join(', ')} to the actual queue` : "; keep each queue's native ids"}`,
+    `Queue: ${s.queue.trim() ? `${s.queue.trim()}; ` : ''}inspect the codebase${jobs.length ? ` and map ${jobs.map((g) => g.name || g.appliesTo).join(', ')} to the actual queue` : "; keep each queue's native ids"}`,
     '',
     ...(s.goals.length
       ? s.goals.flatMap((g, i) => [goalBlock(g, i), ''])

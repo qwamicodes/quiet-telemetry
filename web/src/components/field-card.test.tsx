@@ -151,7 +151,8 @@ describe('FieldCard sections (v0.1.1-04.x)', () => {
     expect(ctx).toHaveTextContent('flow')
     expect(ctx).toHaveTextContent('user.email')
     expect(screen.getByRole('group', { name: 'request' })).toHaveTextContent('Disabled')
-    expect(screen.getByText(/· 2 redacted/)).toBeInTheDocument()
+    // A truncated body wins the tab aside (04.16); the redactions show on rows and in the note.
+    expect(screen.getByTestId('tab-aside')).toHaveTextContent('truncated')
     expect(screen.getByTestId('redaction-note')).toHaveTextContent('original values are unavailable')
   })
 
@@ -160,7 +161,7 @@ describe('FieldCard sections (v0.1.1-04.x)', () => {
     render(<FieldCard line={event} />)
     const req = screen.getByRole('group', { name: 'request' })
     const headers = within(req).getByRole('button', { name: /headers/, expanded: false })
-    expect(headers).toHaveTextContent('{…} · 1 redacted')
+    expect(headers).toHaveTextContent('2 fields · 1 redacted')
     await user.click(headers)
     expect(within(req).getByRole('button', { name: /headers/, expanded: true })).toHaveTextContent('2 fields')
     expect(within(req).getByText('authorization')).toBeInTheDocument()
