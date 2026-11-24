@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1 (unreleased)
+## 0.1.1 (2026-11-24)
 
 Canonical completion events, safe request/response context and retained history. Scope and slices: `docs/v0.1.1-plan.md`.
 
