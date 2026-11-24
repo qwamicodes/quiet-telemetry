@@ -38,8 +38,9 @@ Working on quiet itself? You also need Bun and Rust:
 
 ```sh
 (cd web && bun install)
-make dev       # server on :7070, UI with hot reload on :5173
-make sample    # second terminal: sample events
+make dev           # server on :7070, UI with hot reload on :5173
+make dev-history   # UI on :7070, sign-in off, plus Garage for retained history
+make sample        # second terminal: sample events
 ```
 
 The full setup, troubleshooting and release flow are in [docs/development.md](docs/development.md).

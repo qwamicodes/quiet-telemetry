@@ -43,6 +43,7 @@ pub fn routes() -> Router<AppState> {
             "/api/storage/destinations/:id",
             axum::routing::patch(update).delete(remove),
         )
+        .route("/api/storage/destinations/test", post(test))
         .route("/api/storage/destinations/:id/verify", post(verify))
         .route("/api/storage/destinations/:id/activate", post(activate))
         .route(
@@ -70,6 +71,10 @@ pub struct PutHistoryPolicy {
     #[serde(default)]
     #[ts(optional)]
     pub at_capacity: Option<AtCapacity>,
+    /// Size limit per connector, bytes; `null` removes it. Absent: unchanged.
+    #[serde(default, deserialize_with = "some_option")]
+    #[ts(optional, type = "number | null")]
+    pub size_limit_bytes: Option<Option<u64>>,
     /// Required when the new window deletes archived hours.
     #[serde(default)]
     #[ts(optional)]
@@ -196,9 +201,20 @@ async fn put_policy(
         Ok(p) => p,
         Err(e) => return failed(e.into()),
     };
+    let size_limit_bytes = b.size_limit_bytes.unwrap_or(current.size_limit_bytes);
+    if size_limit_bytes.is_some_and(|b| b < crate::history::MIN_SIZE_LIMIT) {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "size_limit_bytes: at least 1 GB, or null for no limit",
+        );
+    }
     let p = HistoryPolicy {
         retention_days: b.retention_days,
         at_capacity: b.at_capacity.unwrap_or(current.at_capacity),
+        size_limit_bytes,
+        saved_by: Some(v.user.name.clone()),
+        saved_at: Some(now()),
     };
     match s.history.set_policy(p, b.confirm.unwrap_or(false), now()) {
         Ok(p) => Json(p).into_response(),
@@ -363,6 +379,35 @@ async fn remove(
     }
 }
 
+/// Test a connection without saving it (v1.1-05/06).
+#[derive(Debug, Deserialize)]
+struct TestQuery {
+    /// Reuse this connector's saved credentials when the body leaves them blank.
+    id: Option<i64>,
+}
+
+async fn test(
+    State(s): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    axum::extract::Query(q): axum::extract::Query<TestQuery>,
+    body: Option<Json<NewDestination>>,
+) -> Response {
+    if let Err(r) = require_owner(&v) {
+        return r;
+    }
+    let Some(Json(n)) = body else {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "expected the same body as POST /api/storage/destinations",
+        );
+    };
+    match s.history.test(&n, q.id, now()).await {
+        Ok(r) => Json::<VerifyResult>(r).into_response(),
+        Err(e) => failed(e),
+    }
+}
+
 async fn verify(
     State(s): State<AppState>,
     Extension(v): Extension<Viewer>,
@@ -388,7 +433,22 @@ async fn activate(
     }
     let copy = body.and_then(|Json(b)| b.copy_history).unwrap_or(false);
     match s.history.activate(id, copy, now()).await {
-        Ok(d) => Json(d).into_response(),
+        Ok(d) => {
+            // The hours still in the local window are copied to the new
+            // destination in the background (v1.1-12, -13); older history
+            // stays where it is, searchable while connected.
+            let _ = s.history.backfill(s.pipeline.store().as_ref(), now()).await;
+            Json(d).into_response()
+        }
         Err(e) => failed(e),
     }
+}
+
+/// `"k": null` → `Some(None)`; absent → `None` (with `#[serde(default)]`).
+fn some_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }

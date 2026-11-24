@@ -2,11 +2,21 @@
 import type { AtCapacity } from "./AtCapacity";
 
 /**
- * Settings → Storage → Retained history (5b). Applies to every destination.
+ * Settings → Storage → Policy (v1.1-10). One policy for every connector,
+ * active or not, covering every source.
  */
 export type HistoryPolicy = { 
 /**
- * Days archived hours are kept; `null`: indefinitely (the default, so
- * nothing is deleted until an owner chooses a window).
+ * Days archived hours are kept; `null`: indefinitely. Default 30.
  */
-retention_days: number | null, at_capacity: AtCapacity, };
+retention_days: number | null, at_capacity: AtCapacity, 
+/**
+ * Size limit per connector, bytes; each connector's quiet data counts
+ * separately. `null`: no limit (an owner-set capacity or the Garage
+ * quota can still apply).
+ */
+size_limit_bytes: number | null, 
+/**
+ * Who saved it last, and when (unix ms).
+ */
+saved_by: string | null, saved_at: number | null, };

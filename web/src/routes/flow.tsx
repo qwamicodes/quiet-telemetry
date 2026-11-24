@@ -16,6 +16,7 @@ import { ExportDialog } from '@/components/export-dialog'
 import { type DiagramMode, FieldCard, plainRead } from '@/components/field-card'
 import { ActivityList } from '@/components/flow/activity-list'
 import { FlowGraph } from '@/components/flow/flow-graph'
+import { FlowHistoryNote } from '@/components/flow/history-note'
 import { Timeline } from '@/components/flow/timeline'
 import { LevelBadge } from '@/components/level-badge'
 import { MobileFlow } from '@/components/mobile/mobile-flow'
@@ -24,13 +25,14 @@ import { INSPECTOR, INSPECTOR_SINGLE, PanelResize, usePanelWidth } from '@/compo
 import { SidebarToggle } from '@/components/sidebar-resize'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { Flow, FlowNotFound, LogLine } from '@/gen'
+import type { Flow, FlowHistory, FlowNotFound, LogLine } from '@/gen'
 import { activityCounts, buildActivity, JOB_EVIDENCE, type JobRow, jobBadge } from '@/lib/activity'
 import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
 import { flowTone, fmtDuration, statusLabel } from '@/lib/flow'
 import { type FlowTarget, useFlow } from '@/lib/flow-api'
 import { fmtBytes, fmtClock, fmtTime, fmtWindow } from '@/lib/format'
+import { useHistorySearch } from '@/lib/history-search'
 import { searchResponse } from '@/lib/schemas'
 import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
@@ -129,6 +131,7 @@ function FlowScreen({ target, selectedLine, view }: { target: FlowTarget; select
       flow={res.data.flow}
       since={res.data.since}
       until={res.data.until}
+      history={res.data.history}
       selectedLine={selectedLine}
       view={view}
     />
@@ -141,10 +144,13 @@ function FlowView({
   until,
   selectedLine,
   view,
+  history,
 }: {
   flow: Flow
   since: number
   until: number
+  /** The flow may continue in retained history not loaded (Phase 5c). */
+  history?: FlowHistory
   selectedLine?: number
   view?: 'diagram'
 }) {
@@ -153,7 +159,19 @@ function FlowView({
   const opened = flow.opened ?? first.display_id
   // The breadcrumb's source: where the opened id was logged first.
   const home = flow.lines.find((l) => opened && l.ids.some((i) => i.value === opened.value)) ?? first
-  const activity = useMemo(() => buildActivity(flow.lines, opened ?? null), [flow.lines, opened])
+  // Related events found in retained history join the activity list.
+  const historyParams = useMemo(
+    () => ({ q: opened ? `id:${opened.value}` : undefined, since: history?.since, until: history?.until }),
+    [opened, history?.since, history?.until],
+  )
+  const fromHistory = useHistorySearch(historyParams, undefined)
+  const historyLines = fromHistory.job?.lines
+  const allLines = useMemo(
+    () =>
+      historyLines?.length ? [...historyLines, ...flow.lines].sort((a, b) => a.ts - b.ts || a.id - b.id) : flow.lines,
+    [flow.lines, historyLines],
+  )
+  const activity = useMemo(() => buildActivity(allLines, opened ?? null), [allLines, opened])
   const openedJob = opened?.key === 'job_id' ? activity.main.find((r): r is JobRow => r.kind === 'job') : undefined
   // Opened by a job id: its final attempt (04.2); else the first error, else the first event.
   const lastAttempt = openedJob?.attempts[openedJob.attempts.length - 1]?.line.id
@@ -163,7 +181,9 @@ function FlowView({
     flow.nodes.findIndex((n) => n.line_id === (selectedLine ?? fallback.line_id)),
   )
   const node = flow.nodes[index]
-  const line = flow.lines.find((l) => l.id === node.line_id) as LogLine
+  // A line from retained history has no step node: the card shows it directly.
+  const archived = selectedLine != null ? historyLines?.find((l) => l.id === selectedLine) : undefined
+  const line = archived ?? (flow.lines.find((l) => l.id === node.line_id) as LogLine)
   const select = (lineId: number) =>
     navigate({ to: '.', search: (s: Record<string, unknown>) => ({ ...s, line: lineId }), replace: true })
   const move = (by: number) => {
@@ -358,7 +378,7 @@ function FlowView({
               </>
             ) : (
               <ActivityList
-                lines={flow.lines}
+                lines={allLines}
                 opened={opened ?? null}
                 selected={node.line_id}
                 onSelect={pick}
@@ -367,6 +387,16 @@ function FlowView({
                 full={full}
                 onFull={() => setFull((f) => !f)}
                 window={fmtWindow(until - since)}
+              />
+            )}
+            {history && opened && (
+              <FlowHistoryNote
+                history={history}
+                job={fromHistory.job}
+                starting={fromHistory.starting}
+                error={fromHistory.error}
+                onStart={fromHistory.start}
+                onCancel={fromHistory.cancel}
               />
             )}
             {flow.missing_parent && (

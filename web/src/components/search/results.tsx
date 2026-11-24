@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, EyeOffIcon, GitForkIcon } from 'lucide-react'
+import { ArchiveIcon, ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, EyeOffIcon, GitForkIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
@@ -90,7 +90,10 @@ function LineRow({
   muted = false,
   mutedBy,
   flash = false,
+  location,
 }: {
+  /** Found in retained history: the destination it came from. */
+  location?: string
   line: LogLine
   words: string[]
   /** The search's `key:value` field filters. */
@@ -171,6 +174,7 @@ function LineRow({
         <span className="max-w-48 shrink-0 truncate text-muted-foreground text-xs max-md:hidden">rule {mutedBy}</span>
       )}
       {muted && <MutedTag />}
+      {location && <LocationTag name={location} />}
       <FlowLink line={line} />
     </div>
   )
@@ -185,6 +189,19 @@ function MutedTag() {
     >
       <EyeOffIcon className="size-3" />
       muted
+    </span>
+  )
+}
+
+/** Found in retained history: where (v1.1-19 … 23). */
+function LocationTag({ name }: { name: string }) {
+  return (
+    <span
+      title={`From retained history in ${name}`}
+      className="flex max-w-36 shrink-0 items-center gap-1 border border-brand/40 px-1 font-mono text-[10px] text-muted-foreground"
+    >
+      <ArchiveIcon className="size-3 shrink-0" />
+      <span className="truncate">{name}</span>
     </span>
   )
 }
@@ -217,7 +234,9 @@ function GroupHead({
   open,
   onToggle,
   muted = false,
+  location,
 }: {
+  location?: string
   group: FlowGroup
   open: boolean
   onToggle: () => void
@@ -273,6 +292,7 @@ function GroupHead({
       {group.id && <span className="shrink-0 font-mono text-muted-foreground text-xs">{group.id.value}</span>}
       <span className="shrink-0 border px-1.5 font-mono text-[11px] text-muted-foreground">{sources.join(' → ')}</span>
       {muted && <MutedTag />}
+      {location && <LocationTag name={location} />}
       <span className="flex-1" />
       <span className="shrink-0 font-mono text-muted-foreground text-xs tabular-nums">
         <span className="text-[11px]">
@@ -320,6 +340,7 @@ export function SearchResults({
   summaries,
   mutedIds,
   mutedRule,
+  locationOf,
   refreshing = false,
   jump = null,
   flash = null,
@@ -338,6 +359,8 @@ export function SearchResults({
   mutedIds?: ReadonlySet<number>
   /** The rule text behind each muted line. */
   mutedRule?: (lineId: number) => string | undefined
+  /** Lines found in retained history: their destination. */
+  locationOf?: (lineId: number) => string | undefined
   lines: LogLine[]
   view: 'flows' | 'lines'
   words: string[]
@@ -419,6 +442,7 @@ export function SearchResults({
                   open={it.open}
                   onToggle={() => toggle(it.group.key)}
                   muted={it.group.lines.some((l) => mutedIds?.has(l.id))}
+                  location={it.group.lines.map((l) => locationOf?.(l.id)).find(Boolean)}
                 />
               ) : (
                 <div
@@ -437,6 +461,7 @@ export function SearchResults({
                     muted={mutedIds?.has(it.line.id) ?? false}
                     mutedBy={mutedRule?.(it.line.id)}
                     flash={flash != null && inSpan(it.line.ts, flash)}
+                    location={locationOf?.(it.line.id)}
                   />
                 </div>
               )}

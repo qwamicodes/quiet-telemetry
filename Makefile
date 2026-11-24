@@ -1,5 +1,5 @@
 # quiet · local workflow: local → main → prod.
-.PHONY: dev server web sample up up-history down logs check check-web check-server types build
+.PHONY: dev dev-history server web sample up up-history down logs check check-web check-server types build
 
 COMPOSE := docker compose -f deploy/docker-compose.local.yml
 COMPOSE_HISTORY := $(COMPOSE) -f deploy/docker-compose.history.yml
@@ -33,6 +33,24 @@ up:
 up-history:
 	$(COMPOSE_HISTORY) up --build -d
 	@echo "quiet: http://127.0.0.1:7070 · retained history in Garage (Settings → Storage)"
+
+## dev-history: `make dev` plus Garage for retained history, sign-in off. Nothing
+## is built into an image: only Garage runs in Docker; the server (cargo watch)
+## and the UI (Vite on :7070, server on :7071) run on this machine and reload as you edit. Data
+## stays in server/data and the garage-data volume. `make down` stops Garage.
+GARAGE_ADMIN_TOKEN_LOCAL := $(or $(QUIET_GARAGE_ADMIN_TOKEN),quiet-local-garage-admin)
+dev-history:
+	$(COMPOSE_HISTORY) up -d garage
+	@echo "quiet: http://127.0.0.1:7070 (Vite, sign-in off; server on :7071) · retained history in Garage (Settings → Storage)"
+	@QUIET_AUTH=off \
+	QUIET_ADDR=127.0.0.1:7071 \
+	QUIET_SERVER=http://127.0.0.1:7071 \
+	QUIET_WEB_PORT=7070 \
+	QUIET_GARAGE_ENDPOINT=http://127.0.0.1:3900 \
+	QUIET_GARAGE_ADMIN_ENDPOINT=http://127.0.0.1:3903 \
+	QUIET_GARAGE_ADMIN_TOKEN=$(GARAGE_ADMIN_TOKEN_LOCAL) \
+	QUIET_GARAGE_BUCKET=quiet-history \
+	$(MAKE) --no-print-directory dev
 
 down:
 	$(COMPOSE_HISTORY) down

@@ -49,6 +49,11 @@ pub struct FlowResponse {
     pub since: i64,
     pub until: i64,
     pub took_ms: u64,
+    /// "Related history unavailable": the flow may continue in retained
+    /// history that was not loaded (Phase 5c).
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<crate::history::search::FlowHistory>,
 }
 
 /// An id with lines, shown when the one asked for has none.
@@ -180,11 +185,22 @@ async fn flow(State(s): State<AppState>, Query(p): Query<FlowParams>) -> Respons
         )
             .into_response();
     }
+    let ids: Vec<String> = st.ids.iter().map(|i| i.value.clone()).collect();
+    let earliest = st.lines.iter().map(|l| l.ts).min();
+    let first = crate::history_search_api::local_first(&s).await;
+    let history = s
+        .history_search
+        .flow_history(&s.history, &ids, earliest, first)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "history check failed");
+            None
+        });
     Json(FlowResponse {
         flow: build(st, opened.as_deref(), edge),
         since,
         until,
         took_ms: started.elapsed().as_millis() as u64,
+        history,
     })
     .into_response()
 }

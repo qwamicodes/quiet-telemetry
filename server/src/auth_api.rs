@@ -1536,6 +1536,14 @@ mod tests {
             (Method::POST, "/api/invites", Some(json!({"role":"member"}))),
             (Method::DELETE, "/api/invites/99", None),
             (Method::POST, "/api/auth/logout", Some(json!({}))),
+            (
+                Method::POST,
+                "/api/search/history",
+                Some(json!({"query": "since=0"})),
+            ),
+            (Method::GET, "/api/search/history/hs_1", None),
+            (Method::DELETE, "/api/search/history/hs_1", None),
+            (Method::GET, "/api/search/history/hs_1/export", None),
         ]
     }
 
@@ -1937,7 +1945,7 @@ mod tests {
         // History policy (5b): everyone reads it, only owners change it.
         let r = t.get("/api/settings/history", &member).await;
         assert_eq!(r.status, StatusCode::OK);
-        assert_eq!(r.body["retention_days"], serde_json::Value::Null);
+        assert_eq!(r.body["retention_days"], 30);
         for (who, want) in [(&member, StatusCode::FORBIDDEN), (&owner, StatusCode::OK)] {
             let r = t
                 .call(

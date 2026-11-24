@@ -7,6 +7,10 @@ export type PutHistoryPolicy = {
  */
 retention_days: number | null, at_capacity?: AtCapacity, 
 /**
+ * Size limit per connector, bytes; `null` removes it. Absent: unchanged.
+ */
+size_limit_bytes?: number | null, 
+/**
  * Required when the new window deletes archived hours.
  */
 confirm?: boolean, };

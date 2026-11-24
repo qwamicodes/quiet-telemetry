@@ -7,23 +7,29 @@ import type {
   CorrId,
   CreatedIngestToken,
   CustomGroup,
+  DestinationCoverage,
   DockerStatus,
   ExportJob,
   ExportTokenResponse,
   Flow,
   FlowEdge,
+  FlowHistory,
   FlowNode,
   FlowNotFound,
   FlowResponse,
   FlowSummariesResponse,
   FlowSummary,
+  GapRange,
   Health,
+  HistoryCoverage,
+  HistorySearchJob,
   IdKey,
   IngestInfo,
   IngestToken,
   IngestTokensResponse,
   Level,
   LogLine,
+  SearchFailure,
   SearchResponse,
   SourceInfo,
   SourcesResponse,
@@ -153,6 +159,69 @@ export const bucket = z.object({
   error: z.number(),
 }) satisfies z.ZodType<Bucket>
 
+// Retained history (Phase 5c): what a range past the local window covers.
+const gapReason = z.enum(['no_destination', 'destination_unavailable', 'disk_cap', 'excluded', 'at_capacity'])
+
+export const destinationCoverage = z.object({
+  id: z.number(),
+  name: z.string(),
+  active: z.boolean(),
+  first: z.number().nullable(),
+  last: z.number().nullable(),
+  hours: z.number(),
+  percent: z.number(),
+}) satisfies z.ZodType<DestinationCoverage>
+
+export const gapRange = z.object({
+  from: z.number(),
+  to: z.number(),
+  reason: gapReason,
+}) satisfies z.ZodType<GapRange>
+
+export const historyCoverage = z.object({
+  from: z.number(),
+  to: z.number(),
+  hours: z.number(),
+  archived: z.number(),
+  destinations: z.array(destinationCoverage),
+  gaps: z.array(gapRange),
+  expired_before: z.number().nullable(),
+  auto: z.boolean(),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<HistoryCoverage>
+
+export const searchFailure = z.object({
+  destination: z.string(),
+  from: z.number(),
+  to: z.number(),
+  hours: z.number(),
+  error: z.string(),
+}) satisfies z.ZodType<SearchFailure>
+
+export const historySearchJob = z.object({
+  id: z.string(),
+  state: z.enum(['retrieving', 'done', 'cancelled', 'incomplete']),
+  done: z.number(),
+  total: z.number(),
+  bytes: z.number(),
+  downloaded: z.number(),
+  matched: z.number(),
+  lines: z.array(logLine),
+  locations: z.record(z.string(), z.string()),
+  histogram: z.array(bucket).nullable(),
+  failures: z.array(searchFailure),
+  coverage: historyCoverage,
+  created: z.number(),
+  offset: z.number(),
+  count: z.number(),
+}) satisfies z.ZodType<HistorySearchJob>
+
+export const flowHistory = z.object({
+  since: z.number(),
+  until: z.number(),
+  found: z.boolean(),
+}) satisfies z.ZodType<FlowHistory>
+
 export const searchResponse = z.object({
   lines: z.array(logLine),
   next_cursor: z.string().nullable(),
@@ -163,6 +232,7 @@ export const searchResponse = z.object({
   took_ms: z.number(),
   since: z.number(),
   until: z.number(),
+  history: historyCoverage.optional(),
 }) satisfies z.ZodType<SearchResponse>
 
 export const exportJob = z.object({
@@ -255,6 +325,7 @@ export const flowResponse = z.object({
   since: z.number(),
   until: z.number(),
   took_ms: z.number(),
+  history: flowHistory.optional(),
 }) satisfies z.ZodType<FlowResponse>
 
 export const closeMatch = z.object({

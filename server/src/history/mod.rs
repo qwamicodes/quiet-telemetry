@@ -13,6 +13,7 @@ pub mod catalog;
 pub mod garage;
 pub mod jobs;
 pub mod remote;
+pub mod search;
 pub mod secret;
 
 use crate::store::Store;
@@ -77,6 +78,9 @@ pub enum VerifyStepKind {
 pub struct VerifyStep {
     pub step: VerifyStepKind,
     pub ok: bool,
+    /// Not run, because an earlier step failed ("Not run · write failed").
+    #[serde(default)]
+    pub skipped: bool,
     #[ts(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -161,17 +165,44 @@ pub enum AtCapacity {
     Stop,
 }
 
-/// Settings → Storage → Retained history (5b). Applies to every destination.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// Settings → Storage → Policy (v1.1-10). One policy for every connector,
+/// active or not, covering every source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
 pub struct HistoryPolicy {
-    /// Days archived hours are kept; `null`: indefinitely (the default, so
-    /// nothing is deleted until an owner chooses a window).
-    #[serde(default)]
+    /// Days archived hours are kept; `null`: indefinitely. Default 30.
     #[ts(type = "number | null")]
     pub retention_days: Option<u32>,
-    #[serde(default)]
     pub at_capacity: AtCapacity,
+    /// Size limit per connector, bytes; each connector's quiet data counts
+    /// separately. `null`: no limit (an owner-set capacity or the Garage
+    /// quota can still apply).
+    #[ts(type = "number | null")]
+    pub size_limit_bytes: Option<u64>,
+    /// Who saved it last, and when (unix ms).
+    #[ts(type = "string | null")]
+    pub saved_by: Option<String>,
+    #[ts(type = "number | null")]
+    pub saved_at: Option<i64>,
 }
+
+/// History retention when no owner has chosen one (the agreed default).
+pub const DEFAULT_RETENTION_DAYS: u32 = 30;
+
+impl Default for HistoryPolicy {
+    fn default() -> Self {
+        HistoryPolicy {
+            retention_days: Some(DEFAULT_RETENTION_DAYS),
+            at_capacity: AtCapacity::Evict,
+            size_limit_bytes: None,
+            saved_by: None,
+            saved_at: None,
+        }
+    }
+}
+
+/// Smallest size limit per connector (1 GB).
+pub const MIN_SIZE_LIMIT: u64 = 1_000_000_000;
 
 /// Longest history window an owner can type, in days (100 years).
 pub const MAX_RETENTION_DAYS: u32 = 36_500;
@@ -274,6 +305,8 @@ pub struct HistoryJob {
 pub enum CapacitySource {
     /// Set by an owner on the destination.
     Owner,
+    /// The shared size limit per connector (Policy).
+    Policy,
     /// The quota of the Garage bucket quiet set up.
     Garage,
 }
@@ -358,6 +391,9 @@ pub struct Destination {
     /// Start of the oldest / newest archived hour, unix ms.
     pub first: Option<i64>,
     pub last: Option<i64>,
+    /// When the newest upload here finished (Overview: "Last upload 4s ago").
+    #[ts(type = "number | null")]
+    pub last_upload: Option<i64>,
     /// The last upload error while unavailable, and when it retries.
     pub error: Option<String>,
     pub next_retry: Option<i64>,
@@ -396,8 +432,16 @@ pub struct NewDestination {
     #[serde(default)]
     #[ts(optional)]
     pub path_style: Option<bool>,
+    /// Blank with a blank secret (Amazon S3 only): the credentials available
+    /// to quiet's host (environment, instance, task or workload role).
+    #[serde(default)]
     pub access_key_id: String,
+    #[serde(default)]
     pub secret_access_key: String,
+    /// For temporary credentials.
+    #[serde(default)]
+    #[ts(optional)]
+    pub session_token: Option<String>,
     /// Make it the active destination once Verify passes.
     #[serde(default)]
     #[ts(optional)]
@@ -431,6 +475,10 @@ pub struct UpdateDestination {
     #[serde(default)]
     #[ts(optional)]
     pub secret_access_key: Option<String>,
+    /// `""` clears it.
+    #[serde(default)]
+    #[ts(optional)]
+    pub session_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -621,10 +669,14 @@ impl History {
         rt.garage_checked = Some(i64::MAX);
     }
 
-    /// Effective capacity: owner-set, else the Garage quota for `garage-local`.
+    /// Effective capacity: owner-set, else the policy's size limit per
+    /// connector, else the Garage quota for `garage-local`.
     pub fn capacity(&self, d: &DestinationRow) -> Option<(u64, CapacitySource)> {
         if let Some(c) = d.capacity_bytes {
             return Some((c, CapacitySource::Owner));
+        }
+        if let Some(c) = self.catalog.policy().ok().and_then(|p| p.size_limit_bytes) {
+            return Some((c, CapacitySource::Policy));
         }
         if d.name == garage::NAME {
             if let Some(q) = self.runtime.lock().unwrap().garage_quota {
@@ -675,6 +727,7 @@ impl History {
             bytes_stored: held.bytes_stored,
             first: held.first_hour.map(|h| h * HOUR),
             last: held.last_hour.map(|h| h * HOUR),
+            last_upload: held.last_archived_at,
             error: down.map(|u| u.error.clone()),
             next_retry: down.map(|u| u.next_retry),
             created_at: d.created_at,
@@ -824,7 +877,10 @@ impl History {
         if bucket.trim().is_empty() || bucket.len() > 63 || bucket.contains('/') {
             return invalid("bucket: a bucket name, without slashes");
         }
-        if access_key_id.trim().is_empty() || secret.trim().is_empty() {
+        let host = kind == DestinationKind::S3
+            && access_key_id.trim().is_empty()
+            && secret.trim().is_empty();
+        if !host && (access_key_id.trim().is_empty() || secret.trim().is_empty()) {
             return invalid("an access key id and secret are required");
         }
         let endpoint = endpoint.map(str::trim).unwrap_or("");
@@ -837,6 +893,96 @@ impl History {
             return invalid("endpoint: an http:// or https:// URL");
         }
         Ok(())
+    }
+
+    /// The row a new destination would be saved as (secret sealed).
+    fn row_of(&self, n: &NewDestination, now: i64) -> Result<DestinationRow, HistoryError> {
+        let instance = self.catalog.instance_id()?;
+        Ok(DestinationRow {
+            id: 0,
+            name: n.name.trim().to_string(),
+            kind: n.kind,
+            endpoint: n
+                .endpoint
+                .as_deref()
+                .map(|e| e.trim().trim_end_matches('/').to_string())
+                .filter(|e| !e.is_empty()),
+            region: n.region.clone().unwrap_or_default().trim().to_string(),
+            bucket: n.bucket.trim().to_string(),
+            prefix: remote::normalize_prefix(n.prefix.as_deref().unwrap_or(""), &instance),
+            // Garage and most S3-compatible servers want path-style URLs.
+            path_style: n.path_style.unwrap_or(matches!(
+                n.kind,
+                DestinationKind::Garage | DestinationKind::S3Compatible
+            )),
+            access_key_id: n.access_key_id.trim().to_string(),
+            secret_enc: self.secrets.seal(&remote::pack(
+                &n.secret_access_key,
+                n.session_token.as_deref(),
+            ))?,
+            active: false,
+            verified_at: None,
+            last_verify: None,
+            created_at: now,
+            capacity_bytes: None,
+            removing: false,
+            cleanup_error: None,
+            cleanup_retry_at: None,
+            cleanup_attempts: 0,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn check_s3_host(&self, n: &NewDestination) -> bool {
+        Self::check_fields(
+            &n.name,
+            n.kind,
+            n.endpoint.as_deref(),
+            &n.bucket,
+            &n.access_key_id,
+            &n.secret_access_key,
+        )
+        .is_ok()
+    }
+
+    /// Test a connection without saving it (v1.1-05/06: "Test connection",
+    /// then "Save connector").
+    /// With `existing` and a blank key id or secret, the saved credentials of
+    /// that connector are used (editing without re-entering the secret).
+    pub async fn test(
+        &self,
+        n: &NewDestination,
+        existing: Option<i64>,
+        now: i64,
+    ) -> Result<VerifyResult, HistoryError> {
+        let mut n = n.clone();
+        if let Some(id) = existing {
+            let saved = self.find(id)?;
+            let (secret, token) = remote::unpack(&self.secrets.open_sealed(&saved.secret_enc)?);
+            if n.access_key_id.trim().is_empty() && !saved.access_key_id.is_empty() {
+                n.access_key_id = saved.access_key_id.clone();
+            }
+            if n.secret_access_key.trim().is_empty() && !n.access_key_id.is_empty() {
+                n.secret_access_key = secret;
+                if n.session_token.is_none() {
+                    n.session_token = token;
+                }
+            }
+        }
+        let n = &n;
+        Self::check_fields(
+            &n.name,
+            n.kind,
+            n.endpoint.as_deref(),
+            &n.bucket,
+            &n.access_key_id,
+            &n.secret_access_key,
+        )?;
+        let row = self.row_of(n, now)?;
+        Ok(match self.remote(&row) {
+            Ok(r) => remote::verify(&r, &row.prefix, now).await,
+            Err(e) => remote::unreachable(&e.to_string(), now),
+        })
     }
 
     /// Save a destination and verify it; make it active when asked and
@@ -865,35 +1011,7 @@ impl History {
                 format!("a destination called {:?} exists", n.name.trim()),
             ));
         }
-        let instance = self.catalog.instance_id()?;
-        let row = DestinationRow {
-            id: 0,
-            name: n.name.trim().to_string(),
-            kind: n.kind,
-            endpoint: n
-                .endpoint
-                .map(|e| e.trim().trim_end_matches('/').to_string())
-                .filter(|e| !e.is_empty()),
-            region: n.region.unwrap_or_default().trim().to_string(),
-            bucket: n.bucket.trim().to_string(),
-            prefix: remote::normalize_prefix(n.prefix.as_deref().unwrap_or(""), &instance),
-            // Garage and most S3-compatible servers want path-style URLs.
-            path_style: n.path_style.unwrap_or(matches!(
-                n.kind,
-                DestinationKind::Garage | DestinationKind::S3Compatible
-            )),
-            access_key_id: n.access_key_id.trim().to_string(),
-            secret_enc: self.secrets.seal(n.secret_access_key.trim())?,
-            active: false,
-            verified_at: None,
-            last_verify: None,
-            created_at: now,
-            capacity_bytes: None,
-            removing: false,
-            cleanup_error: None,
-            cleanup_retry_at: None,
-            cleanup_attempts: 0,
-        };
+        let row = self.row_of(&n, now)?;
         let id = self.catalog.insert(&row)?;
         let v = self.verify(id, now).await?;
         if n.activate.unwrap_or(false) && v.ok {
@@ -931,13 +1049,26 @@ impl History {
         if let Some(k) = u.access_key_id {
             d.access_key_id = k.trim().to_string();
         }
-        let secret = match u.secret_access_key.filter(|s| !s.trim().is_empty()) {
-            Some(s) => {
-                d.secret_enc = self.secrets.seal(s.trim())?;
-                s.trim().to_string()
-            }
-            None => self.secrets.open_sealed(&d.secret_enc)?,
+        let (old_secret, old_token) = remote::unpack(&self.secrets.open_sealed(&d.secret_enc)?);
+        let secret = u
+            .secret_access_key
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            // Host credentials (S3): a blank key id clears the saved secret.
+            .unwrap_or_else(|| {
+                if d.access_key_id.is_empty() {
+                    String::new()
+                } else {
+                    old_secret
+                }
+            });
+        let token = match u.session_token {
+            Some(t) => Some(t.trim().to_string()).filter(|t| !t.is_empty()),
+            None => old_token,
         };
+        d.secret_enc = self
+            .secrets
+            .seal(&remote::pack(&secret, token.as_deref()))?;
         Self::check_fields(
             &d.name,
             d.kind,
@@ -967,22 +1098,7 @@ impl History {
         let d = self.find(id)?;
         let v = match self.remote(&d) {
             Ok(r) => remote::verify(&r, &d.prefix, now).await,
-            Err(e) => VerifyResult::from_steps(
-                [
-                    VerifyStepKind::Write,
-                    VerifyStepKind::Read,
-                    VerifyStepKind::List,
-                    VerifyStepKind::Delete,
-                ]
-                .into_iter()
-                .map(|step| VerifyStep {
-                    step,
-                    ok: false,
-                    error: Some(format!("{e:#}")),
-                })
-                .collect(),
-                now,
-            ),
+            Err(e) => remote::unreachable(&format!("{e:#}"), now),
         };
         self.catalog.set_verify(id, &v)?;
         if v.ok && d.active {

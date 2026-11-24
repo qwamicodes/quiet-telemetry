@@ -18,7 +18,7 @@ import { FlowIdOrder } from '@/components/settings/id-order'
 import { PageHeader, SettingRow } from '@/components/settings/kit'
 import { Members } from '@/components/settings/members'
 import { MutedLinesSettings } from '@/components/settings/muted-lines'
-import { Storage } from '@/components/settings/storage'
+import { StoragePage } from '@/components/settings/storage/page'
 import { IngestTokens } from '@/components/tokens/token-table'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -113,7 +113,7 @@ export function SettingsGeneral() {
 }
 
 export function SettingsStorage() {
-  return <Storage />
+  return <StoragePage />
 }
 
 export function SettingsMuted() {

@@ -3,4 +3,8 @@
 /**
  * Every field optional; a blank secret keeps the saved one.
  */
-export type UpdateDestination = { name?: string, endpoint?: string, region?: string, bucket?: string, prefix?: string, path_style?: boolean, access_key_id?: string, secret_access_key?: string, };
+export type UpdateDestination = { name?: string, endpoint?: string, region?: string, bucket?: string, prefix?: string, path_style?: boolean, access_key_id?: string, secret_access_key?: string, 
+/**
+ * `""` clears it.
+ */
+session_token?: string, };

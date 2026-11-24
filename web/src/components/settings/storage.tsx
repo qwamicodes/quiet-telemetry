@@ -1,8 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { AlertTriangleIcon, Trash2Icon } from 'lucide-react'
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, type ReactNode, useState } from 'react'
 import { Caps, PageHeader, Panel, ReadOnlyNote, SettingRow } from '@/components/settings/kit'
-import { RetainedHistory } from '@/components/settings/retained-history'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import {
@@ -175,7 +174,8 @@ function PurgeDialog({
 export { PurgeDialog }
 
 /** Settings → Storage (boards v0.1-07.3 / 07.4). */
-export function Storage() {
+/** Storage → Overview → Local settings: the recent window on this host (SQLite). */
+export function LocalStorage({ crumb }: { crumb?: ReactNode }) {
   const r = useStorage().data
   const settings = useSettings().data
   const system = useSystem().data
@@ -223,8 +223,9 @@ export function Storage() {
 
   return (
     <div className="flex max-w-190 flex-col gap-5">
+      {crumb}
       <PageHeader
-        title="Storage"
+        title="Local settings"
         sub={
           r.store === 'sqlite'
             ? `SQLite on this host · ${r.path ?? 'quiet.db'}`
@@ -382,8 +383,6 @@ export function Storage() {
           </form>
         </SettingRow>
       </div>
-
-      <RetainedHistory sqlite={r.store === 'sqlite'} />
 
       <Panel title="Volume by source" aside={`${fmtCount(r.lines)} lines · ${gb(r.used)}`}>
         <table className="w-full text-sm">

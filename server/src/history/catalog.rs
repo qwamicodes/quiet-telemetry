@@ -49,6 +49,8 @@ pub struct Held {
     pub bytes_stored: u64,
     pub first_hour: Option<i64>,
     pub last_hour: Option<i64>,
+    /// When the newest upload finished, unix ms.
+    pub last_archived_at: Option<i64>,
 }
 
 const SCHEMA: &str = "
@@ -387,7 +389,7 @@ impl Catalog {
     pub fn held(&self, destination_id: i64) -> anyhow::Result<Held> {
         Ok(self.db.lock().unwrap().query_row(
             "SELECT COUNT(*), COALESCE(SUM(lines), 0), COALESCE(SUM(bytes_stored), 0),
-                    MIN(hour), MAX(hour)
+                    MIN(hour), MAX(hour), MAX(archived_at)
              FROM history_hours WHERE destination_id = ?",
             [destination_id],
             |r| {
@@ -397,6 +399,7 @@ impl Catalog {
                     bytes_stored: r.get::<_, i64>(2)? as u64,
                     first_hour: r.get(3)?,
                     last_hour: r.get(4)?,
+                    last_archived_at: r.get(5)?,
                 })
             },
         )?)

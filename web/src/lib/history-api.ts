@@ -28,6 +28,7 @@ export const destinationKind = z.enum(['garage', 'r2', 's3', 's3_compatible']) s
 const verifyStep = z.object({
   step: z.enum(['write', 'read', 'list', 'delete']),
   ok: z.boolean(),
+  skipped: z.boolean().default(false),
   error: z.string().optional(),
 }) satisfies z.ZodType<VerifyStep>
 
@@ -57,11 +58,12 @@ export const destination = z.object({
   bytes_stored: z.number(),
   first: z.number().nullable(),
   last: z.number().nullable(),
+  last_upload: z.number().nullable().default(null),
   error: z.string().nullable(),
   next_retry: z.number().nullable(),
   created_at: z.number(),
   capacity_bytes: z.number().nullable(),
-  capacity_source: z.enum(['owner', 'garage']).nullable(),
+  capacity_source: z.enum(['owner', 'policy', 'garage']).nullable(),
   at_capacity: z.boolean(),
   removing: z.boolean(),
   cleanup_error: z.string().nullable(),
@@ -88,6 +90,9 @@ export const atCapacity = z.enum(['evict', 'stop']) satisfies z.ZodType<AtCapaci
 export const historyPolicy = z.object({
   retention_days: z.number().nullable(),
   at_capacity: atCapacity,
+  size_limit_bytes: z.number().nullable().default(null),
+  saved_by: z.string().nullable().default(null),
+  saved_at: z.number().nullable().default(null),
 }) satisfies z.ZodType<HistoryPolicy>
 
 export const historyJob = z.object({
@@ -167,6 +172,14 @@ export function useCreateDestination() {
   return useMutation({
     mutationFn: (n: NewDestination) => fetchJson('/api/storage/destinations', saved, put(n, 'POST')),
     onSuccess: refresh,
+  })
+}
+
+/** Test a connection without saving it (v1.1-05/06). */
+export function useTestDestination() {
+  return useMutation({
+    mutationFn: ({ id, ...n }: NewDestination & { id?: number }) =>
+      fetchJson(`/api/storage/destinations/test${id ? `?id=${id}` : ''}`, verifyResult, put(n, 'POST')),
   })
 }
 

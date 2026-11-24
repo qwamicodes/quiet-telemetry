@@ -5,7 +5,16 @@ export type NewDestination = { name: string, kind: DestinationKind, endpoint?: s
 /**
  * Blank: `quiet/<instance id>/`.
  */
-prefix?: string, path_style?: boolean, access_key_id: string, secret_access_key: string, 
+prefix?: string, path_style?: boolean, 
+/**
+ * Blank with a blank secret (Amazon S3 only): the credentials available
+ * to quiet's host (environment, instance, task or workload role).
+ */
+access_key_id: string, secret_access_key: string, 
+/**
+ * For temporary credentials.
+ */
+session_token?: string, 
 /**
  * Make it the active destination once Verify passes.
  */

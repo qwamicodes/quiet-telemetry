@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ExportDialog } from '@/components/export-dialog'
 import { MutedNote } from '@/components/muted-note'
 import { Histogram } from '@/components/search/histogram'
+import { HistoryPanel, OutsideHistory } from '@/components/search/history-panel'
 import { QueryInput } from '@/components/search/query-input'
 import { SearchResults } from '@/components/search/results'
 import { TimeRange } from '@/components/search/time-range'
@@ -17,6 +18,7 @@ import { useHealth, useSources } from '@/lib/api'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, fmtCount, fmtWindow } from '@/lib/format'
 import { anchoredBounds, anchorFor, barAt, barWidth, loadedSpan, type Span } from '@/lib/histogram-jump'
+import { useHistorySearch } from '@/lib/history-search'
 import { ruleText, useSearchMuted } from '@/lib/mute'
 import { displayIds, fieldFilters, groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
 import { useSearchLines, useSearchOverview } from '@/lib/search-api'
@@ -90,7 +92,19 @@ export function SearchPage() {
   const loading = res.isPending || (refreshing && (res.data?.pages[0]?.lines.length ?? 0) === 0)
   const pages = res.data?.pages ?? []
   const first = pages[0]
-  const found = useMemo(() => pages.flatMap((p) => p.lines), [pages])
+  // Retained history (Phase 5c): the part of the range past the local
+  // window, searched by a background job; its matches join the results,
+  // tagged with where they came from.
+  const coverage = (at != null ? overview.data : first)?.history
+  const history = useHistorySearch(whole, coverage)
+  const historyLines = history.job?.lines
+  const local = useMemo(() => pages.flatMap((p) => p.lines), [pages])
+  const found = useMemo(() => {
+    if (!historyLines?.length) return local
+    // History is older than the local window: after it newest first, before it oldest first.
+    return search.order === 'oldest' ? [...[...historyLines].reverse(), ...local] : [...local, ...historyLines]
+  }, [local, historyLines, search.order])
+  const locations = history.job?.locations
   // Muted lines (06.3): hidden unless the source (or Settings → General)
   // includes them in search, or `muted=include|hide` overrides it for this
   // search. Included ones are shown dimmed and tagged; all are counted.
@@ -114,7 +128,16 @@ export function SearchPage() {
   const words = useMemo(() => terms(q), [q])
   const matchKeys = useMemo(() => fieldFilters(q), [q])
   const head = at != null ? overview.data : first
-  const total = (at != null ? head?.total : first?.total) ?? lines.length
+  // v1.1-24: the whole range is older than any retained history.
+  const outside =
+    coverage != null &&
+    coverage.archived === 0 &&
+    coverage.expired_before != null &&
+    coverage.expired_before >= coverage.to &&
+    head != null &&
+    head.until <= coverage.to
+  const outsideEarliest = coverage?.expired_before ?? null
+  const total = ((at != null ? head?.total : first?.total) ?? local.length) + (history.job?.count ?? 0)
 
   // Histogram click → that time in the results (loaded already: scroll; else
   // re-anchor the page there with `at=`, which keeps it linkable).
@@ -142,7 +165,30 @@ export function SearchPage() {
     const t = setTimeout(() => setFlash(null), 1600)
     return () => clearTimeout(t)
   }, [flash, settledJump])
-  const histogram = head?.histogram ?? null
+  const histogram = useMemo(() => {
+    const h = head?.histogram ?? null
+    const extra = history.job?.histogram
+    if (!h || !extra || extra.length !== h.length) return h
+    return h.map((b, i) => ({
+      ...b,
+      count: b.count + extra[i].count,
+      debug: b.debug + extra[i].debug,
+      info: b.info + extra[i].info,
+      warn: b.warn + extra[i].warn,
+      error: b.error + extra[i].error,
+    }))
+  }, [head?.histogram, history.job?.histogram])
+  // Greyed on the histogram: history not searched (yet), expired, gaps, failures.
+  const unsearched = useMemo(() => {
+    if (!coverage) return []
+    const job = history.job
+    if (!job || job.state === 'retrieving') return [{ from: coverage.from, to: coverage.to }]
+    return [
+      ...(coverage.expired_before != null ? [{ from: coverage.from, to: coverage.expired_before }] : []),
+      ...coverage.gaps,
+      ...job.failures,
+    ]
+  }, [coverage, history.job])
   const selectedBar = histogram
     ? (curJump?.bar ?? barAt(histogram, at, barWidth(histogram, head?.since ?? 0, head?.until ?? 0)))
     : -1
@@ -289,8 +335,27 @@ export function SearchPage() {
 
       {head && histogram && total > 0 && (
         <div className={cn('transition-opacity', refreshing && at == null && 'opacity-55')}>
-          <Histogram buckets={histogram} since={head.since} until={head.until} selected={selectedBar} onJump={onJump} />
+          <Histogram
+            buckets={histogram}
+            since={head.since}
+            until={head.until}
+            selected={selectedBar}
+            onJump={onJump}
+            unsearched={unsearched}
+          />
         </div>
+      )}
+
+      {coverage && !loading && (
+        <HistoryPanel
+          coverage={coverage}
+          localWindowMs={retentionMs}
+          job={history.job}
+          starting={history.starting}
+          error={history.error}
+          onStart={history.start}
+          onCancel={history.cancel}
+        />
       )}
 
       {loading ? (
@@ -303,6 +368,8 @@ export function SearchPage() {
         <p role="alert" className="border border-status-err/30 bg-status-err/10 p-3 text-status-err">
           {res.error.message}
         </p>
+      ) : outside && head ? (
+        <OutsideHistory since={head.since} until={head.until} earliest={outsideEarliest} />
       ) : empty ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-4 pb-24">
           <div className="flex max-w-md flex-col items-center gap-3 border border-dashed p-10 text-center">
@@ -382,6 +449,7 @@ export function SearchPage() {
               const r = ruleOf.get(id)
               return r ? ruleText(r) : undefined
             }}
+            locationOf={locations ? (id) => locations[String(id)] : undefined}
             refreshing={refreshing}
             jump={curJump}
             flash={flash}

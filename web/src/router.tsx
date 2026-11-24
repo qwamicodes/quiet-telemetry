@@ -24,6 +24,7 @@ import {
   sourceParams,
   sourceSearch,
   sourcesSearch,
+  storageSearch,
   streamSearch,
 } from '@/lib/search-params'
 import { makeQueryClient } from '@/providers'
@@ -206,6 +207,7 @@ const settingsMembersRoute = createRoute({
 const settingsStorageRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/storage',
+  validateSearch: storageSearch,
   component: SettingsStorage,
 })
 const settingsFlowIdsRoute = createRoute({
