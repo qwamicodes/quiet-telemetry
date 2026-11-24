@@ -9,9 +9,9 @@ import {
   GitForkIcon,
   ListIcon,
   SearchIcon,
-  WaypointsIcon,
 } from 'lucide-react'
 import { type CSSProperties, useMemo, useState } from 'react'
+import { DiagramIcon } from '@/components/diagram/diagram-icon'
 import { ExportDialog } from '@/components/export-dialog'
 import { type DiagramMode, FieldCard, plainRead } from '@/components/field-card'
 import { ActivityList } from '@/components/flow/activity-list'
@@ -22,18 +22,20 @@ import { LevelBadge } from '@/components/level-badge'
 import { MobileFlow } from '@/components/mobile/mobile-flow'
 import { useIsMobile } from '@/components/mobile/use-mobile'
 import { INSPECTOR, INSPECTOR_SINGLE, PanelResize, usePanelWidth } from '@/components/panel-resize'
+import { fmtD, fmtDYT } from '@/components/settings/storage/ui'
 import { SidebarToggle } from '@/components/sidebar-resize'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { Flow, FlowHistory, FlowNotFound, LogLine } from '@/gen'
+import type { Flow, FlowHistory, FlowNotFound, LogLine, RetainedFlow } from '@/gen'
 import { activityCounts, buildActivity, JOB_EVIDENCE, type JobRow, jobBadge } from '@/lib/activity'
 import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { kindLabel } from '@/lib/connect'
 import { flowTone, fmtDuration, statusLabel } from '@/lib/flow'
 import { type FlowTarget, useFlow } from '@/lib/flow-api'
 import { fmtBytes, fmtClock, fmtTime, fmtWindow } from '@/lib/format'
-import { useHistorySearch } from '@/lib/history-search'
+import { fmtDays, useHistorySearch } from '@/lib/history-search'
 import { searchResponse } from '@/lib/schemas'
+import { searchBounds, searchSearch } from '@/lib/search-params'
 import { toast } from '@/lib/toast'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { cn } from '@/lib/utils'
@@ -46,15 +48,15 @@ const lineRoute = getRouteApi('/line/$lineId')
 export function FlowPage() {
   useSeenOnVisit('flow')
   const { id } = flowRoute.useParams()
-  const { line, card } = flowRoute.useSearch()
-  return <FlowScreen target={{ id }} selectedLine={line} view={card} />
+  const { line, card, at, back } = flowRoute.useSearch()
+  return <FlowScreen target={{ id, at }} selectedLine={line} view={card} back={back} />
 }
 
 /** `/line/$lineId`: the flow of one line (a one-node flow when it has no ids). */
 export function LineFlowPage() {
   const { lineId } = lineRoute.useParams()
-  const { line, card } = lineRoute.useSearch()
-  return <FlowScreen target={{ line: lineId }} selectedLine={line ?? lineId} view={card} />
+  const { line, card, at, back } = lineRoute.useSearch()
+  return <FlowScreen target={{ line: lineId, at }} selectedLine={line ?? lineId} view={card} back={back} />
 }
 
 async function copy(text: string, what: string) {
@@ -71,19 +73,29 @@ function Crumbs({
   label,
   value,
   actions,
+  back,
 }: {
   source?: string
   label?: string
   value: string
   actions?: React.ReactNode
+  /** Opened from a search (`/search?…`): the back button returns there. */
+  back?: string
 }) {
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 text-[13px]">
       <SidebarToggle />
-      <Button variant="ghost" size="sm" nativeButton={false} render={<Link to="/" search={{ source }} />}>
-        <ArrowLeftIcon />
-        Stream
-      </Button>
+      {back ? (
+        <Button variant="ghost" size="sm" nativeButton={false} render={<a href={back} />}>
+          <ArrowLeftIcon />
+          Search
+        </Button>
+      ) : (
+        <Button variant="ghost" size="sm" nativeButton={false} render={<Link to="/" search={{ source }} />}>
+          <ArrowLeftIcon />
+          Stream
+        </Button>
+      )}
       {source && (
         <>
           <span className="text-muted-foreground">/</span>
@@ -104,13 +116,23 @@ function Crumbs({
   )
 }
 
-function FlowScreen({ target, selectedLine, view }: { target: FlowTarget; selectedLine?: number; view?: 'diagram' }) {
+function FlowScreen({
+  target,
+  selectedLine,
+  view,
+  back,
+}: {
+  target: FlowTarget
+  selectedLine?: number
+  view?: 'diagram'
+  back?: string
+}) {
   const res = useFlow(target)
   const label = 'id' in target ? target.id : `line ${target.line}`
   if (res.isPending)
     return (
       <div className="flex flex-1 flex-col gap-3 px-6 pb-4">
-        <Crumbs value={label} />
+        <Crumbs value={label} back={back} />
         <Skeleton className="h-8 w-80" />
         <Skeleton className="h-28" />
         <Skeleton className="flex-1" />
@@ -132,6 +154,8 @@ function FlowScreen({ target, selectedLine, view }: { target: FlowTarget; select
       since={res.data.since}
       until={res.data.until}
       history={res.data.history}
+      retained={res.data.retained}
+      back={back}
       selectedLine={selectedLine}
       view={view}
     />
@@ -145,10 +169,16 @@ function FlowView({
   selectedLine,
   view,
   history,
+  retained,
+  back,
 }: {
   flow: Flow
   since: number
   until: number
+  /** Read from retained history (v1.1-23). */
+  retained?: RetainedFlow
+  /** The search it was opened from. */
+  back?: string
   /** The flow may continue in retained history not loaded (Phase 5c). */
   history?: FlowHistory
   selectedLine?: number
@@ -239,22 +269,26 @@ function FlowView({
   const correlated = flow.stitched_by.length > 0 && `correlated by ${flow.stitched_by[0]}`
   // 04.1: "1 request · 1 job · 2 completion events · correlated by request_id";
   // 04.2: "3 attempts · payouts · terminal failure confirmed by the queue";
+  // 04.3: "1 request · 3 jobs · native queue links · children progress independently";
   // 04.4: "1 event · 38ms · correlated by request_id · last 24h".
+  const childJobs = activity.main.some((r) => r.kind === 'job' && r.children.length > 0)
   const meta = (
     one
       ? ['1 event', fmtDuration(flow.duration_ms), correlated, `last ${fmtWindow(until - since)}`]
-      : openedJob
-        ? [
-            `${openedJob.attempts.length} ${openedJob.attempts.length === 1 ? 'attempt' : 'attempts'}`,
-            openedJob.queue,
-            JOB_EVIDENCE[openedJob.state],
-          ]
-        : [
-            activityCounts(activity, { related: true }),
-            `${activity.completions} completion ${activity.completions === 1 ? 'event' : 'events'}`,
-            correlated,
-            flow.span_tree && 'span tree',
-          ]
+      : childJobs
+        ? [activityCounts(activity, { related: true }), 'native queue links', 'children progress independently']
+        : openedJob
+          ? [
+              `${openedJob.attempts.length} ${openedJob.attempts.length === 1 ? 'attempt' : 'attempts'}`,
+              openedJob.queue,
+              JOB_EVIDENCE[openedJob.state],
+            ]
+          : [
+              activityCounts(activity, { related: true }),
+              `${activity.completions} completion ${activity.completions === 1 ? 'event' : 'events'}`,
+              correlated,
+              flow.span_tree && 'span tree',
+            ]
   ).filter(Boolean)
   const title = openedJob ? openedJob.flow : flow.title
   // 04.13: a single plain-text line reads "404 · plain text" and has no flow actions.
@@ -299,25 +333,46 @@ function FlowView({
         source={home.source}
         label={opened?.key}
         value={opened?.value ?? `line ${first.id.toLocaleString('en-US')}`}
+        back={back}
         actions={
-          <>
-            {flow.ids.length > 0 && !plain && (
-              <Button variant="outline" size="sm" onClick={() => setExporting(true)}>
-                <FileDownIcon />
-                Export flow
+          retained ? (
+            <>
+              {!plain && (
+                <Button variant="outline" size="sm" onClick={copyFlow}>
+                  <CopyIcon />
+                  Copy flow JSON
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                nativeButton={false}
+                render={<a href={back ?? `/search?q=${encodeURIComponent(`id:${opened?.value ?? ''}`)}`} />}
+              >
+                <ListIcon />
+                Open in search
               </Button>
-            )}
-            {!plain && (
-              <Button variant="outline" size="sm" onClick={copyFlow}>
-                <CopyIcon />
-                Copy flow JSON
+            </>
+          ) : (
+            <>
+              {flow.ids.length > 0 && !plain && (
+                <Button variant="outline" size="sm" onClick={() => setExporting(true)}>
+                  <FileDownIcon />
+                  Export flow
+                </Button>
+              )}
+              {!plain && (
+                <Button variant="outline" size="sm" onClick={copyFlow}>
+                  <CopyIcon />
+                  Copy flow JSON
+                </Button>
+              )}
+              <Button variant="outline" size="sm" nativeButton={false} render={<Link to="/" search={streamSearch} />}>
+                <ListIcon />
+                Open in stream
               </Button>
-            )}
-            <Button variant="outline" size="sm" nativeButton={false} render={<Link to="/" search={streamSearch} />}>
-              <ListIcon />
-              Open in stream
-            </Button>
-          </>
+            </>
+          )
         }
       />
       <div className="flex items-center gap-3">
@@ -338,11 +393,17 @@ function FlowView({
         {flow.truncated && <span className="text-status-warn"> · cut at the flow size limit</span>}
         {flow.partial && <span className="text-status-warn"> · partial: earlier lines may have expired</span>}
       </p>
+      {retained && <RetainedStrip retained={retained} back={back} />}
 
       {one ? (
         <div className="flex min-h-0 flex-1 gap-3" style={{ '--card-w': `${singleW}px` } as CSSProperties}>
           <FieldCard
             line={line}
+            // Wide (04.8): `1 / 1` and × back to the card, like a step in a longer flow.
+            position={wide ? { index: 0, total: 1 } : undefined}
+            onPrev={wide ? () => {} : undefined}
+            onNext={wide ? () => {} : undefined}
+            onClose={wide ? () => setDiagram('off') : undefined}
             className={cn(wide ? 'w-auto flex-1' : 'w-[var(--card-w)] max-w-[70%]')}
             onOpenInStream={openInStream}
             diagram={diagram}
@@ -387,6 +448,7 @@ function FlowView({
                 full={full}
                 onFull={() => setFull((f) => !f)}
                 window={fmtWindow(until - since)}
+                scope={retained ? `${fmtD(retained.at)} · retained history` : undefined}
               />
             )}
             {history && opened && (
@@ -500,7 +562,7 @@ function PlainTextNote({ source, kind }: { source: string; kind?: string }) {
   return (
     <div className="border border-dashed p-4" data-testid="plain-text-note">
       <h2 className="flex items-center gap-2 font-medium">
-        <WaypointsIcon className="size-4 text-muted-foreground" />
+        <DiagramIcon className="size-4 text-muted-foreground" />
         No diagram for plain text
       </h2>
       <p className="mt-2 text-muted-foreground">
@@ -664,3 +726,37 @@ function NotFound({ nf }: { nf: FlowNotFound }) {
 }
 
 /** A flow link with nothing like it left in the window (design 08.6). */
+
+/** v1.1-23: a flow read from retained history, and the search it came from. */
+function RetainedStrip({ retained, back }: { retained: RetainedFlow; back?: string }) {
+  const range = back ? searchRangeLabel(back) : null
+  return (
+    <section
+      aria-label="Retained history"
+      className="mb-4 flex min-h-12 shrink-0 items-center gap-3 border bg-card px-3.5 py-2 text-[13px]"
+    >
+      <span className="border px-1.5 font-mono text-[11px] text-muted-foreground leading-[18px]">Retained history</span>
+      <span>
+        {fmtDYT(retained.at)} · {retained.location === 'garage-local' ? 'Garage' : retained.location}
+      </span>
+      <span className="flex-1" />
+      {range && <span className="font-mono text-muted-foreground text-xs">Search · {range}</span>}
+      {back && (
+        <Button variant="outline" size="sm" nativeButton={false} render={<a href={back} />}>
+          Back to results
+        </Button>
+      )}
+    </section>
+  )
+}
+
+/** `23 Oct–22 Nov` for the search a flow was opened from. */
+function searchRangeLabel(back: string): string | null {
+  try {
+    const p = new URL(back, window.location.origin).searchParams
+    const b = searchBounds(searchSearch.parse(Object.fromEntries(p)), Date.now())
+    return fmtDays(b.since, b.until)
+  } catch {
+    return null
+  }
+}

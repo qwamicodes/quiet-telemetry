@@ -1,7 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import {
   ArrowRightIcon,
-  CheckIcon,
   ExternalLinkIcon,
   EyeIcon,
   EyeOffIcon,
@@ -10,16 +9,14 @@ import {
   LockIcon,
   PlusIcon,
   Trash2Icon,
-  XIcon,
 } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { MuteRule, SourceSettings } from '@/gen'
-import { globalOff, routePath, ruleText } from '@/lib/mute'
+import { globalOff, ruleText } from '@/lib/mute'
 import {
   restoreOf,
   ruleHits,
@@ -34,6 +31,7 @@ import { DEFAULT_SOURCE_SETTINGS, useSaveSource, useSettings } from '@/lib/setti
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 import { AddRuleDialog } from './add-rule-dialog'
+import { EditRulePanel } from './edit-rule-panel'
 import {
   DELETE_CONFIRM_AT,
   fmtN,
@@ -199,7 +197,6 @@ function SourceRuleRow({
   const del = useDeleteMuteRule()
   const add = useAddMuteRule()
   const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState(rule.value)
   const [confirm, setConfirm] = useState(false)
   const trash = useRef<HTMLButtonElement>(null)
 
@@ -247,16 +244,13 @@ function SourceRuleRow({
       toast.error('Could not delete the rule', { description: (e as Error).message })
     }
   }
-  const save = async () => {
-    const v = rule.shape === 'route' || rule.shape === 'method_route' ? routePath(value) : value.trim()
-    if (!v) return
-    try {
-      await update.mutateAsync({ id: rule.id, patch: { value: v } })
-      setEditing(false)
-    } catch (e) {
-      toast.error('Could not save the rule', { description: (e as Error).message })
-    }
-  }
+  // 06.18: the row opens into an edit panel.
+  if (editing)
+    return (
+      <li data-rule={rule.id}>
+        <EditRulePanel rule={rule} source={source} hits={hits} onDone={() => setEditing(false)} />
+      </li>
+    )
 
   return (
     <li
@@ -266,49 +260,12 @@ function SourceRuleRow({
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-2">
           <ShapeChip shape={rule.shape} />
-          {editing ? (
-            <form
-              className="flex min-w-0 flex-1 items-center gap-1.5"
-              onSubmit={(e) => {
-                e.preventDefault()
-                save()
-              }}
-            >
-              {rule.shape === 'method_route' && <span className="font-mono text-[13px] text-brand">{rule.method}</span>}
-              <Input
-                autoFocus
-                aria-label="Rule value"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Escape') return
-                  e.stopPropagation()
-                  setEditing(false)
-                }}
-                className="h-7 font-mono text-[13px]"
-              />
-              <Button type="submit" size="icon-sm" variant="outline" aria-label="Save rule">
-                <CheckIcon />
-              </Button>
-              <Button
-                type="button"
-                size="icon-sm"
-                variant="ghost"
-                aria-label="Cancel edit"
-                onClick={() => setEditing(false)}
-              >
-                <XIcon />
-              </Button>
-            </form>
-          ) : owner ? (
+          {owner ? (
             <button
               type="button"
               className="min-w-0 text-left hover:underline hover:decoration-dotted"
               title="Edit rule"
-              onClick={() => {
-                setValue(rule.value)
-                setEditing(true)
-              }}
+              onClick={() => setEditing(true)}
             >
               <Pattern rule={rule} />
             </button>
@@ -316,11 +273,6 @@ function SourceRuleRow({
             <Pattern rule={rule} />
           )}
         </div>
-        {editing && value.trim().endsWith('*') && (
-          <span className="font-mono text-[11px] text-status-warn">
-            The * also catches {routePath(value).replace(/\*$/, '')}z. Drop it to keep the rule exact.
-          </span>
-        )}
         <Meta>
           {rule.enabled ? (
             <span className="text-foreground/90">{fmtN(hits)} hidden</span>

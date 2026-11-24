@@ -108,14 +108,19 @@ function renderAt(path: string) {
 
 describe('markers (v0.1.1-00.4)', () => {
   it('own change first, then roll-up as updated, nothing once seen', () => {
-    expect(markerFor('settings.appearance', CHANGES)).toBe('new')
-    expect(markerFor('settings', CHANGES)).toBe('updated')
+    // 00.1: Guide and its changed tabs; a tab's own updated wins over new parts under it.
+    expect(markerFor('guide.agent', CHANGES)).toBe('updated')
+    expect(markerFor('guide.canonical', CHANGES)).toBe('updated')
+    expect(markerFor('guide.check', CHANGES)).toBe('updated')
+    expect(markerFor('guide.ids', CHANGES)).toBeNull()
     expect(markerFor('guide', CHANGES)).toBe('updated')
+    expect(markerFor('settings', CHANGES)).toBeNull()
     expect(markerFor('search', CHANGES)).toBeNull()
+    expect(markerFor('guide.agent.templates', CHANGES)).toBe('new')
     expect(
       markerFor(
-        'settings',
-        CHANGES.filter((c) => c.id !== 'appearance'),
+        'guide',
+        CHANGES.filter((c) => !c.target.startsWith('guide')),
       ),
     ).toBeNull()
   })
@@ -124,10 +129,9 @@ describe('markers (v0.1.1-00.4)', () => {
 describe('upgrade prompt (00.3)', () => {
   it('lists only the changes this source still needs, with counts', () => {
     const p = upgradePrompt('legacy-api', report)
-    expect(p).toContain('newest 200 records from legacy-api')
-    expect(p).toContain('1. `outcome` → level + status_code')
-    expect(p).toContain('(150 records)')
-    expect(p).toContain('2. `status` → status_code')
+    expect(p).toContain("Update legacy-api's existing logging to the quiet v0.1.1 format.")
+    expect(p).toContain('1. Drop outcome; set level from the error.')
+    expect(p).toContain('2. status → status_code, a number.')
     expect(p).not.toContain('wideEvents')
   })
 })
@@ -135,28 +139,34 @@ describe('upgrade prompt (00.3)', () => {
 describe("What's new", () => {
   it('banner, version-chip dot, sheet and Mark all as seen', { timeout: 20_000 }, async () => {
     const user = userEvent.setup()
-    renderAt('/search')
+    renderAt('/guide')
     const banner = await screen.findByRole('region', { name: "What's new" }, { timeout: 15_000 })
-    expect(banner).toHaveTextContent('Logs you already send keep working. 1 source still uses the v0.1.0 format.')
+    expect(banner).toHaveTextContent('quiet is now v0.1.1 · the logging guide changed')
+    expect(banner).toHaveTextContent('1 source still uses the v0.1.0 format.')
     const sidebar = screen.getByRole('complementary', { name: 'Sidebar' })
-    expect(within(sidebar).getByRole('button', { name: /What's new: 9 unseen/ })).toBeInTheDocument()
+    expect(within(sidebar).getByRole('button', { name: /9 unseen changes/ })).toBeInTheDocument()
     expect(within(sidebar).getByText('· v0.1.0')).toBeInTheDocument()
-    // Settings rolls up its new Appearance page.
-    expect(within(sidebar).getByRole('link', { name: /Settings/ })).toHaveTextContent('updated')
+    // Guide rolls up its changed tabs; nothing else in the nav is marked (00.1).
+    expect(within(sidebar).getByRole('link', { name: /Guide/ })).toHaveTextContent('updated in v0.1.1')
+    expect(within(sidebar).getByRole('link', { name: /Settings/ })).not.toHaveTextContent('updated')
 
     await user.click(within(banner).getByRole('button', { name: 'What changed' }))
     const sheet = await screen.findByRole('dialog')
+    expect(within(sheet).getByRole('heading', { name: "What's new in v0.1.1" })).toBeInTheDocument()
     expect(within(sheet).getByText('Changes to your logs')).toBeInTheDocument()
-    expect(within(sheet).getByRole('link', { name: /Upgrade legacy-api/ })).toBeInTheDocument()
+    expect(within(sheet).getByText('1 source still logs in the v0.1.0 format')).toBeInTheDocument()
+    expect(within(sheet).getByRole('button', { name: 'Upgrade legacy-api' })).toBeInTheDocument()
     await user.click(within(sheet).getByRole('button', { name: 'Mark all as seen' }))
     await waitFor(() => expect(puts).toContainEqual({ seen: CHANGES.map((c) => c.id) }))
     await user.keyboard('{Escape}')
-    await waitFor(() => expect(within(sidebar).getByRole('button', { name: "What's new" })).toBeInTheDocument())
+    await waitFor(() =>
+      expect(within(sidebar).getByRole('button', { name: /^v0\.1\.1 · What's new$/ })).toBeInTheDocument(),
+    )
   })
 
   it('dismissing the banner is kept per account', { timeout: 20_000 }, async () => {
     const user = userEvent.setup()
-    renderAt('/search')
+    renderAt('/guide')
     const banner = await screen.findByRole('region', { name: "What's new" }, { timeout: 15_000 })
     await user.click(within(banner).getByRole('button', { name: 'Dismiss' }))
     await waitFor(() => expect(puts).toContainEqual({ banner_dismissed: true }))
@@ -165,9 +175,11 @@ describe("What's new", () => {
 
   it('accounts made after the upgrade see no markers', { timeout: 20_000 }, async () => {
     state = { ...state, eligible: false }
-    renderAt('/search')
+    renderAt('/guide')
     const sidebar = await screen.findByRole('complementary', { name: 'Sidebar' }, { timeout: 15_000 })
-    await waitFor(() => expect(within(sidebar).getByRole('button', { name: "What's new" })).toBeInTheDocument())
+    await waitFor(() =>
+      expect(within(sidebar).getByRole('button', { name: /^v0\.1\.1 · What's new$/ })).toBeInTheDocument(),
+    )
     expect(screen.queryByRole('region', { name: "What's new" })).not.toBeInTheDocument()
     expect(within(sidebar).queryByText('updated')).not.toBeInTheDocument()
   })
@@ -177,14 +189,16 @@ describe('upgrade a v0.1.0 source (00.3)', () => {
   it('field map with counts, changes-only prompt and rollout', { timeout: 20_000 }, async () => {
     renderAt('/sources/legacy-api/upgrade')
     const map = await screen.findByRole('region', { name: 'Field map' }, { timeout: 15_000 })
-    expect(screen.getByRole('heading', { name: /Upgrade legacy-api to v0.1.1/ })).toHaveTextContent('v0.1.0')
-    expect(within(map).getByText('150 v0.1.0 · 50 v0.1.1 · 0 other')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Upgrade legacy-api to v0.1.1' })).toBeInTheDocument()
+    expect(screen.getByText('v0.1.0 format')).toBeInTheDocument()
+    expect(screen.getByText(/200 received records · checked .* · 150 use v0.1.0 fields/)).toBeInTheDocument()
     const rows = within(map).getAllByRole('row')
-    expect(rows[1]).toHaveTextContent('outcome')
-    expect(rows[3]).toHaveTextContent('advice')
-    const prompt = screen.getByRole('region', { name: 'Upgrade prompt · changes only' })
-    expect(within(prompt).getByRole('button', { name: 'Copy upgrade prompt' })).toBeInTheDocument()
-    expect(prompt).toHaveTextContent('Make only these changes')
-    expect(screen.getByRole('region', { name: 'Rollout' })).toHaveTextContent('50%')
+    expect(rows[1]).toHaveTextContent('"outcome": "failed"')
+    expect(rows[1]).toHaveTextContent('150')
+    expect(rows[3]).toHaveTextContent('Advice')
+    const agent = screen.getByRole('region', { name: 'Upgrade with your agent' })
+    expect(within(agent).getByRole('button', { name: 'Copy upgrade prompt' })).toBeInTheDocument()
+    expect(agent).toHaveTextContent('change only what each event contains')
+    expect(screen.getByRole('region', { name: 'Rollout' })).toHaveTextContent('50 of 200 records use v0.1.1')
   })
 })

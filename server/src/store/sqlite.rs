@@ -1358,6 +1358,38 @@ pub fn segment_has_ids(path: &std::path::Path, hour: i64, ids: &[String]) -> any
     Ok(found)
 }
 
+/// Lines of an archived hour carrying any of `ids` (its id index), with an
+/// event time in `[since, until]`, oldest first, at most `limit`. What a
+/// flow stitches on when it reaches into retained history. Blocking.
+pub fn segment_with_ids(
+    path: &std::path::Path,
+    hour: i64,
+    ids: &[String],
+    since: i64,
+    until: i64,
+    limit: usize,
+) -> anyhow::Result<Vec<Line>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut c = open_segment(path, hour)?;
+    with_ids_sync(&mut c, ids, since, until, limit)
+}
+
+/// One line of an archived hour by its id. Blocking.
+pub fn segment_line(path: &std::path::Path, hour: i64, id: u64) -> anyhow::Result<Option<Line>> {
+    let c = open_segment(path, hour)?;
+    Ok(c.query_row(
+        &format!(
+            "SELECT id, ts, received, source, level, raw FROM {} WHERE id = ?",
+            t('l', hour)
+        ),
+        [id as i64],
+        row_to_line,
+    )
+    .optional()?)
+}
+
 fn search_sync(c: &mut Connection, q: &SearchQuery) -> anyhow::Result<SearchPage> {
     let tx = c.transaction()?; // one snapshot for the whole search
     let parts = partitions_for(&tx, q)?;

@@ -2,6 +2,8 @@
 //!
 //! GET  /api/flow?id=<any correlation id>     the stitched flow (404 + close matches)
 //! GET  /api/flow?line=<line id>              the flow of that line (one node if it has no ids)
+//!      &at=<unix ms>                          (either) the opened event's time: past the local
+//!                                             window, the flow is read from retained history
 //! POST /api/flow-summaries {"ids":[...]}     header numbers for up to 100 ids at once
 //!                                            (search "group by flow", the stream's steps column)
 //!
@@ -10,6 +12,7 @@
 
 use crate::api::AppState;
 use crate::flow::{build, expiry_edge, stitch, Flow, FlowSummary, Limits, Seed};
+use crate::history::search::{Combined, SegmentSet};
 use crate::normalize::{CorrId, IdKey};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -40,6 +43,22 @@ pub struct FlowParams {
     pub id: Option<String>,
     #[ts(optional)]
     pub line: Option<u64>,
+    /// When the opened event happened (a retained-history search result):
+    /// older than the local window, the flow is read from the archived
+    /// hours around it (v1.1-23).
+    #[ts(optional)]
+    pub at: Option<i64>,
+}
+
+/// A flow read (at least partly) from retained history (v1.1-23).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RetainedFlow {
+    /// The destination its oldest archived line came from.
+    pub location: String,
+    /// Its first event, unix ms.
+    pub at: i64,
+    /// Lines read from retained history.
+    pub lines: u32,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -54,6 +73,10 @@ pub struct FlowResponse {
     #[ts(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history: Option<crate::history::search::FlowHistory>,
+    /// Read from retained history.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained: Option<RetainedFlow>,
 }
 
 /// An id with lines, shown when the one asked for has none.
@@ -141,32 +164,63 @@ async fn flow(State(s): State<AppState>, Query(p): Query<FlowParams>) -> Respons
     }
     let edge = expiry_edge(store.usage().await.ok().and_then(|u| u.oldest), since);
 
+    let now = chrono::Utc::now().timestamp_millis();
+    let first = crate::history_search_api::local_first(&s).await;
+    // The opened event is older than the local window: its archived hours.
+    let past =
+        p.at.filter(|at| first.is_none_or(|f| *at < f * crate::history::HOUR));
+    let ids: Vec<String> = p.id.iter().map(|i| i.trim().to_string()).collect();
+    let mut segments = match past {
+        Some(_) => load_segments(&s, past, &ids, first, now).await,
+        None => SegmentSet::default(),
+    };
+
     let (seed, opened) = match (&p.id, p.line) {
         (Some(id), None) => match valid_id(id) {
             Ok(id) => (Seed::Id(id), Some(id.to_string())),
             Err(e) => return bad(e),
         },
-        (None, Some(line_id)) => match store.line(line_id).await {
-            Ok(Some(l)) => {
-                let opened = l.display_id.as_ref().map(|d| d.value.clone());
-                (Seed::Line(l), opened)
+        (None, Some(line_id)) => {
+            let found = match store.line(line_id).await {
+                Ok(Some(l)) => Some(l),
+                Ok(None) => segments.line(line_id).await.unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "reading an archived line failed");
+                    None
+                }),
+                Err(e) => return unavailable(e),
+            };
+            match found {
+                Some(l) => {
+                    let opened = l.display_id.as_ref().map(|d| d.value.clone());
+                    (Seed::Line(l), opened)
+                }
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({ "error": "line not found (expired or never stored)" })),
+                    )
+                        .into_response()
+                }
             }
-            Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({ "error": "line not found (expired or never stored)" })),
-                )
-                    .into_response()
-            }
-            Err(e) => return unavailable(e),
-        },
+        }
         _ => return bad("give exactly one of `id` or `line`"),
     };
 
-    let st = match stitch(&*store, seed, since, until, limits(&s)).await {
+    let mut st = match walk(&s, &*store, &segments, seed, since, until).await {
         Ok(st) => st,
         Err(e) => return unavailable(e),
     };
+    // Not in the local window: a cached archived hour may know the id.
+    if st.lines.is_empty() && segments.is_empty() && !ids.is_empty() {
+        segments = load_segments(&s, None, &ids, first, now).await;
+        if !segments.is_empty() {
+            let seed = Seed::Id(ids[0].as_str());
+            st = match walk(&s, &*store, &segments, seed, since, until).await {
+                Ok(st) => st,
+                Err(e) => return unavailable(e),
+            };
+        }
+    }
     if st.lines.is_empty() {
         let id = opened.unwrap_or_default();
         let close = match close_matches(&s, &id, since, until).await {
@@ -185,24 +239,78 @@ async fn flow(State(s): State<AppState>, Query(p): Query<FlowParams>) -> Respons
         )
             .into_response();
     }
-    let ids: Vec<String> = st.ids.iter().map(|i| i.value.clone()).collect();
+    let archived: Vec<String> = st
+        .lines
+        .iter()
+        .filter_map(|l| segments.location(l.id))
+        .collect();
+    let retained = archived.first().map(|location| RetainedFlow {
+        location: location.clone(),
+        at: st.lines.iter().map(|l| l.ts).min().unwrap_or_default(),
+        lines: archived.len() as u32,
+    });
+    let flow_ids: Vec<String> = st.ids.iter().map(|i| i.value.clone()).collect();
     let earliest = st.lines.iter().map(|l| l.ts).min();
-    let first = crate::history_search_api::local_first(&s).await;
-    let history = s
-        .history_search
-        .flow_history(&s.history, &ids, earliest, first)
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "history check failed");
-            None
-        });
+    let history = if retained.is_some() {
+        None
+    } else {
+        s.history_search
+            .flow_history(&s.history, &flow_ids, earliest, first)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "history check failed");
+                None
+            })
+    };
+    // History lines are older than the expiry edge by design.
+    let edge = if retained.is_some() { None } else { edge };
     Json(FlowResponse {
         flow: build(st, opened.as_deref(), edge),
-        since,
+        since: segments.since().map_or(since, |h| h.min(since)),
         until,
         took_ms: started.elapsed().as_millis() as u64,
         history,
+        retained,
     })
     .into_response()
+}
+
+/// Archived hours for a flow (see `HistorySearch::flow_segments`); none
+/// when history is off or unreachable.
+async fn load_segments(
+    s: &AppState,
+    at: Option<i64>,
+    ids: &[String],
+    first: Option<i64>,
+    now: i64,
+) -> SegmentSet {
+    s.history_search
+        .flow_segments(&s.history, at, ids, first, now)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "loading a flow from retained history failed");
+            SegmentSet::default()
+        })
+}
+
+/// Stitch over the local window, plus the archived hours when any are loaded.
+async fn walk(
+    s: &AppState,
+    store: &dyn crate::store::Store,
+    segments: &SegmentSet,
+    seed: Seed<'_>,
+    since: i64,
+    until: i64,
+) -> anyhow::Result<crate::flow::Stitched> {
+    match segments.since() {
+        None => stitch(store, seed, since, until, limits(s)).await,
+        Some(from) => {
+            let both = Combined {
+                local: store,
+                history: segments,
+            };
+            stitch(&both, seed, from.min(since), until, limits(s)).await
+        }
+    }
 }
 
 async fn close_matches(

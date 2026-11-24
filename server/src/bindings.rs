@@ -21,7 +21,8 @@ use crate::settings::{
     FlowIdSettings, GeneralSettings, SettingsResponse, SourceSettings, UpdateStorage,
 };
 use crate::settings_api::{
-    PurgeRequest, Purged, RemoveSource, RemovedSource, SourceActivity, StorageReport,
+    PurgeRequest, Purged, RedactionPreview, RedactionPreviewRequest, RemoveSource, RemovedSource,
+    SourceActivity, StorageReport,
 };
 use crate::stream_api::{IdCoverageReport, SourceFields, StreamStats};
 use crate::system::SystemStatus;
@@ -60,6 +61,7 @@ fn export_into(dir: &Path) {
     crate::history::HistoryPreview::export_all(&cfg).unwrap();
     crate::history::HistoryJob::export_all(&cfg).unwrap();
     crate::history::search::HistorySearchJob::export_all(&cfg).unwrap();
+    crate::history::search::HistoryTimeline::export_all(&cfg).unwrap();
     crate::history_search_api::HistorySearchRequest::export_all(&cfg).unwrap();
     crate::settings::AddMuteRule::export_all(&cfg).unwrap();
     crate::settings::AddedMuteRule::export_all(&cfg).unwrap();
@@ -133,6 +135,8 @@ fn export_into(dir: &Path) {
     PurgeRequest::export_all(&cfg).unwrap();
     Purged::export_all(&cfg).unwrap();
     SourceActivity::export_all(&cfg).unwrap();
+    RedactionPreview::export_all(&cfg).unwrap();
+    RedactionPreviewRequest::export_all(&cfg).unwrap();
     SystemStatus::export_all(&cfg).unwrap();
     crate::normalize::BuiltinIdKey::export_all(&cfg).unwrap();
 

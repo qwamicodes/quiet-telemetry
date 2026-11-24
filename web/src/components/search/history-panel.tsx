@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { FileDownIcon } from 'lucide-react'
 import { Callout, Card, Dot, Meter, OBtn, PBtn, Tag } from '@/components/settings/storage/ui'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { DestinationCoverage, HistoryCoverage, HistorySearchJob } from '@/gen'
 import { fmtCount, fmtWindow } from '@/lib/format'
 import { fmtDay, fmtDays, gapReasonText, historyExportUrl } from '@/lib/history-search'
@@ -89,9 +90,6 @@ export function HistoryPanel({
             <LocationRow key={d.id} name={shown(d.name)} detail={`${range(d)} · searching`} tone="warn" />
           ))}
         </Card>
-        <p className="text-muted-foreground text-xs leading-[18px]">
-          Results update as each location finishes. Cancelling keeps the results found so far and marks them incomplete.
-        </p>
       </section>
     )
   }
@@ -112,16 +110,7 @@ export function HistoryPanel({
             .join('. ')}
           . Results below cover {ok.join(' and ')} only.
         </Callout>
-        <div className="flex items-center gap-3">
-          <span className="flex-1" />
-          <Tag tone="warn">
-            {held.length + 1 - job.failures.length} of {held.length + 1} locations searched
-          </Tag>
-        </div>
-        <p className="text-muted-foreground text-xs leading-[18px]">
-          A failed location is not the same as no matches. Older related events may be missing from this flow.
-        </p>
-        <ul className="font-mono text-muted-foreground text-xs leading-[18px]">{notes}</ul>
+        <ul className="font-mono text-muted-foreground text-xs leading-[18px] empty:hidden">{notes}</ul>
       </section>
     )
   }
@@ -184,6 +173,91 @@ export function HistoryPanel({
       )}
     </section>
   )
+}
+
+/**
+ * Next to the result count (v1.1-20, 21): the job's progress, and for an
+ * incomplete one how many locations answered, with View coverage listing
+ * each location and what happened there.
+ */
+export function CoverageStatus({
+  coverage,
+  job,
+  localWindowMs,
+}: {
+  coverage: HistoryCoverage
+  job: HistorySearchJob | null
+  localWindowMs: number
+}) {
+  if (job?.state === 'retrieving') return <Tag tone="warn">Search in progress</Tag>
+  if (job?.state !== 'incomplete' || !job.failures.length) return null
+  const held = locations(coverage)
+  const failed = new Map(job.failures.map((f) => [f.destination, f]))
+  return (
+    <>
+      <Tag tone="warn">
+        {held.length + 1 - failed.size} of {held.length + 1} locations searched
+      </Tag>
+      <Popover>
+        <PopoverTrigger render={<OBtn />}>View coverage</PopoverTrigger>
+        <PopoverContent align="end" className="w-[420px] gap-0 p-0">
+          <p className="border-b px-4 py-3 font-medium text-[13px] leading-[18px]">Searched locations</p>
+          <ul aria-label="Coverage">
+            <CoverageRow name="Recent local data" detail={`Last ${fmtWindow(localWindowMs)} · searched`} tone="ok" />
+            {held.map((d) => {
+              const f = failed.get(d.name)
+              return (
+                <CoverageRow
+                  key={d.id}
+                  name={shown(d.name)}
+                  detail={f ? `${fmtDays(f.from, f.to)} · not searched · ${f.error}` : `${range(d)} · searched`}
+                  tone={f ? 'err' : 'ok'}
+                />
+              )
+            })}
+            {coverage.gaps.map((g) => (
+              <CoverageRow
+                key={g.from}
+                name="Not retained"
+                detail={`${fmtDays(g.from, g.to)} · ${gapReasonText(g.reason)}`}
+                tone="idle"
+              />
+            ))}
+            {coverage.expired_before != null && (
+              <CoverageRow
+                name="Expired"
+                detail={`Before ${fmtDay(coverage.expired_before)} · no retained history`}
+                tone="idle"
+              />
+            )}
+          </ul>
+        </PopoverContent>
+      </Popover>
+    </>
+  )
+}
+
+function CoverageRow({ name, detail, tone }: { name: string; detail: string; tone: 'ok' | 'err' | 'idle' }) {
+  return (
+    <li className="flex items-start gap-3 border-t px-4 py-2.5 first:border-t-0">
+      <span className="flex h-[18px] items-center">
+        <Dot tone={tone} />
+      </span>
+      <span className="w-32 shrink-0 text-xs leading-[18px]">{name}</span>
+      <span className="min-w-0 break-words font-mono text-muted-foreground text-xs leading-[18px]">{detail}</span>
+    </li>
+  )
+}
+
+/** Under the results (v1.1-20, 21): what a partial answer means. */
+export function CoverageFootnote({ job }: { job: HistorySearchJob | null }) {
+  const text =
+    job?.state === 'retrieving'
+      ? 'Results update as each location finishes. Cancelling keeps the results found so far and marks them incomplete.'
+      : job?.state === 'incomplete' && job.failures.length
+        ? 'A failed location is not the same as no matches. Older related events may be missing from this flow.'
+        : null
+  return text ? <p className="shrink-0 text-muted-foreground text-xs leading-[18px]">{text}</p> : null
 }
 
 function LocationRow({ name, detail, tone }: { name: string; detail: string; tone: 'ok' | 'warn' | 'err' }) {

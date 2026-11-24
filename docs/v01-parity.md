@@ -1,5 +1,7 @@
 # v0.1 design parity
 
+> **Superseded (v0.1.1, 24 November 2026).** This audit is kept as the v0.1 record. The current audit, against the v0.1.0 and v0.1.1 boards, is [`docs/v0.1.1-parity.md`](v0.1.1-parity.md); a v0.1.1 board replaces the v0.1 board of the same number.
+
 Audit of every v0.1 board in `design/portal-v01/` (pages 01–09 and 11 plus Foundations; v0.2+, mobile (10.x) and archive left out) against `main` at `371f1e4` (slice 6 merged). Each row says what the board shows that `main` did not, and the **Status** column says what `v01/design-parity` (PR #11) did about it. Status is as of the end of the branch (minimap, server-side export jobs, muted lines, remove + revoke, 2026-10-22).
 
 Method: every board PNG was read at full size and compared with screenshots of `main` rendered in headless Chromium (server + sample generator + Vite) and with the code. Times, names and counts in the boards are mock data. Matching means showing the same thing with real values.

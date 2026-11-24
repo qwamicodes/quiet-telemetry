@@ -4,9 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ExportDialog } from '@/components/export-dialog'
 import { MutedNote } from '@/components/muted-note'
 import { Histogram } from '@/components/search/histogram'
-import { HistoryPanel, OutsideHistory } from '@/components/search/history-panel'
+import { CoverageFootnote, CoverageStatus, HistoryPanel, OutsideHistory } from '@/components/search/history-panel'
 import { QueryInput } from '@/components/search/query-input'
 import { SearchResults } from '@/components/search/results'
+import { SharePill } from '@/components/search/share-pill'
 import { TimeRange } from '@/components/search/time-range'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -18,7 +19,7 @@ import { useHealth, useSources } from '@/lib/api'
 import { useFlowSummaries } from '@/lib/flow-api'
 import { fmtClock, fmtCount, fmtWindow } from '@/lib/format'
 import { anchoredBounds, anchorFor, barAt, barWidth, loadedSpan, type Span } from '@/lib/histogram-jump'
-import { useHistorySearch } from '@/lib/history-search'
+import { fmtDay, fmtDays, locationName, useHistorySearch } from '@/lib/history-search'
 import { ruleText, useSearchMuted } from '@/lib/mute'
 import { displayIds, fieldFilters, groupByFlow, joinQuery, splitQuery, terms } from '@/lib/query'
 import { useSearchLines, useSearchOverview } from '@/lib/search-api'
@@ -105,6 +106,7 @@ export function SearchPage() {
     return search.order === 'oldest' ? [...[...historyLines].reverse(), ...local] : [...local, ...historyLines]
   }, [local, historyLines, search.order])
   const locations = history.job?.locations
+  const locationOf = useMemo(() => (locations ? (id: number) => locations[String(id)] : undefined), [locations])
   // Muted lines (06.3): hidden unless the source (or Settings → General)
   // includes them in search, or `muted=include|hide` overrides it for this
   // search. Included ones are shown dimmed and tagged; all are counted.
@@ -178,15 +180,30 @@ export function SearchPage() {
       error: b.error + extra[i].error,
     }))
   }, [head?.histogram, history.job?.histogram])
-  // Greyed on the histogram: history not searched (yet), expired, gaps, failures.
+  // Hatched on the histogram: history not searched (yet), expired, gaps, failures.
   const unsearched = useMemo(() => {
     if (!coverage) return []
     const job = history.job
-    if (!job || job.state === 'retrieving') return [{ from: coverage.from, to: coverage.to }]
+    const expired =
+      coverage.expired_before != null
+        ? [
+            {
+              from: coverage.from,
+              to: coverage.expired_before,
+              label: `No retained history before ${fmtDay(coverage.expired_before)}`,
+            },
+          ]
+        : []
+    if (!job || job.state === 'retrieving')
+      return [...expired, { from: coverage.expired_before ?? coverage.from, to: coverage.to }]
     return [
-      ...(coverage.expired_before != null ? [{ from: coverage.from, to: coverage.expired_before }] : []),
-      ...coverage.gaps,
-      ...job.failures,
+      ...expired,
+      ...coverage.gaps.map((g) => ({ ...g, label: `Not retained · ${fmtDays(g.from, g.to)}` })),
+      ...job.failures.map((f) => ({
+        from: f.from,
+        to: f.to,
+        label: `${locationName(f.destination)} not searched · ${fmtDays(f.from, f.to)}`,
+      })),
     ]
   }, [coverage, history.job])
   const selectedBar = histogram
@@ -205,9 +222,17 @@ export function SearchPage() {
   const rangeLabel = search.from ? 'this range' : `the last ${search.range}`
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 px-8 pt-6 pb-4 max-md:gap-3 max-md:px-4 max-md:pt-4">
-      <header>
-        <h1 className="font-semibold text-xl tracking-tight">Search</h1>
-        <p className="text-muted-foreground">Search stored events. Sampled-out and expired events are not included.</p>
+      <header className="flex items-end justify-between gap-4">
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <h1 className="font-semibold text-xl tracking-tight">Search</h1>
+          <p className="text-muted-foreground">
+            {coverage
+              ? 'Search recent and retained logs and traces. Missing history is shown explicitly.'
+              : 'Search stored events. Sampled-out and expired events are not included.'}
+          </p>
+        </div>
+        {/* 05.9: a search that includes muted events says so in its link. */}
+        {search.muted === 'include' && <SharePill mark="muted=include" />}
       </header>
 
       <div className="flex items-center gap-2 max-md:flex-wrap">
@@ -255,6 +280,18 @@ export function SearchPage() {
         </Button>
       </div>
 
+      {coverage && !loading && (
+        <HistoryPanel
+          coverage={coverage}
+          localWindowMs={retentionMs}
+          job={history.job}
+          starting={history.starting}
+          error={history.error}
+          onStart={history.start}
+          onCancel={history.cancel}
+        />
+      )}
+
       <div className="flex items-center gap-3 max-md:flex-wrap max-md:gap-2">
         <p className="font-mono text-muted-foreground text-xs max-md:basis-full" aria-live="polite">
           <span className="font-medium font-sans text-foreground text-sm">
@@ -273,7 +310,7 @@ export function SearchPage() {
           )}
           {head &&
             !refreshing &&
-            ` · ${fmtClock(head.since)}–${fmtClock(head.until)} · searched ${fmtCount(head.searched)} events in ${head.took_ms}ms`}
+            ` · ${head.until - head.since > 2 * 86_400_000 ? fmtDays(head.since, head.until) : `${fmtClock(head.since)}–${fmtClock(head.until)}`} · searched ${fmtCount(head.searched)} events in ${head.took_ms}ms`}
         </p>
         {at != null && (
           <span className="flex items-center gap-1.5 border border-brand/40 px-1.5 py-0.5 font-mono text-xs">
@@ -290,6 +327,7 @@ export function SearchPage() {
           </span>
         )}
         <span className="flex-1" />
+        {coverage && <CoverageStatus coverage={coverage} job={history.job} localWindowMs={retentionMs} />}
         {/* 05.9: muted events stay out unless switched on here (or by the source / Settings). */}
         {muted > 0 && (
           <span className="flex items-center gap-2 text-muted-foreground text-xs">
@@ -344,18 +382,6 @@ export function SearchPage() {
             unsearched={unsearched}
           />
         </div>
-      )}
-
-      {coverage && !loading && (
-        <HistoryPanel
-          coverage={coverage}
-          localWindowMs={retentionMs}
-          job={history.job}
-          starting={history.starting}
-          error={history.error}
-          onStart={history.start}
-          onCancel={history.cancel}
-        />
       )}
 
       {loading ? (
@@ -440,6 +466,7 @@ export function SearchPage() {
             words={words}
             matchKeys={matchKeys}
             hasMore={Boolean(res.hasNextPage) && !refreshing}
+            remaining={Math.max(0, total - lines.length)}
             loadingMore={res.isFetchingNextPage}
             onMore={() => res.fetchNextPage()}
             onPick={addChip}
@@ -449,11 +476,13 @@ export function SearchPage() {
               const r = ruleOf.get(id)
               return r ? ruleText(r) : undefined
             }}
-            locationOf={locations ? (id) => locations[String(id)] : undefined}
+            locationOf={locationOf}
+            sectionNote={history.job?.state === 'retrieving' ? 'results so far' : undefined}
             refreshing={refreshing}
             jump={curJump}
             flash={flash}
           />
+          <CoverageFootnote job={history.job} />
         </>
       )}
 

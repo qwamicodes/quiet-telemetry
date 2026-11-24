@@ -13,11 +13,11 @@ import {
   LockIcon,
   MaximizeIcon,
   MinimizeIcon,
-  WaypointsIcon,
   WrapTextIcon,
   XIcon,
 } from 'lucide-react'
 import { lazy, type ReactNode, Suspense, useMemo, useState } from 'react'
+import { DiagramIcon } from '@/components/diagram/diagram-icon'
 import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -32,7 +32,7 @@ import { copy, copyText } from '@/lib/copy'
 import { lineStats, STRUCTURED_ONLY, statsLabel } from '@/lib/diagram-stats'
 import { bytes, fmtTime } from '@/lib/format'
 import { expandJsonStrings, parsedRoot, textQuery } from '@/lib/json-string'
-import { REDACTED, redactedCount, rowParts } from '@/lib/row'
+import { REDACTED, redactedCount, redactedFlag, rowParts } from '@/lib/row'
 import { useHotkeys } from '@/lib/use-hotkeys'
 import { cn } from '@/lib/utils'
 
@@ -425,7 +425,13 @@ export function FieldCard({
   const bad = line.level === 'error' || line.level === 'fatal'
   const groups = useMemo(() => (fields ? sections(fields) : []), [fields])
   const count = groups.reduce((n, g) => n + g.rows.length, 0)
-  const redacted = useMemo(() => redactedCount(fields), [fields])
+  // Values removed before storage: counted in the fields, or the pipeline's
+  // `redacted:N` flag (a plain-text line has no fields to count).
+  const redacted = useMemo(() => Math.max(redactedCount(fields), redactedFlag(line.flags)), [fields, line.flags])
+  const flags = (line.flags ?? []).filter((f) => !f.startsWith('redacted:'))
+  const truncatedBody = (['request', 'response'] as const).some(
+    (side) => (fields?.[side] as Record<string, unknown> | undefined)?.body_capture === 'truncated',
+  )
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set())
   const toggleGroup = (k: string) =>
     setExpandedGroups((s) => {
@@ -474,7 +480,7 @@ export function FieldCard({
       </GatedTab>
       <TabsTrigger value="raw">Raw</TabsTrigger>
       <GatedTab value="diagram" enabled={structured}>
-        <WaypointsIcon className="size-3.5" />
+        <DiagramIcon className="size-3" />
         Diagram
       </GatedTab>
     </TabsList>
@@ -545,11 +551,17 @@ export function FieldCard({
                     <GitForkIcon />
                   </IconButton>
                 )}
-                {/* A phone has Copy as JSON in the sheet's footer (10.2). */}
-                <Button variant="outline" size="xs" onClick={copyJson} className="max-md:hidden">
-                  <CopyIcon />
-                  Copy event JSON
-                </Button>
+                {/* A phone has Copy as JSON in the sheet's footer (10.2); the wide diagram keeps just the icon (04.8). */}
+                {diagram === 'wide' ? (
+                  <IconButton label="Copy event JSON" onClick={copyJson}>
+                    <CopyIcon />
+                  </IconButton>
+                ) : (
+                  <Button variant="outline" size="xs" onClick={copyJson} className="max-md:hidden">
+                    <CopyIcon />
+                    Copy event JSON
+                  </Button>
+                )}
                 {onClose && (
                   <IconButton label="Close (esc)" onClick={onClose}>
                     <XIcon />
@@ -579,9 +591,7 @@ export function FieldCard({
                   </>
                 )}
               </div>
-              {line.flags && line.flags.length > 0 && (
-                <div className="font-mono text-[11px] text-status-warn">{line.flags.join(' · ')}</div>
-              )}
+              {flags.length > 0 && <div className="font-mono text-[11px] text-status-warn">{flags.join(' · ')}</div>}
               {line.fields && line.ids.length === 0 && <NoIds />}
             </header>
             <div
@@ -599,17 +609,17 @@ export function FieldCard({
                   {fullButton}
                 </span>
               ) : (
-                <span className="font-mono text-[11px] text-muted-foreground">
-                  {line.fields
-                    ? `${count} fields${redacted ? ` · ${redacted} redacted` : ''}${
-                        (['request', 'response'] as const).some(
-                          (side) =>
-                            (fields?.[side] as Record<string, unknown> | undefined)?.body_capture === 'truncated',
-                        )
-                          ? ' · truncated'
-                          : ''
-                      }`
-                    : `${bytes(line.raw)} B`}
+                <span data-testid="tab-aside" className="font-mono text-[11px] text-muted-foreground">
+                  {/* 04.6 / 04.7 / 04.15 / 04.16: what the open tab holds. */}
+                  {active === 'raw' || !line.fields
+                    ? `${bytes(line.raw).toLocaleString()} B`
+                    : active === 'json'
+                      ? `${Object.keys(fields ?? {}).length} keys`
+                      : truncatedBody
+                        ? 'truncated'
+                        : redacted
+                          ? `${redacted} redacted`
+                          : `${count} fields`}
                 </span>
               )}
             </div>
@@ -659,9 +669,9 @@ export function FieldCard({
                       {group}
                     </span>
                     <span className="text-muted-foreground">
-                      {isOpen
-                        ? `${members.length} ${members.length === 1 ? 'field' : 'fields'}`
-                        : `{…}${red ? ` · ${red} redacted` : ''}`}
+                      {`${members.length} ${members.length === 1 ? 'field' : 'fields'}${
+                        !isOpen && red ? ` · ${red} redacted` : ''
+                      }`}
                     </span>
                     <span className="text-right text-[11px] text-muted-foreground">obj</span>
                   </button>,
@@ -697,7 +707,7 @@ export function FieldCard({
                   <span className="break-all">
                     {root && <ParsedBadge root={root} />}
                     {truncated ? (
-                      <span className="text-status-warn" title="Shortened to fit its capture limit">
+                      <span className="text-muted-foreground" title="Shortened to fit its capture limit">
                         Truncated
                       </span>
                     ) : (
@@ -716,11 +726,11 @@ export function FieldCard({
                     </pre>
                     <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_32px] gap-3">
                       <span className="text-syntax-key">body_capture</span>
-                      <span className="text-status-warn">truncated</span>
+                      <span className="text-muted-foreground">truncated</span>
                       <span className="text-right text-[11px] text-muted-foreground">str</span>
                     </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Capture limit reached. Only this preview was received; the full body is unavailable.
+                    <p className="font-sans text-[11px] text-muted-foreground leading-relaxed">
+                      8 KB capture limit. Only this sanitized preview was received; the full body is unavailable.
                     </p>
                   </div>,
                 )
@@ -780,6 +790,9 @@ export function FieldCard({
               </div>
             ))}
           </dl>
+          <p data-testid="raw-note" className="pt-3 text-[11px] text-muted-foreground leading-relaxed">
+            Sanitized received record. Copy uses these same values; removed secrets cannot be revealed.
+          </p>
         </TabsContent>
         <TabsContent value="diagram" className="flex min-h-0 flex-col">
           {fields && active === 'diagram' && (
@@ -822,9 +835,9 @@ export function FieldCard({
             </>
           ) : active === 'raw' ? (
             <>
-              <Button variant="outline" onClick={() => copy(line.raw, 'raw line')}>
+              <Button variant="outline" onClick={() => copy(line.raw, 'sanitized line')}>
                 <CopyIcon />
-                Copy raw line
+                Copy sanitized line
               </Button>
               <Button variant="outline" aria-pressed={wrap} onClick={() => setWrap((w) => !w)}>
                 <WrapTextIcon />

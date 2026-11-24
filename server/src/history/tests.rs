@@ -699,6 +699,12 @@ async fn at_capacity_evicts_oldest_or_stops_archiving() {
     let now = 482_960 * H;
     let w = h.work(&s, &[], now, &SystemState::default()).await.unwrap();
     assert_eq!(w.deleted, 3);
+    // What eviction removed is kept for the Overview ("Removed in last hour").
+    let ev = h.catalog.evicted_since(d.id, now - H).unwrap();
+    assert_eq!(ev.hours, 3);
+    assert!(ev.bytes >= 3 * per / 2, "{ev:?}");
+    assert!(ev.min_ts.unwrap() >= 482_950 * H && ev.max_ts.unwrap() < 482_953 * H);
+    assert_eq!(h.catalog.evicted_since(d.id, now + 1).unwrap().hours, 0);
     let left: Vec<i64> = h
         .catalog
         .hours_of(d.id)
@@ -734,6 +740,10 @@ async fn at_capacity_evicts_oldest_or_stops_archiving() {
     assert_eq!(s.hours().await.unwrap().len(), 2, "held locally");
     let issue = sys.history_issue_of(IssueKind::HistoryAtCapacity).unwrap();
     assert!(issue.detail.contains("2 hours waiting"), "{}", issue.detail);
+    // The Overview counts what waits: 2 hours, 2 lines each.
+    let st = h.status_with(&s, now).await.unwrap();
+    assert_eq!((st.waiting_hours, st.waiting_lines), (2, 4));
+    assert!(st.waiting_bytes > 0);
     h.record_gaps(&before, &[], now, &pass, now).unwrap();
     assert_eq!(h.catalog.gaps(1).unwrap()[0].1, GapReason::AtCapacity);
     // Room again: the banner clears on the next pass.
@@ -771,6 +781,7 @@ async fn refused_deletes_block_cleanup_with_backoff_until_retry() {
     assert_eq!(w.deleted, 0);
     let view = h.destination(d.id).unwrap();
     assert_eq!(view.cleanup_blocked_hours, 4);
+    assert_eq!(view.cleanup_blocked_bytes, view.bytes_stored);
     assert!(view
         .cleanup_error
         .as_deref()
@@ -1377,6 +1388,98 @@ mod history_search {
             .unwrap()
             .is_none());
     }
+
+    #[tokio::test]
+    async fn the_timeline_spans_retained_history_then_the_local_window() {
+        let (_dir, s, _b, h, _) = setup().await;
+        let view = h.destinations().unwrap().remove(0);
+        assert!(
+            view.last_event.unwrap() > 482_955 * H && view.last_event.unwrap() < 482_956 * H,
+            "the newest archived event"
+        );
+        let local: Vec<(i64, u64)> = s
+            .storage()
+            .await
+            .unwrap()
+            .hours
+            .iter()
+            .map(|u| (u.start / H, u.lines))
+            .collect();
+        let now = 482_960 * H;
+        let t = h.timeline(&local, now).unwrap().unwrap();
+        assert_eq!(t.from, 482_950 * H);
+        assert_eq!(t.local_from, Some(482_956 * H));
+        let total: u64 = t.bars.iter().map(|b| b.lines).sum();
+        assert_eq!(total, 20, "6 archived + 4 local hours, 2 lines each");
+        assert!(t.bars.iter().all(|b| b.start < now && b.end <= now));
+        let first_local = t.bars.iter().position(|b| b.local).unwrap();
+        assert!(t.bars[..first_local]
+            .iter()
+            .all(|b| b.end <= 482_956 * H + H));
+        assert!(t.bars.last().unwrap().local);
+        // Never enabled: no timeline.
+        assert!(History::memory().timeline(&local, now).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_flow_only_in_retained_history_opens_from_its_archived_hours() {
+        use crate::api::AppState;
+        use crate::hub::Hub;
+        use crate::pipeline::Pipeline;
+        use crate::receiver::DockerStatus;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (dir, s, _b, h, _) = setup().await;
+        let st = AppState::new(
+            Pipeline::new(Arc::new(s), Hub::new()),
+            Arc::new(Mutex::new(DockerStatus::Disabled)),
+        )
+        .auth_off()
+        .with_history(h.clone())
+        .with_history_search(searcher(&dir, u64::MAX));
+        let call = |path: String| {
+            let app = crate::flow_api::routes().with_state(st.clone());
+            async move {
+                let r = app
+                    .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let code = r.status();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    code,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                )
+            }
+        };
+        // Archived and dropped locally: not in the local window.
+        let (code, _) = call("/api/flow?id=req_482951".into()).await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        // Opened from a history search result: its time says where to look.
+        let at = 482_951 * H + 60_000;
+        let (code, v) = call(format!("/api/flow?id=req_482951&at={at}")).await;
+        assert_eq!(code, StatusCode::OK, "{v}");
+        assert_eq!(v["retained"]["location"], "garage-local");
+        assert_eq!(v["retained"]["lines"], 1);
+        assert_eq!(v["flow"]["nodes"].as_array().unwrap().len(), 1);
+        assert!(v["since"].as_i64().unwrap() <= 482_951 * H);
+        assert!(v.get("history").is_none(), "no 'related history' marker");
+        // A line opened alone (by id) from the same hours.
+        let line = v["flow"]["nodes"][0]["line_id"].as_u64().unwrap();
+        let (code, v) = call(format!("/api/flow?line={line}&at={at}")).await;
+        assert_eq!(code, StatusCode::OK, "{v}");
+        assert_eq!(v["retained"]["location"], "garage-local");
+        // Those hours are cached now: the id alone finds them.
+        let (code, v) = call("/api/flow?id=req_482951".into()).await;
+        assert_eq!(code, StatusCode::OK, "{v}");
+        assert_eq!(v["retained"]["lines"], 1);
+        // A time inside the local window reads only the local window.
+        let (code, _) = call(format!("/api/flow?id=req_482951&at={}", 482_958 * H)).await;
+        assert_eq!(code, StatusCode::OK, "the cached hour still answers");
+    }
 }
 
 #[tokio::test]
@@ -1458,4 +1561,14 @@ async fn the_policy_size_limit_is_each_connectors_capacity() {
         h.capacity(&d),
         Some((100_000_000_000, CapacitySource::Policy))
     );
+}
+
+#[test]
+fn touched_between_sees_archived_hours_and_gaps_only() {
+    let h = History::memory();
+    assert!(!h.catalog.touched_between(100, 200).unwrap());
+    h.catalog.add_gap(150, GapReason::DiskCap, 1).unwrap();
+    assert!(h.catalog.touched_between(100, 200).unwrap());
+    assert!(!h.catalog.touched_between(151, 200).unwrap());
+    assert!(!h.catalog.touched_between(100, 150).unwrap());
 }

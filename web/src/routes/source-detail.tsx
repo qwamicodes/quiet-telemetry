@@ -24,6 +24,8 @@ import { createPortal } from 'react-dom'
 import { SourceEditSheet } from '@/components/mute/source-edit-sheet'
 import { Caps, Panel } from '@/components/settings/kit'
 import { fmtSpan, PurgeDialog } from '@/components/settings/storage'
+import { LoggingSetup } from '@/components/sources/logging-setup'
+import { RedactPanel, SampleOnly, SanitizedSample, useRedactionPreview } from '@/components/sources/redaction'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import {
@@ -49,7 +51,9 @@ import type {
 import { fetchJson, useHealth, useSources } from '@/lib/api'
 import { isOwner, useMe } from '@/lib/auth-api'
 import { kindLabel } from '@/lib/connect'
+import { copy } from '@/lib/copy'
 import { fmtAgo, fmtBytes, fmtClock, fmtCount, fmtTime, fmtWindow, isRecent } from '@/lib/format'
+import { patchSetup } from '@/lib/guide'
 import { searchResponse } from '@/lib/schemas'
 import { toQuery } from '@/lib/search-api'
 import {
@@ -72,7 +76,7 @@ import { cn } from '@/lib/utils'
 
 const route = getRouteApi('/sources/$name')
 
-export type SourceTab = 'overview' | 'rejected' | 'malformed' | 'settings'
+export type SourceTab = 'overview' | 'rejected' | 'malformed' | 'settings' | 'redaction' | 'setup'
 
 /** `/sources/$name` (boards v0.1-06.2 / 06.5 / 06.6): overview, rejected requests, per-source settings. */
 export function SourceDetailPage() {
@@ -114,7 +118,12 @@ export function SourceDetailPage() {
     // "Malformed", not the board's "Dropped": these lines are stored (as raw
     // text). Dropped records need server work (they are never stored).
     ['malformed', `Malformed ${fields ? fmtCount(fields.malformed_total) : ''}`],
-    ['settings', 'Settings'],
+    // Redaction preview (06.5) and Logging setup (06.4) take the Settings tab's place while open.
+    tab === 'redaction'
+      ? ['redaction', 'Redaction preview']
+      : tab === 'setup'
+        ? ['setup', 'Logging setup']
+        : ['settings', 'Settings'],
   ]
 
   return (
@@ -143,8 +152,24 @@ export function SourceDetailPage() {
           <span className="border border-dashed px-1.5 py-0.5 font-mono text-muted-foreground text-xs">hidden</span>
         )}
         <span className="flex-1" />
-        {tab === 'settings' ? (
+        {tab === 'settings' || tab === 'redaction' ? (
           <span ref={setActionSlot} className="flex items-center gap-2" />
+        ) : tab === 'setup' ? (
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => navigate({ search: (x) => ({ ...x, tab: undefined }), replace: true })}
+            >
+              Back to source
+            </Button>
+            <Button
+              nativeButton={false}
+              onClick={() => patchSetup({ project: name })}
+              render={<Link to="/guide" search={{ tab: 'agent', step: 'setup', source: name }} />}
+            >
+              Continue in guide
+            </Button>
+          </>
         ) : tab === 'rejected' && rejecting ? (
           <>
             <Button variant="outline" nativeButton={false} render={<Link to="/" search={{ source: name }} />}>
@@ -191,7 +216,7 @@ export function SourceDetailPage() {
               navigate({ search: (x) => ({ ...x, tab: t === 'overview' ? undefined : t }), replace: true })
             }
             className={cn(
-              '-mb-px border-transparent border-b-2 px-3 py-2 text-muted-foreground text-sm hover:text-foreground',
+              '-mb-px border-transparent border-b-2 px-2.5 py-2 font-medium text-muted-foreground text-xs leading-4 hover:text-foreground',
               tab === t && 'border-foreground text-foreground',
             )}
           >
@@ -216,9 +241,11 @@ export function SourceDetailPage() {
       {tab === 'overview' && <Overview info={info} name={name} saved={saved} />}
       {tab === 'rejected' && <Rejected name={name} info={info} rejecting={rejecting} />}
       {tab === 'malformed' && <MalformedPanel name={name} />}
-      {tab === 'settings' && settings && (
+      {(tab === 'settings' || tab === 'redaction') && settings && (
         <SourceSettingsForm
           key={JSON.stringify(saved)}
+          mode={tab}
+          onMode={(t) => navigate({ search: (x) => ({ ...x, tab: t }), replace: true })}
           name={name}
           saved={saved}
           globalOrder={settings.flow_ids.order}
@@ -227,6 +254,7 @@ export function SourceDetailPage() {
           actionSlot={actionSlot}
         />
       )}
+      {tab === 'setup' && <LoggingSetup name={name} saved={saved} />}
       {removing && (
         <RemoveSourceDialog name={name} lines={stats?.total ?? info?.lines ?? 0} onClose={() => setRemoving(false)} />
       )}
@@ -456,7 +484,7 @@ function Overview({ info, name, saved }: { info?: SourceInfo; name: string; save
                   variant="outline"
                   size="sm"
                   nativeButton={false}
-                  render={<Link to="/guide" search={{ tab: 'check', source: name }} />}
+                  render={<Link to="/sources/$name" params={{ name }} search={{ tab: 'setup' }} />}
                 >
                   Open setup
                 </Button>
@@ -897,6 +925,8 @@ function SourceIdOrder({
 }
 
 export function SourceSettingsForm({
+  mode = 'settings',
+  onMode,
   name,
   saved,
   globalOrder,
@@ -904,6 +934,9 @@ export function SourceSettingsForm({
   info,
   actionSlot,
 }: {
+  /** Settings (06.3) or the Redaction preview of the same draft (06.5). */
+  mode?: 'settings' | 'redaction'
+  onMode?: (m: 'settings' | 'redaction') => void
   name: string
   saved: SourceSettings
   globalOrder: SourceSettings['id_keys'] & {}
@@ -925,10 +958,11 @@ export function SourceSettingsForm({
   const set = (p: Partial<SourceSettings>) => setDraft({ ...draft, ...p })
   const windows = WINDOWS.filter((w) => w.ms <= globalRetention)
   const matched = matchedBy(info, name)
+  const preview = useRedactionPreview(name, draft, mode === 'redaction')
   // ⌘↵ saves from anywhere on the tab.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && owner && dirty) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && owner && dirty && mode === 'settings') {
         e.preventDefault()
         submit()
       }
@@ -963,11 +997,39 @@ export function SourceSettingsForm({
   const toggleMask = (k: PiiKind, on: boolean) =>
     set({ unmasked: on ? draft.unmasked.filter((x) => x !== k) : [...draft.unmasked, k] })
 
+  if (mode === 'redaction')
+    return (
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <SanitizedSample preview={preview.data} />
+        <div className="flex flex-col gap-4">
+          <RedactPanel draft={draft} set={set} disabled={!owner} />
+          <SampleOnly />
+        </div>
+        {actionSlot &&
+          createPortal(
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={!preview.data}
+                onClick={() => preview.data && copy(JSON.stringify(preview.data.event, null, 2), 'sanitized JSON')}
+              >
+                Copy sanitized JSON
+              </Button>
+              <Button type="button" onClick={() => onMode?.('settings')}>
+                Back to settings
+              </Button>
+            </>,
+            actionSlot,
+          )}
+      </div>
+    )
+
   return (
     <form className="flex flex-col gap-4" onSubmit={submit} aria-label={`Settings for ${name}`}>
       <fieldset disabled={!owner} className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="flex flex-col gap-4">
-          <Panel title="Identity">
+          <Panel flush title="Identity">
             <div className="flex flex-col gap-2 p-4">
               <label htmlFor="display-name" className="text-sm">
                 Display name
@@ -990,6 +1052,7 @@ export function SourceSettingsForm({
             </div>
           </Panel>
           <Panel
+            flush
             title="Correlation id order"
             aside={
               <button
@@ -1016,6 +1079,7 @@ export function SourceSettingsForm({
             </div>
           </Panel>
           <Panel
+            flush
             title="Muted lines"
             aside={`${saved.muted.length} ${saved.muted.length === 1 ? 'rule' : 'rules'} here · ${globalCount} global`}
           >
@@ -1034,7 +1098,7 @@ export function SourceSettingsForm({
               </Button>
             </div>
           </Panel>
-          <Panel title="Stream & retention">
+          <Panel flush title="Stream & retention">
             <div className="flex flex-col gap-3 p-4">
               <div className="flex items-center justify-between gap-4 text-sm">
                 <span className="flex flex-col">
@@ -1108,10 +1172,28 @@ export function SourceSettingsForm({
           </Panel>
         </div>
         <div className="flex flex-col gap-4">
-          <Panel title="Mask personal data" aside="owner only">
+          <RedactPanel draft={draft} set={set} disabled={!owner} onPreview={() => onMode?.('redaction')} />
+          <Panel className="border-status-warn/40">
+            <div className="flex items-center justify-between gap-4 p-4 text-sm">
+              <span className="flex flex-col">
+                <span className="font-medium">Ignore this source</span>
+                <span className="text-muted-foreground text-xs">
+                  Stop storing new lines from this {info?.kind === 'docker' ? 'container' : 'source'}. Lines already
+                  stored expire with the window. Undo anytime.
+                </span>
+              </span>
+              {/* Ignore = pause ingest + hide from the sidebar, like a group's Ignore (06.12). */}
+              <Switch
+                aria-label="Ignore this source"
+                checked={draft.paused && draft.hidden}
+                onCheckedChange={(v) => set({ paused: v, hidden: v })}
+              />
+            </div>
+          </Panel>
+          <Panel flush title="Mask in members' exports" aside="owner only">
             <div className="flex flex-col p-4">
               <span className="pb-2 text-muted-foreground text-xs">
-                Masked in exports from this source (and always for members). Lines are stored as received.
+                Members' exports of this source also mask these. Owners export what is stored.
               </span>
               {PII_KINDS.map((k) => {
                 const on = !draft.unmasked.includes(k)
@@ -1161,23 +1243,6 @@ export function SourceSettingsForm({
                   <PlusIcon /> Add
                 </Button>
               </div>
-            </div>
-          </Panel>
-          <Panel className="border-status-warn/40">
-            <div className="flex items-center justify-between gap-4 p-4 text-sm">
-              <span className="flex flex-col">
-                <span className="font-medium">Ignore this source</span>
-                <span className="text-muted-foreground text-xs">
-                  Stop storing new lines from this {info?.kind === 'docker' ? 'container' : 'source'}. Lines already
-                  stored expire with the window. Undo anytime.
-                </span>
-              </span>
-              {/* Ignore = pause ingest + hide from the sidebar, like a group's Ignore (06.12). */}
-              <Switch
-                aria-label="Ignore this source"
-                checked={draft.paused && draft.hidden}
-                onCheckedChange={(v) => set({ paused: v, hidden: v })}
-              />
             </div>
           </Panel>
           {owner && (

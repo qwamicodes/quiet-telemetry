@@ -60,6 +60,8 @@ let system: SystemStatus
 let activity: SourceActivity
 // biome-ignore lint/suspicious/noExplicitAny: a test double for the request bodies
 let calls: { url: string; method: string; body: any }[]
+// Redaction previews asked for (06.5): reads, so not in `calls`.
+let previews: unknown[] = []
 let muteStats: MuteStats
 
 const blankSource = (): SourceSettings => ({
@@ -111,6 +113,7 @@ const dest = (over: Partial<Destination>): Destination => ({
   bytes_stored: 23_800_000_000,
   first: NOW - 13 * 24 * H,
   last: NOW - 2 * H,
+  last_event: NOW - 2 * H + 1_000,
   last_upload: NOW - 4_000,
   error: null,
   next_retry: null,
@@ -122,6 +125,8 @@ const dest = (over: Partial<Destination>): Destination => ({
   cleanup_error: null,
   cleanup_retry_at: null,
   cleanup_blocked_hours: 0,
+  cleanup_blocked_bytes: 0,
+  recent_eviction: null,
   ...over,
 })
 
@@ -155,6 +160,8 @@ const freshHistory = () => {
     gaps: [],
     gap_hours: 0,
     waiting_hours: 0,
+    waiting_lines: 0,
+    waiting_bytes: 0,
     policy: {
       retention_days: 30,
       at_capacity: 'evict',
@@ -253,6 +260,7 @@ function fresh() {
   }
   activity = { source: 'legivent-api', rejections: [], rejected_15m: 0, paused_dropped: 0, dropped: [], dropped_24h: 0 }
   calls = []
+  previews = []
   muteStats = { since: NOW - 24 * H, until: NOW, sources: {}, rules: {} }
 }
 
@@ -301,6 +309,11 @@ beforeEach(() => {
       const method = init?.method ?? 'GET'
       const body = init?.body ? JSON.parse(String(init.body)) : null
       const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status })
+      if (url.endsWith('/redaction-preview')) {
+        previews.push(body)
+        const kept = ['email', 'phone'].filter((k) => !body.redact_pii.includes(k))
+        return json({ event: { customer: { pin: '[REDACTED]' } }, removed: 7, preserved: kept })
+      }
       if (method !== 'GET') calls.push({ url, method, body })
       if (url.startsWith('/api/health')) return json(health)
       if (url === '/api/sources') return json({ sources })
@@ -530,11 +543,14 @@ describe('Settings → Storage tabs (v1.1-01…29)', () => {
   it('Overview: an unreachable destination says uploads are delayed and retries on demand', async () => {
     history.destinations[0] = dest({ state: 'unavailable', error: 'connection refused', next_retry: NOW + 28_000 })
     history.waiting_hours = 3
+    history.waiting_lines = 14_280
+    history.waiting_bytes = 143_000_000
     const user = userEvent.setup()
     renderAt('/settings/storage')
     expect(await screen.findByText('History uploads are delayed')).toBeInTheDocument()
     expect(screen.getByText('Waiting to upload')).toBeInTheDocument()
-    expect(screen.getByText('3 hours')).toBeInTheDocument()
+    expect(screen.getByText('143 MB · 14,280 events')).toBeInTheDocument()
+    expect(screen.getByText('Last stored event')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Retry now' }))
     await waitFor(() => expect(calls.some((c) => c.url === '/api/storage/destinations/1/verify')).toBe(true))
   })
@@ -546,6 +562,33 @@ describe('Settings → Storage tabs (v1.1-01…29)', () => {
     expect(await screen.findByText('New history is not being stored')).toBeInTheDocument()
     expect(screen.getByText('History writes stopped')).toBeInTheDocument()
     expect(screen.getByText('History gap')).toBeInTheDocument()
+    expect(screen.getByText('Waiting locally')).toBeInTheDocument()
+  })
+
+  it('Overview: evicting at capacity shows what the last hour removed', async () => {
+    const at = NOW - 6 * 24 * H
+    history.destinations[0] = dest({
+      at_capacity: true,
+      bytes_stored: 100_000_000_000,
+      recent_eviction: { hours: 1, bytes: 820_000_000, from: at, to: at + H },
+    })
+    renderAt('/settings/storage')
+    expect(await screen.findByText('History size limit reached')).toBeInTheDocument()
+    expect(screen.getByText('Removed in last hour')).toBeInTheDocument()
+    expect(screen.getByText(/^820 MB · /)).toBeInTheDocument()
+  })
+
+  it('Overview: blocked cleanup counts what awaits deletion', async () => {
+    history.destinations[0] = dest({
+      bytes_stored: 28_200_000_000,
+      cleanup_blocked_hours: 96,
+      cleanup_blocked_bytes: 4_100_000_000,
+      cleanup_error: 'ObjectLockedByBucketPolicy',
+    })
+    renderAt('/settings/storage')
+    expect(await screen.findByText('Some objects could not be removed')).toBeInTheDocument()
+    expect(screen.getByText('24.1 GB retained · 4.10 GB awaiting cleanup')).toBeInTheDocument()
+    expect(screen.getByText(/192 objects · 4\.10 GB/)).toBeInTheDocument()
   })
 
   it('Connectors: the shared policy, each connector, and activating one copies the local window', async () => {
@@ -738,15 +781,20 @@ describe('Settings → General', () => {
 })
 
 describe('source settings', () => {
-  it('reorders ids, masks a field, ignores the source and saves from the header (v0.1.1-06.3)', async () => {
+  it('reorders ids, redacts fields, masks a field, ignores the source and saves from the header (v0.1.1-06.3)', async () => {
     const user = userEvent.setup()
     renderAt('/sources/legivent-api?tab=settings')
     const form = await screen.findByRole('form', { name: 'Settings for legivent-api' })
     await user.type(within(form).getByLabelText('Display name'), 'API')
     expect(within(form).getByLabelText('Matched by')).toHaveValue('container name = legivent-api')
     await user.click(within(form).getByRole('button', { name: 'Move job_id up' }))
-    await user.type(within(form).getByRole('textbox', { name: 'Mask another field' }), 'customer.address')
-    await user.click(within(form).getByRole('button', { name: 'Add' }))
+    // Redact sensitive data: a custom path and email, before storage.
+    await user.type(within(form).getByRole('textbox', { name: 'Add a sensitive key or field path' }), 'customer.pin')
+    await user.click(within(form).getByRole('button', { name: 'Add sensitive key' }))
+    expect(within(form).getByRole('switch', { name: 'Redact custom fields' })).toBeChecked()
+    await user.click(within(form).getByRole('switch', { name: 'Redact email' }))
+    // Members' export masking stays per source.
+    await user.type(within(form).getByRole('textbox', { name: 'Mask another field' }), 'customer.address{Enter}')
     await user.click(within(form).getByRole('switch', { name: 'Mask user_agent' }))
     await user.click(within(form).getByRole('switch', { name: 'Ignore this source' }))
     // Discard / Save changes sit in the page header on this tab.
@@ -764,13 +812,44 @@ describe('source settings', () => {
         default_level: null,
         mask_fields: ['customer.address'],
         unmasked: ['user_agent'],
-        redact_fields: [],
-        redact_pii: [],
+        redact_fields: ['customer.pin'],
+        redact_pii: ['email'],
         muted: [],
         search_include_muted: null,
         muted_global_off: [],
       },
     })
+  })
+
+  it('previews the draft redaction on a sample, then goes back to settings (v0.1.1-06.5)', async () => {
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?tab=settings')
+    const form = await screen.findByRole('form', { name: 'Settings for legivent-api' })
+    await user.click(within(form).getByRole('switch', { name: 'Redact phone' }))
+    await user.click(within(form).getByRole('button', { name: 'Preview with sample data' }))
+    expect(await screen.findByRole('tab', { name: 'Redaction preview' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByTestId('redaction-summary')).toHaveTextContent('7 values removed · email preserved')
+    expect(previews.at(-1)).toEqual({ redact_fields: [], redact_pii: ['phone'] })
+    expect(screen.getByTestId('sanitized-sample')).toHaveTextContent('"pin": "[REDACTED]"')
+    // The draft survives the round trip; nothing was saved.
+    await user.click(screen.getByRole('button', { name: 'Back to settings' }))
+    const back = await screen.findByRole('form', { name: 'Settings for legivent-api' })
+    expect(within(back).getByRole('switch', { name: 'Redact phone' })).toBeChecked()
+    expect(calls).toHaveLength(0)
+  })
+
+  it('Logging setup fills the guide prompt for this source (v0.1.1-06.4)', async () => {
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?tab=setup')
+    expect(await screen.findByRole('tab', { name: 'Logging setup' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Your SLOs & sampling · example')).toBeInTheDocument()
+    expect(screen.getByText('Credentials removed; email and phone visible')).toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'Queue / worker' }), 'BullMQ')
+    expect(JSON.parse(localStorage.getItem('quiet.guide.setup') ?? '{}').queue).toBe('BullMQ')
+    const next = screen.getByRole('button', { name: 'Continue in guide' })
+    expect(next).toHaveAttribute('href', '/guide?tab=agent&step=setup&source=legivent-api')
+    await user.click(next)
+    expect(JSON.parse(localStorage.getItem('quiet.guide.setup') ?? '{}').project).toBe('legivent-api')
   })
 
   it('a source can include its muted lines in search, or inherit the instance choice (edit sheet)', async () => {
@@ -903,7 +982,7 @@ describe('Settings → About (07.6)', () => {
   it('shows version, uptime, database and live clients; no update check while it is off', async () => {
     renderAt('/settings/about')
     expect(await screen.findByText('1d 3h')).toBeInTheDocument()
-    expect(screen.getByText('v0.1.0')).toBeInTheDocument()
+    expect(within(screen.getByRole('main')).getByText('v0.1.0')).toBeInTheDocument()
     expect(screen.getByText('1.9 GB')).toBeInTheDocument()
     expect(screen.getByText('sqlite 3.46.0 · wal')).toBeInTheDocument()
     expect(screen.getByText('websocket · 2 members')).toBeInTheDocument()
@@ -1067,7 +1146,7 @@ describe('Settings → Muted lines (07.12–07.20)', () => {
     const dialog = await screen.findByRole('dialog')
     await user.type(within(dialog).getByLabelText('Route'), '/api/v1/health?probe=1')
     expect(await within(dialog).findByText('312 lines')).toBeInTheDocument()
-    expect(within(dialog).getByText('stored as path:/api/v1/health')).toBeInTheDocument()
+    expect(within(dialog).getByText('stored as path:/api/v1/health · scope global')).toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: /Add global rule/ }))
     await waitFor(() => expect(calls.some((c) => c.url === '/api/mute/rules')).toBe(true))
     const post = calls.find((c) => c.url === '/api/mute/rules')
@@ -1095,6 +1174,28 @@ describe('Settings → Muted lines (07.12–07.20)', () => {
     expect(confirm).toHaveTextContent('No source has its own kube-probe/* rule')
     await user.click(within(confirm).getByRole('button', { name: /Delete for all sources/ }))
     await waitFor(() => expect(calls).toContainEqual({ url: '/api/mute/rules/mr_g', method: 'DELETE', body: null }))
+  })
+
+  it('edit global rule opens a side panel with the change and hits by source (07.16)', async () => {
+    settings.muted_global = [rule({ id: 'mr_g', scope: 'global', value: '/metrics' })]
+    muteStats.rules.mr_g = { per_source: { 'legivent-api': 400 } }
+    const user = userEvent.setup()
+    renderAt('/settings/muted-lines')
+    await user.click(await screen.findByRole('button', { name: 'More for path:/metrics' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Edit' }))
+    const sheet = await screen.findByRole('dialog')
+    expect(within(sheet).getByText('Edit global rule')).toBeInTheDocument()
+    const route = within(sheet).getByLabelText('Route')
+    await user.clear(route)
+    await user.type(route, '/metrics*')
+    // The preview mock hides 312 on legivent-api: 88 fewer than now.
+    expect(await within(sheet).findByText(/400 → 312 hidden · 24h/)).toBeInTheDocument()
+    expect(within(sheet).getByText(/−88 · 88 on legivent-api show again/)).toBeInTheDocument()
+    expect(within(sheet).getByRole('list', { name: 'Hits by source' })).toHaveTextContent('312')
+    await user.keyboard('{Meta>}{Enter}{/Meta}')
+    await waitFor(() =>
+      expect(calls).toContainEqual(expect.objectContaining({ url: '/api/mute/rules/mr_g', method: 'PATCH' })),
+    )
   })
 
   it('the include-in-search default lives here; members see it all read-only', async () => {
@@ -1173,6 +1274,34 @@ describe('Sources → edit → Muted lines (06.13–06.25)', () => {
     expect(calls).toHaveLength(0)
     await user.click(within(confirm).getByRole('button', { name: /Delete rule/ }))
     await waitFor(() => expect(calls).toContainEqual({ url: '/api/mute/rules/mr_big', method: 'DELETE', body: null }))
+  })
+
+  it('a source rule edits in place with the live change (06.18)', async () => {
+    settings.sources['legivent-api'] = {
+      ...blankSource(),
+      muted: [rule({ id: 'mr_h', value: '/api/v1/health' })],
+    }
+    muteStats.rules = { mr_h: { per_source: { 'legivent-api': 300 } } }
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?edit=muted')
+    await user.click(await screen.findByTitle('Edit rule'))
+    const panel = await screen.findByRole('form', { name: 'Edit rule' })
+    const route = within(panel).getByLabelText('Route')
+    await user.clear(route)
+    await user.type(route, '/api/v1/health*')
+    expect(await within(panel).findByText(/300 → 312 hidden · 24h/)).toBeInTheDocument()
+    expect(within(panel).getByText('+12')).toBeInTheDocument()
+    expect(within(panel).getByText(/The \* also catches \/api\/v1\/healthz/)).toBeInTheDocument()
+    await user.click(within(panel).getByRole('button', { name: /Save rule/ }))
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          url: '/api/mute/rules/mr_h',
+          method: 'PATCH',
+          body: expect.objectContaining({ value: '/api/v1/health*' }),
+        }),
+      ),
+    )
   })
 
   it('adds a method + route rule on this source', async () => {

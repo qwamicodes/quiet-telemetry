@@ -1,12 +1,21 @@
 import { Link } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArchiveIcon, ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, EyeOffIcon, GitForkIcon } from 'lucide-react'
+import {
+  ArchiveIcon,
+  ArrowDownIcon,
+  ArrowRightIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  EyeOffIcon,
+  GitForkIcon,
+} from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
+import { Button } from '@/components/ui/button'
 import type { FlowSummary, LogLine } from '@/gen'
 import { fmtDuration } from '@/lib/flow'
-import { fmtRowTime, fmtTime } from '@/lib/format'
+import { fmtCount, fmtRowTime, fmtTime } from '@/lib/format'
 import { inSpan, jumpIndex, nearestIndex, type Span } from '@/lib/histogram-jump'
 import { type FlowGroup, groupByFlow, highlight, notableFields } from '@/lib/query'
 import { lineDuration, type RowParts, rowParts } from '@/lib/row'
@@ -14,8 +23,39 @@ import { cn } from '@/lib/utils'
 
 const HEAD = 52 // 12px gap + 40px header
 const ROW = 28
+const SECTION = 46 // 20px gap + 18px heading + 8px
 
-type Item = { kind: 'head'; group: FlowGroup; open: boolean } | { kind: 'line'; line: LogLine; last: boolean }
+type Item =
+  | { kind: 'head'; group: FlowGroup; open: boolean }
+  | { kind: 'line'; line: LogLine; last: boolean }
+  | { kind: 'section'; label: string }
+
+/** `12 NOV 2026 · GARAGE`: where a run of results came from (v1.1-19, 21). */
+export function sectionLabel(ts: number, location: string | undefined, note?: string): string {
+  const day = new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+  const where = note ?? (location == null ? 'recent' : location === 'garage-local' ? 'Garage' : location)
+  return `${day} · ${where}`.toUpperCase()
+}
+
+/** A heading before each run of items from one day and location. */
+function withSections(
+  items: Item[],
+  at: (it: Item) => { ts: number; location?: string } | null,
+  note?: string,
+): Item[] {
+  const out: Item[] = []
+  let prev: string | null = null
+  for (const it of items) {
+    const where = at(it)
+    if (where) {
+      const label = sectionLabel(where.ts, where.location, note)
+      if (label !== prev) out.push({ kind: 'section', label })
+      prev = label
+    }
+    out.push(it)
+  }
+  return out
+}
 
 function Marked({ text, words }: { text: string; words: string[] }) {
   return (
@@ -91,7 +131,10 @@ function LineRow({
   mutedBy,
   flash = false,
   location,
+  archived = false,
 }: {
+  /** Read from retained history (its flow opens there). */
+  archived?: boolean
   /** Found in retained history: the destination it came from. */
   location?: string
   line: LogLine
@@ -175,7 +218,7 @@ function LineRow({
       )}
       {muted && <MutedTag />}
       {location && <LocationTag name={location} />}
-      <FlowLink line={line} />
+      <FlowLink line={line} archived={archived} />
     </div>
   )
 }
@@ -206,22 +249,26 @@ function LocationTag({ name }: { name: string }) {
   )
 }
 
+/** The search being looked at, for a flow's "Back to results". */
+const backHref = () => `${window.location.pathname}${window.location.search}`
+
 /** Open a line as its flow (by its id), or alone when it carries none. */
-function FlowLink({ line }: { line: LogLine }) {
+function FlowLink({ line, archived = false }: { line: LogLine; archived?: boolean }) {
   const cls =
     'shrink-0 text-muted-foreground opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 hover:text-brand'
+  const past = archived ? { at: line.ts, back: backHref() } : {}
   return line.display_id ? (
     <Link
       to="/flow/$id"
       params={{ id: line.display_id.value }}
-      search={{ line: line.id }}
+      search={{ line: line.id, ...past }}
       aria-label="Open as flow"
       className={cls}
     >
       <GitForkIcon className="size-3.5" />
     </Link>
   ) : (
-    <Link to="/line/$lineId" params={{ lineId: line.id }} aria-label="Open as flow" className={cls}>
+    <Link to="/line/$lineId" params={{ lineId: line.id }} search={past} aria-label="Open as flow" className={cls}>
       <GitForkIcon className="size-3.5" />
     </Link>
   )
@@ -235,8 +282,11 @@ function GroupHead({
   onToggle,
   muted = false,
   location,
+  at,
 }: {
   location?: string
+  /** From retained history: opens the flow at this time (v1.1-23). */
+  at?: number
   group: FlowGroup
   open: boolean
   onToggle: () => void
@@ -307,6 +357,7 @@ function GroupHead({
         <Link
           to="/flow/$id"
           params={{ id: group.id.value }}
+          search={at != null ? { at, back: backHref() } : {}}
           className="flex shrink-0 items-center gap-1 text-xs hover:text-brand"
         >
           Open flow <ArrowRightIcon className="size-3.5" />
@@ -315,6 +366,7 @@ function GroupHead({
         <Link
           to="/line/$lineId"
           params={{ lineId: first.id }}
+          search={at != null ? { at, back: backHref() } : {}}
           className="flex shrink-0 items-center gap-1 text-xs hover:text-brand"
         >
           Open <ArrowRightIcon className="size-3.5" />
@@ -334,6 +386,7 @@ export function SearchResults({
   words,
   matchKeys = [],
   hasMore,
+  remaining,
   loadingMore,
   onMore,
   onPick,
@@ -341,10 +394,13 @@ export function SearchResults({
   mutedIds,
   mutedRule,
   locationOf,
+  sectionNote,
   refreshing = false,
   jump = null,
   flash = null,
 }: {
+  /** Replaces the location in day headings (`RESULTS SO FAR` while history is still searched, v1.1-20). */
+  sectionNote?: string
   /**
    * Histogram jump: scroll so the first result in `span` sits at the top. A
    * new `n` asks again; it waits for results that aren't placeholders.
@@ -367,38 +423,55 @@ export function SearchResults({
   /** The search's `key:value` field filters: each row shows the one it matched. */
   matchKeys?: [string, string][]
   hasMore: boolean
+  /** Matching events not loaded yet, for the paging button (05.9). */
+  remaining?: number
   loadingMore: boolean
   onMore: () => void
   onPick: (filter: string) => void
 }) {
   const [closed, setClosed] = useState<Set<string>>(new Set())
   const groups = useMemo(() => groupByFlow(lines, summaries), [lines, summaries])
+  // With retained history in the results: headings by day and location,
+  // instead of a location tag on every row (v1.1-19).
+  const sections = useMemo(() => locationOf != null && lines.some((l) => locationOf(l.id)), [lines, locationOf])
   const items: Item[] = useMemo(() => {
-    if (view === 'lines') return lines.map((line) => ({ kind: 'line', line, last: false }))
-    return groups.flatMap((g) => {
-      const open = !closed.has(g.key)
-      const head: Item = { kind: 'head', group: g, open }
-      if (!open) return [head]
-      return [head, ...g.lines.map((line, i): Item => ({ kind: 'line', line, last: i === g.lines.length - 1 }))]
-    })
-  }, [view, lines, groups, closed])
+    const flat: Item[] =
+      view === 'lines'
+        ? lines.map((line) => ({ kind: 'line', line, last: false }))
+        : groups.flatMap((g) => {
+            const open = !closed.has(g.key)
+            const head: Item = { kind: 'head', group: g, open }
+            if (!open) return [head]
+            return [head, ...g.lines.map((line, i): Item => ({ kind: 'line', line, last: i === g.lines.length - 1 }))]
+          })
+    if (!sections || !locationOf) return flat
+    return withSections(
+      flat,
+      (it) => {
+        if (it.kind === 'head')
+          return { ts: it.group.last, location: it.group.lines.map((l) => locationOf(l.id)).find(Boolean) }
+        if (it.kind === 'line' && view === 'lines') return { ts: it.line.ts, location: locationOf(it.line.id) }
+        return null
+      },
+      sectionNote,
+    )
+  }, [view, lines, groups, closed, sections, locationOf, sectionNote])
 
   const ref = useRef<HTMLDivElement>(null)
   const v = useVirtualizer({
     count: items.length,
     getScrollElement: () => ref.current,
-    estimateSize: (i) => (items[i].kind === 'head' ? HEAD : ROW),
+    estimateSize: (i) => {
+      const k = items[i].kind
+      return k === 'head' ? HEAD : k === 'section' ? SECTION : ROW
+    },
     overscan: 12,
     getItemKey: (i) => {
       const it = items[i]
-      return it.kind === 'head' ? `h:${it.group.key}` : `l:${it.line.id}`
+      return it.kind === 'head' ? `h:${it.group.key}` : it.kind === 'section' ? `s:${i}:${it.label}` : `l:${it.line.id}`
     },
   })
   const virtual = v.getVirtualItems()
-  const lastIndex = virtual.length ? virtual[virtual.length - 1].index : -1
-  useEffect(() => {
-    if (hasMore && !loadingMore && lastIndex >= items.length - 10) onMore()
-  }, [lastIndex, items.length, hasMore, loadingMore, onMore])
 
   const jumped = useRef(0)
   useEffect(() => {
@@ -407,8 +480,9 @@ export function SearchResults({
     let i = jumpIndex(at, jump.span)
     if (i < 0) i = nearestIndex(at, jump.span)
     if (i < 0) return
-    // A line that opens its group: show the group's header with it.
+    // A line that opens its group: show the group's header (and heading) with it.
     if (i > 0 && items[i - 1].kind === 'head') i--
+    if (i > 0 && items[i - 1].kind === 'section') i--
     jumped.current = jump.n
     v.scrollToIndex(i, { align: 'start' })
   }, [jump, items, refreshing, v])
@@ -436,13 +510,18 @@ export function SearchResults({
               style={{ transform: `translateY(${row.start}px)`, height: row.size }}
               className="absolute inset-x-0 top-0 list-none"
             >
-              {it.kind === 'head' ? (
+              {it.kind === 'section' ? (
+                <h3 className="flex h-full items-end pb-2 font-mono font-normal text-[11px] text-muted-foreground leading-[18px] tracking-[0.06em]">
+                  {it.label}
+                </h3>
+              ) : it.kind === 'head' ? (
                 <GroupHead
                   group={it.group}
                   open={it.open}
                   onToggle={() => toggle(it.group.key)}
                   muted={it.group.lines.some((l) => mutedIds?.has(l.id))}
-                  location={it.group.lines.map((l) => locationOf?.(l.id)).find(Boolean)}
+                  location={sections ? undefined : it.group.lines.map((l) => locationOf?.(l.id)).find(Boolean)}
+                  at={it.group.lines.some((l) => locationOf?.(l.id)) ? it.group.last : undefined}
                 />
               ) : (
                 <div
@@ -461,7 +540,8 @@ export function SearchResults({
                     muted={mutedIds?.has(it.line.id) ?? false}
                     mutedBy={mutedRule?.(it.line.id)}
                     flash={flash != null && inSpan(it.line.ts, flash)}
-                    location={locationOf?.(it.line.id)}
+                    location={sections ? undefined : locationOf?.(it.line.id)}
+                    archived={locationOf?.(it.line.id) != null}
                   />
                 </div>
               )}
@@ -469,7 +549,21 @@ export function SearchResults({
           )
         })}
       </ul>
-      {loadingMore && <p className="py-3 text-center font-mono text-muted-foreground text-xs">Loading more…</p>}
+      {/* 05.9: the next page loads when asked, so the list (and the histogram jump) stays put. */}
+      {hasMore && (
+        <div className="flex justify-center py-3">
+          <Button variant="ghost" size="xs" onClick={onMore} disabled={loadingMore}>
+            {loadingMore
+              ? 'Loading…'
+              : view === 'flows'
+                ? 'Show more flows'
+                : remaining
+                  ? `Show ${fmtCount(remaining)} more ${remaining === 1 ? 'event' : 'events'}`
+                  : 'Show more events'}
+            {!loadingMore && <ArrowDownIcon />}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

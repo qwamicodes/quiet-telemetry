@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { EventExamples } from '@/components/guide/event-examples'
+import { GuideTabs } from '@/components/guide/guide-tabs'
 import { IdsFlows } from '@/components/guide/ids-flows'
 import { type AgentStep, CopyPromptButton, PromptKeys, Stepper } from '@/components/guide/kit'
 import { LanguageExamples } from '@/components/guide/language-examples'
@@ -24,26 +25,12 @@ import { VerifyActions, VerifyLogs } from '@/components/guide/verify-logs'
 import { Caps } from '@/components/settings/kit'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
-import { Marker } from '@/components/whats-new/marker'
+import { WhatsNewBanner } from '@/components/whats-new/whats-new-banner'
 import { useSources } from '@/lib/api'
 import { blankGoal, downloadPrompt, PROMPT_COPIED, type StackId, useSetup, useStack } from '@/lib/guide'
 import type { GuideTab } from '@/lib/search-params'
 import { cn } from '@/lib/utils'
-import { type Target, useSeenOnVisit, useWhatsNew } from '@/lib/whats-new'
-
-/** `new` / `updated` on a Guide tab until it is opened (v0.1.1-00.1). */
-function GuideTabMarker({ tab }: { tab: GuideTab }) {
-  const kind = useWhatsNew().marker(`guide.${tab}` as Target)
-  return kind && tab !== 'overview' ? <Marker kind={kind} /> : null
-}
-
-const TABS: { id: GuideTab; label: string }[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'agent', label: 'Instrument with an agent' },
-  { id: 'canonical', label: 'The canonical line' },
-  { id: 'ids', label: 'Ids & flows' },
-  { id: 'check', label: 'Check my logs' },
-]
+import { type Target, useSeenOnVisit } from '@/lib/whats-new'
 
 const TITLES: Record<Exclude<GuideTab, 'agent'>, [string, string]> = {
   overview: [
@@ -174,23 +161,10 @@ export function GuidePage() {
           </div>
           <div className="flex shrink-0 items-center gap-2">{actions}</div>
         </header>
-        <nav aria-label="Guide sections" className="mt-3 mb-5 flex gap-1 border-b">
-          {TABS.map((t) => (
-            <Link
-              key={t.id}
-              to="/guide"
-              search={{ ...search, tab: t.id === 'overview' ? undefined : t.id }}
-              aria-current={t.id === tab ? 'page' : undefined}
-              className={cn(
-                '-mb-px flex items-center gap-1.5 border-transparent border-b-2 px-2.5 py-2 text-[13px] text-muted-foreground hover:text-foreground',
-                t.id === tab && 'border-foreground text-foreground',
-              )}
-            >
-              {t.label}
-              <GuideTabMarker tab={t.id} />
-            </Link>
-          ))}
-        </nav>
+        <div className="mt-3 mb-5">
+          <GuideTabs active={tab} search={search} />
+        </div>
+        {tab === 'overview' && <WhatsNewBanner className="mb-5" />}
         {tab === 'overview' && <Overview stack={stack} />}
         {tab === 'agent' && (
           <div className="flex flex-col gap-5">

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ExportFormat, GapRange, HistoryCoverage, HistorySearchJob, SearchParams } from '@/gen'
+import { z } from 'zod'
+import type { ExportFormat, GapRange, HistoryCoverage, HistorySearchJob, HistoryTimeline, SearchParams } from '@/gen'
 import { fetchJson } from '@/lib/api'
 import { historySearchJob } from '@/lib/schemas'
 import { BUCKETS, toQuery } from '@/lib/search-api'
@@ -8,6 +9,24 @@ import { BUCKETS, toQuery } from '@/lib/search-api'
 // Searching retained history (v0.1.1 Phase 5c): a background job per search
 // that reaches past the local window. The search response says what history
 // covers; the job downloads the archived hours and finds the matches.
+
+const historyTimeline = z
+  .object({
+    from: z.number(),
+    local_from: z.number().nullable(),
+    now: z.number(),
+    bars: z.array(z.object({ start: z.number(), end: z.number(), lines: z.number(), local: z.boolean() })),
+  })
+  .nullable() satisfies z.ZodType<HistoryTimeline | null>
+
+/** What Search can reach, oldest first (`null` until history is enabled; v1.1-22). */
+export const useHistoryTimeline = (enabled = true) =>
+  useQuery({
+    queryKey: ['history-timeline'],
+    queryFn: ({ signal }) => fetchJson('/api/search/timeline', historyTimeline, { signal }),
+    enabled,
+    staleTime: 60_000,
+  })
 
 /** Matches fetched per page of a job's results. */
 export const JOB_PAGE = 1000
@@ -86,6 +105,9 @@ export function useHistorySearch(params: SearchParams, coverage: HistoryCoverage
 
   return { job: current ? (q.data ?? null) : null, start, cancel, starting, error }
 }
+
+/** `Garage` for the Garage quiet set up, else the connector's name. */
+export const locationName = (name: string) => (name === 'garage-local' ? 'Garage' : name)
 
 /** `09 Nov`, `21 Nov` (dates in history ranges). */
 export function fmtDay(ms: number): string {

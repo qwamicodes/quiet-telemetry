@@ -11,6 +11,7 @@
 //! POST   /api/storage/purge               { source?, confirm }     (owner)
 //! POST   /api/sources/:name/remove        { confirm, revoke_tokens } (owner; 06.4)
 //! GET    /api/sources/:name/activity      rejected requests, paused drops
+//! POST   /api/sources/:name/redaction-preview  RedactionPreviewRequest → RedactionPreview (06.5)
 //! GET    /api/system                      issues for the banners
 //!
 //! Writes go through the session gate like every `/api` route (cookie +
@@ -48,6 +49,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/storage/purge", post(purge))
         .route("/api/sources/:name/remove", post(remove_source))
         .route("/api/sources/:name/activity", get(activity))
+        .route(
+            "/api/sources/:name/redaction-preview",
+            post(redaction_preview),
+        )
         .route("/api/system", get(system_status))
 }
 
@@ -610,6 +615,96 @@ async fn activity(State(s): State<AppState>, Path(name): Path<String>) -> Respon
     .into_response()
 }
 
+/// A redaction policy to try (Sources → a source → Redaction preview, 06.5):
+/// the draft from the Settings tab, before it is saved.
+#[derive(Debug, Clone, Default, Deserialize, TS)]
+#[serde(default)]
+pub struct RedactionPreviewRequest {
+    pub redact_fields: Vec<String>,
+    pub redact_pii: Vec<crate::settings::PiiKind>,
+}
+
+/// A synthetic event after the policy ran over it. Never a stored record.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RedactionPreview {
+    #[ts(type = "Record<string, unknown>")]
+    pub event: serde_json::Value,
+    /// Values replaced with `[REDACTED]`.
+    #[ts(type = "number")]
+    pub removed: usize,
+    /// Personal-data groups the policy leaves visible (`email`, `phone`).
+    pub preserved: Vec<crate::settings::PiiKind>,
+}
+
+/// The sample the preview redacts: a request event with credentials in
+/// headers, bodies and error details, a card number, a PIN and the
+/// email/phone a source may keep. Synthetic values only.
+pub(crate) fn redaction_sample(service: &str) -> serde_json::Value {
+    json!({
+        "level": "error",
+        "timestamp": "2026-11-18T14:07:35.412Z",
+        "service": service,
+        "env": "production",
+        "request_id": "req_demo_01",
+        "duration_ms": 142,
+        "method": "POST",
+        "path": "/payments",
+        "status_code": 400,
+        "flow": "charge_payment",
+        "user": { "email": "ama@example.com", "msisdn": "+233205550118" },
+        "request": {
+            "headers": { "authorization": "sample-authorization-header" },
+            "body": { "password": "sample-password" }
+        },
+        "response": {
+            "headers": { "set-cookie": "session=sample-session" },
+            "body": { "token": "sample-token" }
+        },
+        "payment": { "card_number": "0000-sample-card" },
+        "customer": { "pin": "0000" },
+        "error": {
+            "reason": "payment_declined",
+            "details": { "token": "sample-token" }
+        }
+    })
+}
+
+async fn redaction_preview(
+    Path(name): Path<String>,
+    body: Option<Json<RedactionPreviewRequest>>,
+) -> Response {
+    let Some(Json(r)) = body else {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "expected { redact_fields, redact_pii }",
+        );
+    };
+    if r.redact_fields.len() > 64 || r.redact_fields.iter().any(|f| f.len() > 128) {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "redact_fields: at most 64 keys of up to 128 characters",
+        );
+    }
+    let redactor = crate::redact::Redactor::new(&r.redact_fields, &r.redact_pii);
+    let mut event = redaction_sample(&name);
+    let removed = redactor.value(&mut event);
+    let preserved = [
+        crate::settings::PiiKind::Email,
+        crate::settings::PiiKind::Phone,
+    ]
+    .into_iter()
+    .filter(|k| !r.redact_pii.contains(k))
+    .collect();
+    Json(RedactionPreview {
+        event,
+        removed,
+        preserved,
+    })
+    .into_response()
+}
+
 async fn system_status(State(s): State<AppState>) -> Response {
     let store = s.pipeline.store();
     let usage = match store.usage().await {
@@ -641,6 +736,7 @@ mod tests {
     use crate::hub::{Hub, SourceKind};
     use crate::pipeline::{Pipeline, RawLine};
     use crate::receiver::DockerStatus;
+    use crate::redact::REDACTED;
     use crate::store::MemoryStore;
     use axum::body::Body;
     use axum::http::{Method, Request};
@@ -678,6 +774,47 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    #[tokio::test]
+    async fn redaction_preview_runs_the_draft_policy_on_a_sample() {
+        let st = state();
+        let (s, v) = call(
+            &st,
+            Method::POST,
+            "/api/sources/api/redaction-preview",
+            Some(json!({"redact_fields": ["customer.pin"], "redact_pii": []})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        // authorization, password, set-cookie, token ×2, card_number, pin.
+        assert_eq!(v["removed"], 7);
+        assert_eq!(v["preserved"], json!(["email", "phone"]));
+        assert_eq!(v["event"]["service"], "api");
+        assert_eq!(v["event"]["customer"]["pin"], REDACTED);
+        assert_eq!(v["event"]["request"]["headers"]["authorization"], REDACTED);
+        assert_eq!(v["event"]["user"]["email"], "ama@example.com");
+
+        let (_, v) = call(
+            &st,
+            Method::POST,
+            "/api/sources/api/redaction-preview",
+            Some(json!({"redact_pii": ["email"]})),
+        )
+        .await;
+        assert_eq!(v["removed"], 7);
+        assert_eq!(v["preserved"], json!(["phone"]));
+        assert_eq!(v["event"]["user"]["email"], REDACTED);
+
+        let many: Vec<String> = (0..65).map(|i| format!("k{i}")).collect();
+        let (s, _) = call(
+            &st,
+            Method::POST,
+            "/api/sources/api/redaction-preview",
+            Some(json!({ "redact_fields": many })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
     }
 
     #[test]

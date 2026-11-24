@@ -18,6 +18,9 @@ import { fmtDuration } from '@/lib/flow'
 import { fmtTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+/** Row timings read `350 ms`, a space before the unit (04.1 … 04.3). */
+const dur = (ms: number | null | undefined) => fmtDuration(ms).replace(/^(\d+(?:\.\d+)?)(ms|s)$/, '$1 $2')
+
 const TONE: Record<Tone, string> = {
   ok: 'text-status-ok',
   warn: 'text-status-warn',
@@ -100,7 +103,7 @@ function RequestItem({ r, selected, onSelect }: { r: RequestRow; selected: numbe
       sub={[r.line.source, r.flow].filter(Boolean).join(' · ')}
       state={r.label}
       tone={r.tone}
-      timing={r.duration != null ? fmtDuration(r.duration) : '–'}
+      timing={r.duration != null ? dur(r.duration) : '–'}
       onClick={() => onSelect(r.line.id)}
     />
   )
@@ -117,7 +120,7 @@ function AttemptItem({ a, selected, onSelect }: { a: Attempt; selected: number; 
       sub={[fmtTime(a.line.ts).slice(0, 12), a.detail].filter(Boolean).join(' · ')}
       state={[level, a.final && 'final'].filter(Boolean).join(' · ')}
       tone={a.tone}
-      timing={a.duration != null ? fmtDuration(a.duration) : '–'}
+      timing={a.duration != null ? dur(a.duration) : '–'}
       onClick={() => onSelect(a.line.id)}
     />
   )
@@ -141,7 +144,8 @@ function JobItem({
   onSelect: (id: number) => void
 }) {
   const inside = j.attempts.some((a) => a.line.id === selected)
-  const [open, setOpen] = useState(inside || j.attempts.length > 1 || j.state !== 'completed')
+  // Top-level jobs with retries or no completion start open; child jobs (04.3) start folded.
+  const [open, setOpen] = useState(inside || (depth === 0 && (j.attempts.length > 1 || j.state !== 'completed')))
   const head = j.attempts[j.attempts.length - 1].line
   return (
     <>
@@ -172,7 +176,7 @@ function JobItem({
         timing={
           j.exec != null ? (
             <>
-              Exec {fmtDuration(j.exec)}
+              Exec {dur(j.exec)}
               {j.lastN != null && ` · #${j.lastN}`}
             </>
           ) : (
@@ -231,7 +235,10 @@ export function ActivityList({
   full = false,
   onFull,
   window = '24h',
+  scope,
 }: {
+  /** Replaces `last 24h` in the footer (a flow from retained history: `12 Nov · retained history`). */
+  scope?: string
   /** Full screen (04.17): the activity list and inspector cover the app. */
   full?: boolean
   onFull?: () => void
@@ -247,10 +254,12 @@ export function ActivityList({
   const a: Activity = buildActivity(lines, opened)
   const jobs = a.main.filter((r): r is JobRow => r.kind === 'job')
   const requestId = lines.flatMap((l) => l.ids).find((i) => i.key === 'request_id')
+  // With child jobs (04.3) the request that started it all leads the list and the counts.
+  const parentage = jobs.some((j) => j.children.length > 0)
   return (
     <section aria-label="Activity" className="flex min-h-0 flex-1 flex-col border bg-card">
       <header className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
-        <span className="flex-1 text-[13px]">Activity · {activityCounts(a)}</span>
+        <span className="flex-1 text-[13px]">Activity · {activityCounts(a, { related: parentage })}</span>
         <Button variant="outline" size="xs" aria-pressed={timing} onClick={() => onTiming(!timing)}>
           Timing
         </Button>
@@ -263,6 +272,8 @@ export function ActivityList({
         )}
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
+        {parentage &&
+          a.related.map((r) => <RequestItem key={r.line.id} r={r} selected={selected} onSelect={onSelect} />)}
         {a.main.map((r) =>
           r.kind === 'request' ? (
             <RequestItem key={r.line.id} r={r} selected={selected} onSelect={onSelect} />
@@ -273,7 +284,7 @@ export function ActivityList({
         {a.requests > 0 && jobs.length > 0 && opened?.key !== 'job_id' && requestId && (
           <Note>Related by request_id {requestId.value}. Queue timing is available in Timing.</Note>
         )}
-        {jobs.length > 0 && opened?.key === 'job_id' && (
+        {jobs.length > 0 && opened?.key === 'job_id' && !parentage && (
           <Note>
             {jobs[0].state === 'failed'
               ? 'Queue confirms terminal failure.'
@@ -284,7 +295,7 @@ export function ActivityList({
             measurements.
           </Note>
         )}
-        {a.related.length > 0 && (
+        {a.related.length > 0 && !parentage && (
           <>
             <Section>Related request</Section>
             {a.related.map((r) => (
@@ -302,15 +313,15 @@ export function ActivityList({
         )}
       </div>
       <footer className="shrink-0 border-t px-3 py-2 font-mono text-[11px] text-muted-foreground">
-        {opened?.key === 'job_id' && jobs[0]
-          ? `Scope: ${jobs[0].source}${jobs[0].queue ? ` / ${jobs[0].queue}` : ''} · ${
-              jobs[0].state === 'not_observed'
-                ? 'no queue lifecycle evidence yet'
-                : 'queue lifecycle evidence available'
-            }`
-          : jobs.some((j) => j.children.length)
-            ? 'Execution times belong to the selected attempt · open Timing for wait and total'
-            : `${a.completions} completion ${a.completions === 1 ? 'event' : 'events'} · last ${window} · select a row to inspect its event`}
+        {parentage
+          ? 'Execution times belong to the selected attempt · open Timing for wait and total'
+          : opened?.key === 'job_id' && jobs[0]
+            ? `Scope: ${jobs[0].source}${jobs[0].queue ? ` / ${jobs[0].queue}` : ''} · ${
+                jobs[0].state === 'not_observed'
+                  ? 'no queue lifecycle evidence yet'
+                  : 'queue lifecycle evidence available'
+              }`
+            : `${a.completions} completion ${a.completions === 1 ? 'event' : 'events'} · ${scope ?? `last ${window}`} · select a row to inspect its event`}
       </footer>
     </section>
   )

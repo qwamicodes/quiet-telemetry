@@ -6,16 +6,17 @@ quiet is one Rust binary with the web UI built in. It runs on a single host, rea
 
 ![The quiet stream: one source, one row per request, with flow, result and duration](docs/assets/stream.png)
 
-**Status:** [v0.1.0](https://github.com/qwamicodes/quiet-telemetry/releases/tag/v0.1.0) is released. v0.1.1 (canonical events, redaction before storage, retained history) is in progress: see the [CHANGELOG](CHANGELOG.md) and the [v0.1.1 plan](docs/v0.1.1-plan.md).
+**Status:** [v0.1.1](https://github.com/qwamicodes/quiet-telemetry/releases/tag/v0.1.1) is the latest release: canonical completion events, redaction before storage, retained history in object storage, and screens matched to the designs. See the [CHANGELOG](CHANGELOG.md).
 
 ## What you get
 
 - **Stream.** One source at a time, live over a WebSocket. Each row reads `flow · METHOD path → status_code` with why it failed, level chips, a volume histogram, filters you click into, pause, and keyboard navigation.
 - **Flows.** Every event that shares a `request_id`, `job_id` or trace id, stitched across sources. A flow opens as an activity list (requests, jobs, attempts, retries) with the field card beside it; **Timing** shows the timeline and graph, and OTLP spans form a span tree.
-- **Search and export.** Free text plus `key:value` filters over the searchable window (24h by default, up to 7 days), grouped by flow. Export NDJSON, JSON or CSV, gzip it, or copy a curl command.
+- **Search and export.** Free text plus `key:value` filters over the local window (24h by default, up to 7 days) and, when connected, retained history, grouped by flow. Export NDJSON, JSON or CSV, gzip it, or copy a curl command.
 - **Sources and Connect.** Docker containers appear on their own, grouped by Compose project or Swarm stack. Connect a source walks you through Vector, Fluent Bit, OpenTelemetry or a file, with an ingest token filled in.
 - **Guide and Check my logs.** A copyable prompt for your coding agent that instruments your app for good flows, and a scorecard that checks a source's recent events against it.
 - **Redaction before storage.** Passwords, tokens, auth headers, cookies, JWTs and private keys become `[REDACTED]` before anything is stored, searched or exported. Add your own keys per source.
+- **Retained history (optional).** Local SQLite keeps the recent window, as before. Connect Garage (runs next to quiet), Cloudflare R2, Amazon S3 or any S3-compatible bucket, and each hour that leaves the local window is archived there instead of deleted, kept for 30 days by default, and searchable again from Search and Flow.
 - **Muted lines.** Hide health checks and other noise per source or everywhere, without deleting anything.
 - **Accounts.** An owner and members, copy-link invites, sessions, reset links. Every page needs sign-in.
 - **Phones.** A bottom tab bar, a card stream and a flow view sized for small screens.
