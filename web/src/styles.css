@@ -157,17 +157,17 @@
   --border: rgb(255 255 255 / 8%);
   --input: rgb(255 255 255 / 12%);
   --ring: #6a70f0;
-  --chart-1: #8087ff;
-  --chart-2: #f27272;
+  --chart-1: #5b62c8;
+  --chart-2: #f26d6d;
   --chart-3: #e8b04a;
   --chart-4: #3fcf8e;
-  --chart-5: #5c616b;
+  --chart-5: #3a3d44;
   --sidebar: #0e0f12;
   --sidebar-foreground: #c9ccd2;
   --sidebar-primary: #8087ff;
   --sidebar-primary-foreground: #0b0c0e;
   --sidebar-accent: #18191d;
-  --sidebar-accent-foreground: #e8e9ec;
+  --sidebar-accent-foreground: #f1f2f4;
   --sidebar-border: rgb(255 255 255 / 6%);
   --sidebar-ring: #6a70f0;
 
@@ -190,7 +190,7 @@
   --row-selected: rgb(128 135 255 / 10%);
   --row-error: rgb(242 85 90 / 7%);
   --syntax-key: #9aa0ff;
-  --syntax-string: #c9ccd2;
+  --syntax-string: #e8e9ec;
   --syntax-number: #e8b04a;
   --syntax-literal: #3fcf8e;
 }
