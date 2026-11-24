@@ -64,8 +64,9 @@ jobs:
           push: false
           load: true
           tags: quiet:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Shares the release's amd64 cache (main's cache is readable from PRs).
+          cache-from: type=gha,scope=image-amd64
+          cache-to: type=gha,scope=image-amd64,mode=max
       - name: smoke test
         run: |
           docker run -d --name quiet-smoke -e QUIET_DOCKER=0 -p 7070:7070 quiet:ci

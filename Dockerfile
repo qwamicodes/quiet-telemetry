@@ -10,6 +10,14 @@ COPY web/ ./
 # --bun: run vite/tsc on Bun's runtime (the image has no Node).
 RUN bun --bun run build
 
+# quiet's own version changes every release; mask it so the dependency layer
+# below stays cached across version bumps (the deps don't depend on it).
+FROM alpine:3 AS manifest
+WORKDIR /m
+COPY server/Cargo.toml server/Cargo.lock ./
+RUN sed -i '/^\[package\]/,/^\[/ s/^version = .*/version = "0.0.0"/' Cargo.toml \
+    && sed -i '/^name = "quiet"$/{n;s/^version = .*/version = "0.0.0"/}' Cargo.lock
+
 FROM rust:1-alpine AS server
 # ca-certificates: the CA bundle the scratch image ships for TLS to R2 / S3.
 RUN apk add --no-cache musl-dev ca-certificates
@@ -17,7 +25,7 @@ WORKDIR /src/server
 # Dependencies first so they cache across source changes. The stand-in
 # main uses none of them, so cargo's unused-dependency lint is switched off
 # for this step only; `COPY server/` restores the real Cargo.toml.
-COPY server/Cargo.toml server/Cargo.lock ./
+COPY --from=manifest /m/ ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
     && printf '\n[lints.cargo]\nunused_dependencies = "allow"\n' >> Cargo.toml \
     && cargo build --release && rm -rf src
