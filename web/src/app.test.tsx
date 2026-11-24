@@ -246,7 +246,7 @@ describe('popups (every Base UI popup the app uses opens without crashing)', () 
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Export events')).toBeInTheDocument()
     await user.click(within(dialog).getByRole('radio', { name: 'JSON array' }))
-    await user.click(within(dialog).getByRole('switch', { name: 'Include raw line' }))
+    await user.click(within(dialog).getByRole('switch', { name: 'Include stored JSON' }))
     const href = within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? ''
     expect(href).toContain('source=api')
     expect(href).toContain('format=json')

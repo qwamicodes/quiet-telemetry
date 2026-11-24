@@ -471,12 +471,12 @@ describe('export dialog', () => {
     expect(within(dialog).getByText('Export search results')).toBeInTheDocument()
     expect(await within(dialog).findByText(/≈ 3 stored events · ~4 KB/)).toBeInTheDocument()
 
-    // NDJSON by default, gzip + mask on.
+    // NDJSON by default, gzip on; an owner exports what is stored (no mask).
     let href = within(dialog).getByRole('button', { name: 'Download' }).getAttribute('href') ?? ''
     expect(href).toMatch(/^\/api\/export\?/)
     expect(href).toContain('format=ndjson')
     expect(href).toContain('gzip=1')
-    expect(href).toContain('mask=pii')
+    expect(href).not.toContain('mask=pii')
     expect(href).toContain('q=dealer')
     expect(href).toContain('source=api')
     expect(within(dialog).getByText(/quiet-api-\d{4}-\d{2}-\d{2}\.ndjson\.gz/)).toBeInTheDocument()

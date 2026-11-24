@@ -21,7 +21,8 @@ use crate::settings::{
     FlowIdSettings, GeneralSettings, SettingsResponse, SourceSettings, UpdateStorage,
 };
 use crate::settings_api::{
-    PurgeRequest, Purged, RemoveSource, RemovedSource, SourceActivity, StorageReport,
+    PurgeRequest, Purged, RedactionPreview, RedactionPreviewRequest, RemoveSource, RemovedSource,
+    SourceActivity, StorageReport,
 };
 use crate::stream_api::{IdCoverageReport, SourceFields, StreamStats};
 use crate::system::SystemStatus;
@@ -133,6 +134,8 @@ fn export_into(dir: &Path) {
     PurgeRequest::export_all(&cfg).unwrap();
     Purged::export_all(&cfg).unwrap();
     SourceActivity::export_all(&cfg).unwrap();
+    RedactionPreview::export_all(&cfg).unwrap();
+    RedactionPreviewRequest::export_all(&cfg).unwrap();
     SystemStatus::export_all(&cfg).unwrap();
     crate::normalize::BuiltinIdKey::export_all(&cfg).unwrap();
 

@@ -218,6 +218,12 @@ export function redactedCount(v: unknown, depth = 0): number {
   return n
 }
 
+/** N from the pipeline's `redacted:N` flag (`server/src/redact.rs`), else 0. */
+export function redactedFlag(flags: readonly string[] | null | undefined): number {
+  const f = flags?.find((x) => x.startsWith('redacted:'))
+  return f ? Number(f.slice('redacted:'.length)) || 0 : 0
+}
+
 export function previewFields(l: LogLine, max = 12): [string, unknown][] {
   const f = (l.fields ?? {}) as Fields
   const out: [string, unknown][] = []

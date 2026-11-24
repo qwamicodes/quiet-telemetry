@@ -60,6 +60,8 @@ let system: SystemStatus
 let activity: SourceActivity
 // biome-ignore lint/suspicious/noExplicitAny: a test double for the request bodies
 let calls: { url: string; method: string; body: any }[]
+// Redaction previews asked for (06.5): reads, so not in `calls`.
+let previews: unknown[] = []
 let muteStats: MuteStats
 
 const blankSource = (): SourceSettings => ({
@@ -253,6 +255,7 @@ function fresh() {
   }
   activity = { source: 'legivent-api', rejections: [], rejected_15m: 0, paused_dropped: 0, dropped: [], dropped_24h: 0 }
   calls = []
+  previews = []
   muteStats = { since: NOW - 24 * H, until: NOW, sources: {}, rules: {} }
 }
 
@@ -301,6 +304,11 @@ beforeEach(() => {
       const method = init?.method ?? 'GET'
       const body = init?.body ? JSON.parse(String(init.body)) : null
       const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status })
+      if (url.endsWith('/redaction-preview')) {
+        previews.push(body)
+        const kept = ['email', 'phone'].filter((k) => !body.redact_pii.includes(k))
+        return json({ event: { customer: { pin: '[REDACTED]' } }, removed: 7, preserved: kept })
+      }
       if (method !== 'GET') calls.push({ url, method, body })
       if (url.startsWith('/api/health')) return json(health)
       if (url === '/api/sources') return json({ sources })
@@ -738,15 +746,20 @@ describe('Settings → General', () => {
 })
 
 describe('source settings', () => {
-  it('reorders ids, masks a field, ignores the source and saves from the header (v0.1.1-06.3)', async () => {
+  it('reorders ids, redacts fields, masks a field, ignores the source and saves from the header (v0.1.1-06.3)', async () => {
     const user = userEvent.setup()
     renderAt('/sources/legivent-api?tab=settings')
     const form = await screen.findByRole('form', { name: 'Settings for legivent-api' })
     await user.type(within(form).getByLabelText('Display name'), 'API')
     expect(within(form).getByLabelText('Matched by')).toHaveValue('container name = legivent-api')
     await user.click(within(form).getByRole('button', { name: 'Move job_id up' }))
-    await user.type(within(form).getByRole('textbox', { name: 'Mask another field' }), 'customer.address')
-    await user.click(within(form).getByRole('button', { name: 'Add' }))
+    // Redact sensitive data: a custom path and email, before storage.
+    await user.type(within(form).getByRole('textbox', { name: 'Add a sensitive key or field path' }), 'customer.pin')
+    await user.click(within(form).getByRole('button', { name: 'Add sensitive key' }))
+    expect(within(form).getByRole('switch', { name: 'Redact custom fields' })).toBeChecked()
+    await user.click(within(form).getByRole('switch', { name: 'Redact email' }))
+    // Members' export masking stays per source.
+    await user.type(within(form).getByRole('textbox', { name: 'Mask another field' }), 'customer.address{Enter}')
     await user.click(within(form).getByRole('switch', { name: 'Mask user_agent' }))
     await user.click(within(form).getByRole('switch', { name: 'Ignore this source' }))
     // Discard / Save changes sit in the page header on this tab.
@@ -764,13 +777,44 @@ describe('source settings', () => {
         default_level: null,
         mask_fields: ['customer.address'],
         unmasked: ['user_agent'],
-        redact_fields: [],
-        redact_pii: [],
+        redact_fields: ['customer.pin'],
+        redact_pii: ['email'],
         muted: [],
         search_include_muted: null,
         muted_global_off: [],
       },
     })
+  })
+
+  it('previews the draft redaction on a sample, then goes back to settings (v0.1.1-06.5)', async () => {
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?tab=settings')
+    const form = await screen.findByRole('form', { name: 'Settings for legivent-api' })
+    await user.click(within(form).getByRole('switch', { name: 'Redact phone' }))
+    await user.click(within(form).getByRole('button', { name: 'Preview with sample data' }))
+    expect(await screen.findByRole('tab', { name: 'Redaction preview' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByTestId('redaction-summary')).toHaveTextContent('7 values removed · email preserved')
+    expect(previews.at(-1)).toEqual({ redact_fields: [], redact_pii: ['phone'] })
+    expect(screen.getByTestId('sanitized-sample')).toHaveTextContent('"pin": "[REDACTED]"')
+    // The draft survives the round trip; nothing was saved.
+    await user.click(screen.getByRole('button', { name: 'Back to settings' }))
+    const back = await screen.findByRole('form', { name: 'Settings for legivent-api' })
+    expect(within(back).getByRole('switch', { name: 'Redact phone' })).toBeChecked()
+    expect(calls).toHaveLength(0)
+  })
+
+  it('Logging setup fills the guide prompt for this source (v0.1.1-06.4)', async () => {
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?tab=setup')
+    expect(await screen.findByRole('tab', { name: 'Logging setup' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Your SLOs & sampling · example')).toBeInTheDocument()
+    expect(screen.getByText('Credentials removed; email and phone visible')).toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'Queue / worker' }), 'BullMQ')
+    expect(JSON.parse(localStorage.getItem('quiet.guide.setup') ?? '{}').queue).toBe('BullMQ')
+    const next = screen.getByRole('button', { name: 'Continue in guide' })
+    expect(next).toHaveAttribute('href', '/guide?tab=agent&step=setup&source=legivent-api')
+    await user.click(next)
+    expect(JSON.parse(localStorage.getItem('quiet.guide.setup') ?? '{}').project).toBe('legivent-api')
   })
 
   it('a source can include its muted lines in search, or inherit the instance choice (edit sheet)', async () => {
