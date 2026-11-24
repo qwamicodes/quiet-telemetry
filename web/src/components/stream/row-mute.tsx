@@ -640,7 +640,7 @@ function OptionRow({
       }}
       title={option.disabled}
       className={cn(
-        'grid grid-cols-[16px_minmax(0,1fr)_auto_18px] items-start gap-2.5 px-2 py-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        'grid grid-cols-[16px_minmax(0,1fr)_auto_18px] items-start gap-2.5 px-2 py-2 text-left outline-none hover:bg-muted/60 focus-visible:bg-muted',
         on && 'bg-muted',
         option.disabled && 'cursor-not-allowed opacity-45',
       )}

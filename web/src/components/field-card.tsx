@@ -13,11 +13,11 @@ import {
   LockIcon,
   MaximizeIcon,
   MinimizeIcon,
-  WaypointsIcon,
   WrapTextIcon,
   XIcon,
 } from 'lucide-react'
 import { lazy, type ReactNode, Suspense, useMemo, useState } from 'react'
+import { DiagramIcon } from '@/components/diagram/diagram-icon'
 import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -480,7 +480,7 @@ export function FieldCard({
       </GatedTab>
       <TabsTrigger value="raw">Raw</TabsTrigger>
       <GatedTab value="diagram" enabled={structured}>
-        <WaypointsIcon className="size-3.5" />
+        <DiagramIcon className="size-3" />
         Diagram
       </GatedTab>
     </TabsList>
@@ -551,11 +551,17 @@ export function FieldCard({
                     <GitForkIcon />
                   </IconButton>
                 )}
-                {/* A phone has Copy as JSON in the sheet's footer (10.2). */}
-                <Button variant="outline" size="xs" onClick={copyJson} className="max-md:hidden">
-                  <CopyIcon />
-                  Copy event JSON
-                </Button>
+                {/* A phone has Copy as JSON in the sheet's footer (10.2); the wide diagram keeps just the icon (04.8). */}
+                {diagram === 'wide' ? (
+                  <IconButton label="Copy event JSON" onClick={copyJson}>
+                    <CopyIcon />
+                  </IconButton>
+                ) : (
+                  <Button variant="outline" size="xs" onClick={copyJson} className="max-md:hidden">
+                    <CopyIcon />
+                    Copy event JSON
+                  </Button>
+                )}
                 {onClose && (
                   <IconButton label="Close (esc)" onClick={onClose}>
                     <XIcon />

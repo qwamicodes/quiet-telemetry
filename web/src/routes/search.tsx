@@ -7,6 +7,7 @@ import { Histogram } from '@/components/search/histogram'
 import { HistoryPanel, OutsideHistory } from '@/components/search/history-panel'
 import { QueryInput } from '@/components/search/query-input'
 import { SearchResults } from '@/components/search/results'
+import { SharePill } from '@/components/search/share-pill'
 import { TimeRange } from '@/components/search/time-range'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -205,9 +206,15 @@ export function SearchPage() {
   const rangeLabel = search.from ? 'this range' : `the last ${search.range}`
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 px-8 pt-6 pb-4 max-md:gap-3 max-md:px-4 max-md:pt-4">
-      <header>
-        <h1 className="font-semibold text-xl tracking-tight">Search</h1>
-        <p className="text-muted-foreground">Search stored events. Sampled-out and expired events are not included.</p>
+      <header className="flex items-end justify-between gap-4">
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <h1 className="font-semibold text-xl tracking-tight">Search</h1>
+          <p className="text-muted-foreground">
+            Search stored events. Sampled-out and expired events are not included.
+          </p>
+        </div>
+        {/* 05.9: a search that includes muted events says so in its link. */}
+        {search.muted === 'include' && <SharePill mark="muted=include" />}
       </header>
 
       <div className="flex items-center gap-2 max-md:flex-wrap">
@@ -440,6 +447,7 @@ export function SearchPage() {
             words={words}
             matchKeys={matchKeys}
             hasMore={Boolean(res.hasNextPage) && !refreshing}
+            remaining={Math.max(0, total - lines.length)}
             loadingMore={res.isFetchingNextPage}
             onMore={() => res.fetchNextPage()}
             onPick={addChip}

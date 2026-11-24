@@ -55,8 +55,8 @@ function NavItem({
       <span className="flex flex-1 items-center gap-2">
         {children}
         {dot && <span role="img" aria-label={dot} className="size-1.5 bg-brand" />}
-        {marker && <Marker kind={marker} />}
       </span>
+      {marker && <Marker kind={marker} />}
       {badge && <span className="font-mono text-[11px] text-muted-foreground">{badge}</span>}
     </Link>
   )
@@ -109,12 +109,16 @@ export function Sidebar({
         <button
           type="button"
           onClick={() => setWhatsNewOpen(true)}
-          aria-label={whatsNew.unseen.length ? `What's new: ${whatsNew.unseen.length} unseen` : "What's new"}
+          aria-label={
+            whatsNew.unseen.length
+              ? `v${health?.version ?? ''}, ${whatsNew.unseen.length} unseen changes · What's new`
+              : `v${health?.version ?? ''} · What's new`
+          }
           title="What's new"
-          className="flex items-center gap-1.5 border border-sidebar-border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground outline-none hover:text-foreground focus-visible:border-ring"
+          className="flex h-4.5 items-center gap-1.25 border border-border px-1.5 font-medium font-mono text-[11px] text-muted-foreground leading-3 outline-none hover:text-foreground focus-visible:border-ring"
         >
-          v{health ? health.version.split('.').slice(0, 2).join('.') : '…'}
-          {whatsNew.unseen.length > 0 && <UnseenDot label="Unseen changes" />}
+          v{health ? health.version : '…'}
+          {whatsNew.unseen.length > 0 && <UnseenDot />}
         </button>
       </div>
 

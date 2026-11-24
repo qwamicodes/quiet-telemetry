@@ -10,17 +10,26 @@ import { fetchJson } from '@/lib/api'
  * one-time banner. The server keeps what each account has seen.
  */
 export type ChangeKind = 'new' | 'updated'
-/** Where a change shows: a screen, or a part of one (`guide.agent`). Parents roll up. */
+/**
+ * Where a change shows: a screen, or a part of one (`guide.agent`). Parents
+ * roll up as `updated`; visiting a screen clears the changes under it.
+ */
 export type Target =
   | 'stream'
   | 'flow'
+  | 'flow.fieldcard'
   | 'search'
   | 'sources'
   | 'settings'
   | 'settings.appearance'
   | 'guide'
   | 'guide.agent'
+  | 'guide.agent.templates'
+  | 'guide.agent.examples'
   | 'guide.canonical'
+  | 'guide.canonical.context'
+  | 'guide.canonical.redaction'
+  | 'guide.canonical.levels'
   | 'guide.ids'
   | 'guide.check'
 
@@ -31,10 +40,19 @@ export interface Change {
   /** "Changes to your logs" (what your code writes) or "Changes to quiet". */
   area: 'logs' | 'app'
   title: string
-  summary: string
+  /** Mono line: the fields that changed (logs only). */
+  fields?: string
+  /** One plain sentence under the title (logs only). */
+  summary?: string
+  /** Where the row opens (quiet changes): label and path. */
+  open?: { label: string; to: '/' | '/guide'; tab?: 'agent' | 'check' | 'canonical' }
 }
 
 export const RELEASE = '0.1.1'
+export const PREVIOUS = '0.1.0'
+/** Release date, shown in the sheet header. */
+export const RELEASED = '23 Nov 2026'
+export const CHANGELOG_URL = 'https://github.com/qwamicodes/quiet-telemetry/blob/main/CHANGELOG.md'
 
 export const CHANGES: Change[] = [
   {
@@ -42,76 +60,77 @@ export const CHANGES: Change[] = [
     kind: 'updated',
     target: 'guide.canonical',
     area: 'logs',
-    title: 'One canonical event per request or job attempt',
-    summary:
-      'Write flow, status_code and duration_ms when the work ends. outcome, msg-only lines and wideEvents.calls are no longer part of the contract; records that still use them keep working.',
+    title: 'One event shape for every request and job',
+    fields:
+      'status → status_code · msg → flow · outcome → level + error · wideEvents.calls → removed, add fields directly',
+    summary: 'Old lines keep working in Stream, Flow and Search.',
   },
   {
     id: 'context',
     kind: 'new',
-    target: 'guide.canonical',
+    target: 'guide.canonical.context',
     area: 'logs',
     title: 'Request and response context',
-    summary:
-      'request and response carry headers, params, query and route; body_capture says when a body was left out or cut.',
+    fields: 'request.headers · params · query · route · response.headers · body_capture: disabled | truncated',
+    summary: 'Bodies stay off until you allow them per route. 8 KB per body, 32 KB per event.',
   },
   {
     id: 'redaction',
     kind: 'new',
-    target: 'sources',
+    target: 'guide.canonical.redaction',
     area: 'logs',
-    title: 'Credentials are [REDACTED] before storage',
+    title: 'Sensitive values are marked [REDACTED]',
     summary:
-      'Passwords, tokens, auth headers and cookies are replaced before quiet stores a line. A source can add its own keys and hide email or phone.',
+      'Passwords, tokens, cookies and fields you choose are removed before the log is written. Email and phone stay visible unless you hide them.',
   },
   {
     id: 'levels-jobs',
     kind: 'updated',
-    target: 'guide.ids',
+    target: 'guide.canonical.levels',
     area: 'logs',
     title: 'Levels and job ids',
     summary:
-      'error for a recorded error or HTTP ≥ 400, warn for a slow success. Jobs keep the queue’s own job_id with queue and attempt.',
+      "error for a recorded error or HTTP ≥400, warn for slow successes, info otherwise. Jobs keep the queue's own id plus its queue: payout-88-1300 on payouts.",
   },
   {
-    id: 'guide-agent',
+    id: 'prompt-setup',
     kind: 'updated',
     target: 'guide.agent',
     area: 'app',
-    title: 'Instrument with an agent',
-    summary: 'Set up your app and goals, pick from 20 templates, then review and copy a prompt made for it.',
+    title: 'Prompt setup: language, goals and privacy in one place',
+    open: { label: 'Guide', to: '/guide', tab: 'agent' },
+  },
+  {
+    id: 'templates',
+    kind: 'new',
+    target: 'guide.agent.templates',
+    area: 'app',
+    title: '20 product templates for SLO goals',
+    open: { label: 'Guide', to: '/guide', tab: 'agent' },
+  },
+  {
+    id: 'examples',
+    kind: 'new',
+    target: 'guide.agent.examples',
+    area: 'app',
+    title: 'Examples for TypeScript, Python, Go and Rust',
+    open: { label: 'Guide', to: '/guide', tab: 'agent' },
   },
   {
     id: 'check-logs',
     kind: 'updated',
     target: 'guide.check',
     area: 'app',
-    title: 'Check my logs scores v0.1.1',
-    summary: 'Each check says what to change, and a Fix with your agent prompt is built from the findings.',
+    title: 'Check my logs: 12 checks for the new format',
+    open: { label: 'Guide', to: '/guide', tab: 'check' },
   },
   {
-    id: 'flow-activity',
+    id: 'field-card',
     kind: 'updated',
-    target: 'flow',
+    target: 'flow.fieldcard',
     area: 'app',
-    title: 'Flows open as an activity list',
-    summary: 'One row per request and per job, attempts inside. The timeline and graph moved behind Timing.',
-  },
-  {
-    id: 'appearance',
-    kind: 'new',
-    target: 'settings.appearance',
-    area: 'app',
-    title: 'Appearance',
-    summary: 'Light, dark or system theme, row density, wrap, error-row tint and accent, saved to this browser.',
-  },
-  {
-    id: 'phone',
-    kind: 'new',
-    target: 'stream',
-    area: 'app',
-    title: 'Works on a phone',
-    summary: 'A tab bar, two-line stream cards and a flow with its field card in a bottom sheet.',
+    title: 'Field card groups Request, Response and Context',
+    open: { label: 'Stream', to: '/' },
   },
 ]
 
@@ -186,10 +205,10 @@ export function useWhatsNew() {
   }
 }
 
-/** Visiting a screen (or tab) marks the changes that point exactly at it as seen. */
+/** Visiting a screen (or tab) marks the changes on it, and on its parts, as seen. */
 export function useSeenOnVisit(target: Target | null) {
   const { unseen, markSeen } = useWhatsNew()
-  const ids = target ? unseen.filter((c) => c.target === target).map((c) => c.id) : []
+  const ids = target ? unseen.filter((c) => under(c.target, target)).map((c) => c.id) : []
   const key = ids.join(',')
   useEffect(() => {
     if (key) markSeen(key.split(','))

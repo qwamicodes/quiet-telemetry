@@ -9,9 +9,9 @@ import {
   GitForkIcon,
   ListIcon,
   SearchIcon,
-  WaypointsIcon,
 } from 'lucide-react'
 import { type CSSProperties, useMemo, useState } from 'react'
+import { DiagramIcon } from '@/components/diagram/diagram-icon'
 import { ExportDialog } from '@/components/export-dialog'
 import { type DiagramMode, FieldCard, plainRead } from '@/components/field-card'
 import { ActivityList } from '@/components/flow/activity-list'
@@ -239,22 +239,26 @@ function FlowView({
   const correlated = flow.stitched_by.length > 0 && `correlated by ${flow.stitched_by[0]}`
   // 04.1: "1 request · 1 job · 2 completion events · correlated by request_id";
   // 04.2: "3 attempts · payouts · terminal failure confirmed by the queue";
+  // 04.3: "1 request · 3 jobs · native queue links · children progress independently";
   // 04.4: "1 event · 38ms · correlated by request_id · last 24h".
+  const childJobs = activity.main.some((r) => r.kind === 'job' && r.children.length > 0)
   const meta = (
     one
       ? ['1 event', fmtDuration(flow.duration_ms), correlated, `last ${fmtWindow(until - since)}`]
-      : openedJob
-        ? [
-            `${openedJob.attempts.length} ${openedJob.attempts.length === 1 ? 'attempt' : 'attempts'}`,
-            openedJob.queue,
-            JOB_EVIDENCE[openedJob.state],
-          ]
-        : [
-            activityCounts(activity, { related: true }),
-            `${activity.completions} completion ${activity.completions === 1 ? 'event' : 'events'}`,
-            correlated,
-            flow.span_tree && 'span tree',
-          ]
+      : childJobs
+        ? [activityCounts(activity, { related: true }), 'native queue links', 'children progress independently']
+        : openedJob
+          ? [
+              `${openedJob.attempts.length} ${openedJob.attempts.length === 1 ? 'attempt' : 'attempts'}`,
+              openedJob.queue,
+              JOB_EVIDENCE[openedJob.state],
+            ]
+          : [
+              activityCounts(activity, { related: true }),
+              `${activity.completions} completion ${activity.completions === 1 ? 'event' : 'events'}`,
+              correlated,
+              flow.span_tree && 'span tree',
+            ]
   ).filter(Boolean)
   const title = openedJob ? openedJob.flow : flow.title
   // 04.13: a single plain-text line reads "404 · plain text" and has no flow actions.
@@ -343,6 +347,11 @@ function FlowView({
         <div className="flex min-h-0 flex-1 gap-3" style={{ '--card-w': `${singleW}px` } as CSSProperties}>
           <FieldCard
             line={line}
+            // Wide (04.8): `1 / 1` and × back to the card, like a step in a longer flow.
+            position={wide ? { index: 0, total: 1 } : undefined}
+            onPrev={wide ? () => {} : undefined}
+            onNext={wide ? () => {} : undefined}
+            onClose={wide ? () => setDiagram('off') : undefined}
             className={cn(wide ? 'w-auto flex-1' : 'w-[var(--card-w)] max-w-[70%]')}
             onOpenInStream={openInStream}
             diagram={diagram}
@@ -500,7 +509,7 @@ function PlainTextNote({ source, kind }: { source: string; kind?: string }) {
   return (
     <div className="border border-dashed p-4" data-testid="plain-text-note">
       <h2 className="flex items-center gap-2 font-medium">
-        <WaypointsIcon className="size-4 text-muted-foreground" />
+        <DiagramIcon className="size-4 text-muted-foreground" />
         No diagram for plain text
       </h2>
       <p className="mt-2 text-muted-foreground">

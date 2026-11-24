@@ -227,6 +227,33 @@ describe('search route', () => {
     await waitFor(() => expect(router.state.location.search.q).toBe('88'))
   })
 
+  it('more pages load when asked: "Show N more events", and the link pill with muted=include (05.9)', async () => {
+    const inner = globalThis.fetch
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.startsWith('/api/search?') && url.includes('q=paged')) {
+          const next = new URL(url, 'http://x').searchParams.get('cursor')
+          const extra = [mk(5, 'api', 'req_5', 'info', 'GET /orders'), mk(4, 'api', 'req_4', 'info', 'GET /me')]
+          const body = next ? { ...page(extra), total: 5 } : { ...page(lines), total: 5, next_cursor: 'c2' }
+          calls.push(url)
+          return new Response(JSON.stringify(body), { status: 200 })
+        }
+        return inner(url, init)
+      }),
+    )
+    const user = userEvent.setup()
+    renderAt('/search?q=paged&view=lines&muted=include')
+    const more = await screen.findByRole('button', { name: /Show 2 more events/ }, { timeout: 5000 })
+    expect(screen.getByText('muted=include')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy link to this search' })).toBeInTheDocument()
+    expect(calls.filter((c) => c.includes('cursor=c2'))).toHaveLength(0)
+    await user.click(more)
+    await waitFor(() => expect(calls.some((c) => c.includes('cursor=c2'))).toBe(true))
+    expect(await screen.findByText('GET /orders', { exact: false })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: /more events/ })).not.toBeInTheDocument())
+  })
+
   it('lines view and the no-results state', async () => {
     const user = userEvent.setup()
     const router = renderAt('/search?q=nothing&source=worker&range=1h')

@@ -37,18 +37,47 @@ export const formatQuery = (source: string) =>
 
 export const useSourceFormat = (source: string) => useQuery(formatQuery(source))
 
-/** What to tell the agent for each change, in the words of the v0.1.1 prompt. */
-const HOW: Record<string, string> = {
-  outcome:
-    'Remove `outcome`. Set `level` instead (error for a recorded error or HTTP ≥ 400, warn for a slow success, info otherwise), keep `status_code`, and add a typed `error { name, code, message, reason }` when the work failed.',
-  wide_events_calls:
-    'Remove `wideEvents.calls`. Write one canonical completion event per request or job attempt; when a dependency call failed, put that call in `error.details`.',
-  msg_without_flow:
-    'Add `flow`, the operation name in snake_case (`create_payout`), to every completion event. `msg` may stay for humans but is not read.',
-  status: 'Rename `status` (the HTTP status) to `status_code`, a number.',
-  err: 'Rename `err` to `error` with `name`, `code`, `message` and, when you know it, `reason`.',
-  job_scope:
-    'Keep the queue’s own job id as `job_id` and add `queue` and `attempt` (the attempt number the queue gives) to every job event.',
+/**
+ * Per change: what v0.1.1 expects (mono), why (one sentence) and the prompt
+ * step, in the words of the v0.1.1 prompt (00.3).
+ */
+export const CHANGE_COPY: Record<string, { writes: string; expects: string; why: string; step: string }> = {
+  outcome: {
+    writes: '"outcome": "failed"',
+    expects: '"level": "error" + "error": { … }',
+    why: 'No outcome field. The level and the error say what happened.',
+    step: 'Drop outcome; set level from the error.',
+  },
+  wide_events_calls: {
+    writes: '"wideEvents.calls": [ … ]',
+    expects: 'business fields straight on the event',
+    why: 'Put business fields straight on the event. No calls list or wrapper.',
+    step: 'Move wideEvents.calls data onto the event.',
+  },
+  msg_without_flow: {
+    writes: '"msg" without "flow"',
+    expects: '"flow": "<operation_name>"',
+    why: 'The business name labels the row in Stream and Flow.',
+    step: 'msg → flow with the business name.',
+  },
+  status: {
+    writes: '"status": 201',
+    expects: '"status_code": 201',
+    why: 'A number, so Search can filter status_code>=500.',
+    step: 'status → status_code, a number.',
+  },
+  err: {
+    writes: '"err": { … }',
+    expects: '"error": { code, message, reason, details }',
+    why: 'Keep reason and details as their own JSON types.',
+    step: 'Make error an object; keep reason and details types.',
+  },
+  job_scope: {
+    writes: '"job_id" without "queue"',
+    expects: '"job_id" + "queue" + "attempt"',
+    why: "Jobs keep the queue's own id plus its queue.",
+    step: "Add queue and attempt next to the queue's own job_id.",
+  },
 }
 
 /**
@@ -56,28 +85,9 @@ const HOW: Record<string, string> = {
  * writes the old way, nothing it already does right.
  */
 export function upgradePrompt(source: string, r: FormatReport): string {
-  const lines = [
-    `# Upgrade ${source} to the quiet v0.1.1 logging contract`,
-    '',
-    `quiet read the newest ${r.sample.toLocaleString('en-US')} records from ${source}. Make only these changes; keep everything else your logger does today.`,
-    '',
-    '## Changes',
-    '',
-    ...r.changes.map((c, i) =>
-      `${i + 1}. \`${c.from}\` → ${c.to} (${c.count.toLocaleString('en-US')} records). ${HOW[c.id] ?? ''}`.trimEnd(),
-    ),
-    '',
-    '## Keep',
-    '',
-    '- `request_id` on every request, passed into the jobs it enqueues.',
-    '- Credentials written as `[REDACTED]` before the log is written (quiet redacts them again on arrival).',
-    '- Records already sent: quiet keeps reading them, nothing to migrate.',
-    '',
-    '## Verify',
-    '',
-    `Deploy, then open quiet → Sources → ${source} → Upgrade. New records count as v0.1.1 as they arrive; the \`v0.1.0\` tag clears 24 hours after the last old-format record.`,
-    '',
-    'The full contract is in quiet → Guide → Instrument with an agent.',
-  ]
-  return lines.join('\n')
+  return [
+    `Update ${source}'s existing logging to the quiet v0.1.1 format. Keep the current logger, job wrapper and handlers; change only what each event contains.`,
+    ...r.changes.map((c, i) => `${i + 1}. ${CHANGE_COPY[c.id]?.step ?? `${c.from} → ${c.to}.`}`),
+    "Keep the queue's job_id and queue. Run the existing tests and report anything unverified.",
+  ].join('\n')
 }

@@ -316,7 +316,7 @@ describe('flow route', () => {
     const job = within(activity).getByRole('button', { name: 'settle job payout:1' })
     // One failed attempt without queue evidence of retry or a final failure.
     expect(job.parentElement).toHaveTextContent('Completion not observed')
-    expect(job.parentElement).toHaveTextContent('Exec 800ms · #0')
+    expect(job.parentElement).toHaveTextContent('Exec 800 ms · #0')
     expect(within(activity).getByRole('button', { name: 'Attempt 0' })).toHaveAttribute('aria-pressed', 'true')
     expect(within(activity).getByText(/Related by request_id req_1/)).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Flow steps' })).not.toBeInTheDocument()

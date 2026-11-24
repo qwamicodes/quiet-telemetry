@@ -1,12 +1,21 @@
 import { Link } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArchiveIcon, ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, EyeOffIcon, GitForkIcon } from 'lucide-react'
+import {
+  ArchiveIcon,
+  ArrowDownIcon,
+  ArrowRightIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  EyeOffIcon,
+  GitForkIcon,
+} from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LevelBadge } from '@/components/level-badge'
 import { StatusDot } from '@/components/status-dot'
+import { Button } from '@/components/ui/button'
 import type { FlowSummary, LogLine } from '@/gen'
 import { fmtDuration } from '@/lib/flow'
-import { fmtRowTime, fmtTime } from '@/lib/format'
+import { fmtCount, fmtRowTime, fmtTime } from '@/lib/format'
 import { inSpan, jumpIndex, nearestIndex, type Span } from '@/lib/histogram-jump'
 import { type FlowGroup, groupByFlow, highlight, notableFields } from '@/lib/query'
 import { lineDuration, type RowParts, rowParts } from '@/lib/row'
@@ -334,6 +343,7 @@ export function SearchResults({
   words,
   matchKeys = [],
   hasMore,
+  remaining,
   loadingMore,
   onMore,
   onPick,
@@ -367,6 +377,8 @@ export function SearchResults({
   /** The search's `key:value` field filters: each row shows the one it matched. */
   matchKeys?: [string, string][]
   hasMore: boolean
+  /** Matching events not loaded yet, for the paging button (05.9). */
+  remaining?: number
   loadingMore: boolean
   onMore: () => void
   onPick: (filter: string) => void
@@ -395,10 +407,6 @@ export function SearchResults({
     },
   })
   const virtual = v.getVirtualItems()
-  const lastIndex = virtual.length ? virtual[virtual.length - 1].index : -1
-  useEffect(() => {
-    if (hasMore && !loadingMore && lastIndex >= items.length - 10) onMore()
-  }, [lastIndex, items.length, hasMore, loadingMore, onMore])
 
   const jumped = useRef(0)
   useEffect(() => {
@@ -469,7 +477,21 @@ export function SearchResults({
           )
         })}
       </ul>
-      {loadingMore && <p className="py-3 text-center font-mono text-muted-foreground text-xs">Loading more…</p>}
+      {/* 05.9: the next page loads when asked, so the list (and the histogram jump) stays put. */}
+      {hasMore && (
+        <div className="flex justify-center py-3">
+          <Button variant="ghost" size="xs" onClick={onMore} disabled={loadingMore}>
+            {loadingMore
+              ? 'Loading…'
+              : view === 'flows'
+                ? 'Show more flows'
+                : remaining
+                  ? `Show ${fmtCount(remaining)} more ${remaining === 1 ? 'event' : 'events'}`
+                  : 'Show more events'}
+            {!loadingMore && <ArrowDownIcon />}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

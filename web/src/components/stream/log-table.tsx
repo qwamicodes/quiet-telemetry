@@ -7,7 +7,6 @@ import {
   FilterIcon,
   GitForkIcon,
   LoaderCircleIcon,
-  WaypointsIcon,
 } from 'lucide-react'
 import {
   type CSSProperties,
@@ -20,6 +19,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { DiagramIcon } from '@/components/diagram/diagram-icon'
 import { LevelBadge } from '@/components/level-badge'
 import { MutedTag, previewHits, RowToolbar, useMuteCtx } from '@/components/stream/row-mute'
 import { Button } from '@/components/ui/button'
@@ -320,7 +320,7 @@ export function RowPreview({
             render={
               <span className="inline-flex">
                 <Button size="xs" variant="outline" disabled={!line.fields} onClick={() => actions.onOpenDiagram(line)}>
-                  <WaypointsIcon />
+                  <DiagramIcon />
                   Diagram
                   <Kbd className="h-4 min-w-4 text-[10px]">D</Kbd>
                 </Button>

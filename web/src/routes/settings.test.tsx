@@ -947,7 +947,7 @@ describe('Settings → About (07.6)', () => {
   it('shows version, uptime, database and live clients; no update check while it is off', async () => {
     renderAt('/settings/about')
     expect(await screen.findByText('1d 3h')).toBeInTheDocument()
-    expect(screen.getByText('v0.1.0')).toBeInTheDocument()
+    expect(within(screen.getByRole('main')).getByText('v0.1.0')).toBeInTheDocument()
     expect(screen.getByText('1.9 GB')).toBeInTheDocument()
     expect(screen.getByText('sqlite 3.46.0 · wal')).toBeInTheDocument()
     expect(screen.getByText('websocket · 2 members')).toBeInTheDocument()
@@ -1111,7 +1111,7 @@ describe('Settings → Muted lines (07.12–07.20)', () => {
     const dialog = await screen.findByRole('dialog')
     await user.type(within(dialog).getByLabelText('Route'), '/api/v1/health?probe=1')
     expect(await within(dialog).findByText('312 lines')).toBeInTheDocument()
-    expect(within(dialog).getByText('stored as path:/api/v1/health')).toBeInTheDocument()
+    expect(within(dialog).getByText('stored as path:/api/v1/health · scope global')).toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: /Add global rule/ }))
     await waitFor(() => expect(calls.some((c) => c.url === '/api/mute/rules')).toBe(true))
     const post = calls.find((c) => c.url === '/api/mute/rules')
@@ -1139,6 +1139,28 @@ describe('Settings → Muted lines (07.12–07.20)', () => {
     expect(confirm).toHaveTextContent('No source has its own kube-probe/* rule')
     await user.click(within(confirm).getByRole('button', { name: /Delete for all sources/ }))
     await waitFor(() => expect(calls).toContainEqual({ url: '/api/mute/rules/mr_g', method: 'DELETE', body: null }))
+  })
+
+  it('edit global rule opens a side panel with the change and hits by source (07.16)', async () => {
+    settings.muted_global = [rule({ id: 'mr_g', scope: 'global', value: '/metrics' })]
+    muteStats.rules.mr_g = { per_source: { 'legivent-api': 400 } }
+    const user = userEvent.setup()
+    renderAt('/settings/muted-lines')
+    await user.click(await screen.findByRole('button', { name: 'More for path:/metrics' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Edit' }))
+    const sheet = await screen.findByRole('dialog')
+    expect(within(sheet).getByText('Edit global rule')).toBeInTheDocument()
+    const route = within(sheet).getByLabelText('Route')
+    await user.clear(route)
+    await user.type(route, '/metrics*')
+    // The preview mock hides 312 on legivent-api: 88 fewer than now.
+    expect(await within(sheet).findByText(/400 → 312 hidden · 24h/)).toBeInTheDocument()
+    expect(within(sheet).getByText(/−88 · 88 on legivent-api show again/)).toBeInTheDocument()
+    expect(within(sheet).getByRole('list', { name: 'Hits by source' })).toHaveTextContent('312')
+    await user.keyboard('{Meta>}{Enter}{/Meta}')
+    await waitFor(() =>
+      expect(calls).toContainEqual(expect.objectContaining({ url: '/api/mute/rules/mr_g', method: 'PATCH' })),
+    )
   })
 
   it('the include-in-search default lives here; members see it all read-only', async () => {
@@ -1217,6 +1239,34 @@ describe('Sources → edit → Muted lines (06.13–06.25)', () => {
     expect(calls).toHaveLength(0)
     await user.click(within(confirm).getByRole('button', { name: /Delete rule/ }))
     await waitFor(() => expect(calls).toContainEqual({ url: '/api/mute/rules/mr_big', method: 'DELETE', body: null }))
+  })
+
+  it('a source rule edits in place with the live change (06.18)', async () => {
+    settings.sources['legivent-api'] = {
+      ...blankSource(),
+      muted: [rule({ id: 'mr_h', value: '/api/v1/health' })],
+    }
+    muteStats.rules = { mr_h: { per_source: { 'legivent-api': 300 } } }
+    const user = userEvent.setup()
+    renderAt('/sources/legivent-api?edit=muted')
+    await user.click(await screen.findByTitle('Edit rule'))
+    const panel = await screen.findByRole('form', { name: 'Edit rule' })
+    const route = within(panel).getByLabelText('Route')
+    await user.clear(route)
+    await user.type(route, '/api/v1/health*')
+    expect(await within(panel).findByText(/300 → 312 hidden · 24h/)).toBeInTheDocument()
+    expect(within(panel).getByText('+12')).toBeInTheDocument()
+    expect(within(panel).getByText(/The \* also catches \/api\/v1\/healthz/)).toBeInTheDocument()
+    await user.click(within(panel).getByRole('button', { name: /Save rule/ }))
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          url: '/api/mute/rules/mr_h',
+          method: 'PATCH',
+          body: expect.objectContaining({ value: '/api/v1/health*' }),
+        }),
+      ),
+    )
   })
 
   it('adds a method + route rule on this source', async () => {
