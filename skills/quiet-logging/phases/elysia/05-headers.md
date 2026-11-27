@@ -112,6 +112,7 @@ import { requestId } from '<request id path>'
 import { clientIp, readRequest, type Arrival } from '<request context path>'
 
 type Fields = Record<string, unknown>
+
 function createLog(request: Request, id: string, arrival: Arrival = {}) {
   const start = performance.now()
   const incoming = readRequest(request, arrival) // now, not at write: Bun may release the request after the response
