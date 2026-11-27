@@ -57,8 +57,10 @@ export const requestId = new Elysia({ name: 'request-id' })
   }))
 ```
 
-Option 3 only: in the request event, add `client_request_id: clientRequestId(request)`
-next to `request_id`.
+Option 3 only: in the request event's `createLog`, read the client's id at the top
+(`const clientId = clientRequestId(request)`) and add `client_request_id: clientId` next
+to `request_id` in `write`. Read it in `createLog`, not in `write`: `write` runs after
+the response is sent, and by then Bun may have released the request's headers.
 
 ## Step 3 — Request event
 The plugin builds one `log` per request in `derive` and writes the line once in

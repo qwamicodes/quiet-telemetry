@@ -233,8 +233,8 @@ export const logging = new Elysia({ name: 'logging' })
 
 Keep what earlier phases chose:
 - the `flow` macro only if the flow phase chose the route option;
-- `client_request_id: clientRequestId(request)` next to `request_id` if the request
-  id phase chose option 3.
+- `client_request_id` (read in `createLog`, written next to `request_id`) if the
+  request id phase chose option 3.
 
 Edit the existing file to match; don't replace code the user added since.
 The file is about 75 lines. That is expected: do not split it unless the user asks.
