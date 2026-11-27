@@ -56,10 +56,19 @@ Run them in this order. Each framework folder has one file per phase.
 
 ## Frameworks
 
-| Framework | Folder | Status |
-|---|---|---|
-| Elysia (Bun) | `phases/elysia/` | tested on Elysia 1.4.32, Bun 1.4, pino 10 |
-| Django, Axum, Spring Boot, Laravel, Go net/http | — | not written yet |
+| Language | Framework | Folder | Status |
+|---|---|---|---|
+| TypeScript / JavaScript | Elysia (Bun) | `phases/elysia/` | in progress; tested on Elysia 1.4.32, Bun 1.4, pino 10 |
+| TypeScript / JavaScript | Hono, Express, Fastify, NestJS | — | planned |
+| Python | Django, FastAPI, Flask | — | planned |
+| Go | net/http (and chi), Gin, Echo, Fiber | — | planned |
+| Java | Spring Boot, Quarkus, Micronaut | — | planned |
+| PHP | Laravel, Symfony, Leaf | — | planned |
+| .NET | ASP.NET Core | — | planned |
+| Rust | Axum, Actix Web, Rocket | — | planned |
+
+For a planned framework, tell the user it is planned but not written yet, then
+offer the choice in step 3 of "How to run this skill".
 
 Phase files refer to other phases by name, not number, so a phase can be added by
 adding a file and one row here.
