@@ -5,8 +5,9 @@ and pino 10.
 
 ## Goal
 No secret ever reaches the line, wherever it was added: the request's query or
-headers, `log.add` data, or error details. The request is read raw when it arrives;
-redaction runs once on the whole line, just before it is written. Any key whose words
+headers, `log.add` data, or error details. The request is read raw when it arrives
+(and stays raw in `client` for app code); redaction runs once on the whole line, just
+before it is written. Any key whose words
 match `REDACT_KEYS` becomes `"[REDACTED]"`, at any depth.
 
 quiet also redacts credentials when it receives a line. That is a second line of
@@ -116,13 +117,12 @@ import { levelFor } from '<level path>'
 import { redact } from '<redact path>'
 import { logger } from '<logger path>'
 import { requestId } from '<request id path>'
-import { clientIp, readRequest, type Arrival } from '<request context path>'
+import { readRequest, requestContext, type Client } from '<request context path>'
 
 type Fields = Record<string, unknown>
 
-function createLog(request: Request, id: string, arrival: Arrival = {}) {
+function createLog(id: string, client: Client) {
   const start = performance.now()
-  const incoming = readRequest(request, arrival) // now, not at write: Bun may release the request after the response
   const fields: Fields = {}
   let written = false
   let handled = false
@@ -146,10 +146,13 @@ function createLog(request: Request, id: string, arrival: Arrival = {}) {
       try {
         const duration_ms = Math.round(performance.now() - start)
         const level = levelFor({ status, durationMs: duration_ms, handledError: handled })
+        const { method, path, ...request } = client
         logger[level](redact({
           ...fields,
           request_id: id,
-          ...incoming,
+          method,
+          path,
+          request,
           status_code: status,
           duration_ms,
         }))
@@ -164,9 +167,8 @@ export type Log = Pick<ReturnType<typeof createLog>, 'add' | 'capture'>
 
 export const logging = new Elysia({ name: 'logging' })
   .use(requestId)
-  .derive({ as: 'global' }, ({ request, requestId, server, route, params }) => ({
-    log: createLog(request, requestId, { route, params, ip: clientIp(request, server?.requestIP(request)?.address) }),
-  }))
+  .use(requestContext)
+  .derive({ as: 'global' }, ({ requestId, client }) => ({ log: createLog(requestId, client) }))
   .macro({
     flow: (name: string) => ({
       transform({ log }) {
@@ -180,10 +182,9 @@ export const logging = new Elysia({ name: 'logging' })
       (ctx.log as ReturnType<typeof createLog>).fields.error = errorFields(error, String(code))
       return
     }
-    // derive never ran (unmatched route, unparsable body): write the line here
-    const fallback = createLog(request, String(set.headers[REQUEST_ID_HEADER]), {
-      ip: clientIp(request, ctx.server?.requestIP(request)?.address),
-    })
+    // derive never ran (unmatched route, unparsable body): read the request and write the line here
+    const client = readRequest(request, { socketIp: ctx.server?.requestIP(request)?.address })
+    const fallback = createLog(String(set.headers[REQUEST_ID_HEADER]), client)
     fallback.fields.error = errorFields(error, String(code))
     fallback.write(error && typeof error === 'object' && 'status' in error ? Number(error.status) : Number(set.status ?? 500))
   })

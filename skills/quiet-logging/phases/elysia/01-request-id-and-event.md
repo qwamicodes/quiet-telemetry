@@ -59,51 +59,61 @@ export const requestId = new Elysia({ name: 'request-id' })
   }))
 ```
 
-Option 3 only: in the request event's `createLog`, read the client's id next to
-`readRequest` (`const clientId = clientRequestId(request)`) and add
-`client_request_id: clientId` next to `request_id` in `write`.
+Option 3 only: in the request context's `readRequest`, add
+`client_request_id: clientRequestId(request)` to what it returns, and in the request
+event's `write`, take it out next to `method` and `path` so it sits beside `request_id`.
 
 ## Step 3 — Request event
-Two files. The request context file reads what came in (method, path, route, params,
-query) the moment the request arrives:
+Two files.
+
+**Request context plugin.** It reads what came in (method, path, route, params, query)
+the moment the request arrives, and makes it available as `client` to every handler and
+service, and to the logger:
 
 ```ts
-type Fields = Record<string, unknown>
-export type Arrival = { route?: string; params?: Fields }
+import { Elysia } from 'elysia'
 
-/** What came in, read the moment the request arrives. */
-export function readRequest(request: Request, { route, params }: Arrival) {
+type Fields = Record<string, unknown>
+type Arrival = { route?: string; params?: Fields; socketIp?: string }
+
+/** Everything about the incoming request, read the moment it arrives. */
+export function readRequest(request: Request, { route, params }: Arrival = {}) {
   const url = new URL(request.url)
   const query = Object.fromEntries(url.searchParams)
   return {
     method: request.method,
     path: url.pathname,
-    request: {
-      route,
-      params: params && Object.keys(params).length ? params : undefined,
-      query: Object.keys(query).length ? query : undefined,
-    },
+    route,
+    params: params && Object.keys(params).length ? params : undefined,
+    query: Object.keys(query).length ? query : undefined,
   }
 }
+
+export type Client = ReturnType<typeof readRequest>
+
+/** Makes `client` available to every handler, service and the logger. */
+export const requestContext = new Elysia({ name: 'request-context' })
+  .derive({ as: 'global' }, ({ request, route, params, server }) => ({
+    client: readRequest(request, { route, params, socketIp: server?.requestIP(request)?.address }),
+  }))
 ```
 
-The request event file builds one `log` per request in `derive`, reads the request
-there, and writes the line once in `onAfterResponse`, when the final status is known.
-`derive` does not run for unmatched routes or unparsable bodies, so `onError` writes
-those lines itself. The plugin's own fields come last so app code can't overwrite them.
+**Request event plugin.** It builds one `log` per request from `client`, and writes the
+line once in `onAfterResponse`, when the final status is known. `derive` does not run
+for unmatched routes or unparsable bodies, so `onError` reads the request itself and
+writes those lines. The plugin's own fields come last so app code can't overwrite them.
 
 ```ts
 import { Elysia } from 'elysia'
 import { REQUEST_ID_HEADER } from '<constants path>'
 import { logger } from '<logger path>'
 import { requestId } from '<request id path>'
-import { readRequest, type Arrival } from '<request context path>'
+import { readRequest, requestContext, type Client } from '<request context path>'
 
 type Fields = Record<string, unknown>
 
-function createLog(request: Request, id: string, arrival: Arrival = {}) {
+function createLog(id: string, client: Client) {
   const start = performance.now()
-  const incoming = readRequest(request, arrival) // now, not at write: Bun may release the request after the response
   const fields: Fields = {}
   let written = false
 
@@ -119,10 +129,13 @@ function createLog(request: Request, id: string, arrival: Arrival = {}) {
       if (written) return
       written = true
       try {
+        const { method, path, ...request } = client
         logger.info({
           ...fields,
           request_id: id,
-          ...incoming,
+          method,
+          path,
+          request,
           status_code: status,
           duration_ms: Math.round(performance.now() - start),
         })
@@ -137,7 +150,8 @@ export type Log = Pick<ReturnType<typeof createLog>, 'add'>
 
 export const logging = new Elysia({ name: 'logging' })
   .use(requestId)
-  .derive({ as: 'global' }, ({ request, requestId, route, params }) => ({ log: createLog(request, requestId, { route, params }) }))
+  .use(requestContext)
+  .derive({ as: 'global' }, ({ requestId, client }) => ({ log: createLog(requestId, client) }))
   .onError({ as: 'global' }, (ctx) => {
     const { error, request, set } = ctx
     const errorField = error instanceof Error ? { name: error.name, message: error.message } : error
@@ -145,8 +159,9 @@ export const logging = new Elysia({ name: 'logging' })
       (ctx.log as ReturnType<typeof createLog>).fields.error = errorField
       return
     }
-    // derive never ran (unmatched route, unparsable body): write the line here
-    const fallback = createLog(request, String(set.headers[REQUEST_ID_HEADER]))
+    // derive never ran (unmatched route, unparsable body): read the request and write the line here
+    const client = readRequest(request, { socketIp: ctx.server?.requestIP(request)?.address })
+    const fallback = createLog(String(set.headers[REQUEST_ID_HEADER]), client)
     fallback.fields.error = errorField
     fallback.write(error && typeof error === 'object' && 'status' in error ? Number(error.status) : Number(set.status ?? 500))
   })
@@ -155,17 +170,18 @@ export const logging = new Elysia({ name: 'logging' })
   })
 ```
 
-Read the request in `createLog`, never in `write`: `write` runs after the response is
+The request is read at arrival, never in `write`: `write` runs after the response is
 sent, and by then Bun may have released the request. The query is read from the URL,
 so a 404 still shows what was asked for.
 
 If the chosen logger isn't pino, change only the `logger.info(...)` call.
-`.use(logging)` once in the entry file; it brings `requestId` with it. Sub-apps may
-also `.use(logging)` for typing; the plugin name keeps it to one line per request.
-Do not wrap `fetch`, clone responses or read bodies.
+`.use(logging)` once in the entry file; it brings `requestId` and `requestContext` with
+it. Sub-apps may also `.use(logging)` for typing; the plugin names keep it to one line
+per request. Do not wrap `fetch`, clone responses or read bodies.
 
 ## Step 4 — Use it
-Controllers add to the line with `log.add(entity, data)`:
+Controllers add to the line with `log.add(entity, data)`, and can read the request
+from `client`:
 
 ```ts
 .get('/:id', ({ params, log }) => {

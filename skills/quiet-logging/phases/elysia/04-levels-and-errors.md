@@ -159,13 +159,12 @@ import { errorFields } from '<errors path>'
 import { levelFor } from '<level path>'
 import { logger } from '<logger path>'
 import { requestId } from '<request id path>'
-import { readRequest, type Arrival } from '<request context path>'
+import { readRequest, requestContext, type Client } from '<request context path>'
 
 type Fields = Record<string, unknown>
 
-function createLog(request: Request, id: string, arrival: Arrival = {}) {
+function createLog(id: string, client: Client) {
   const start = performance.now()
-  const incoming = readRequest(request, arrival) // now, not at write: Bun may release the request after the response
   const fields: Fields = {}
   let written = false
   let handled = false
@@ -189,10 +188,13 @@ function createLog(request: Request, id: string, arrival: Arrival = {}) {
       try {
         const duration_ms = Math.round(performance.now() - start)
         const level = levelFor({ status, durationMs: duration_ms, handledError: handled })
+        const { method, path, ...request } = client
         logger[level]({
           ...fields,
           request_id: id,
-          ...incoming,
+          method,
+          path,
+          request,
           status_code: status,
           duration_ms,
         })
@@ -207,7 +209,8 @@ export type Log = Pick<ReturnType<typeof createLog>, 'add' | 'capture'>
 
 export const logging = new Elysia({ name: 'logging' })
   .use(requestId)
-  .derive({ as: 'global' }, ({ request, requestId, route, params }) => ({ log: createLog(request, requestId, { route, params }) }))
+  .use(requestContext)
+  .derive({ as: 'global' }, ({ requestId, client }) => ({ log: createLog(requestId, client) }))
   .macro({
     flow: (name: string) => ({
       transform({ log }) {
@@ -221,8 +224,9 @@ export const logging = new Elysia({ name: 'logging' })
       (ctx.log as ReturnType<typeof createLog>).fields.error = errorFields(error, String(code))
       return
     }
-    // derive never ran (unmatched route, unparsable body): write the line here
-    const fallback = createLog(request, String(set.headers[REQUEST_ID_HEADER]))
+    // derive never ran (unmatched route, unparsable body): read the request and write the line here
+    const client = readRequest(request, { socketIp: ctx.server?.requestIP(request)?.address })
+    const fallback = createLog(String(set.headers[REQUEST_ID_HEADER]), client)
     fallback.fields.error = errorFields(error, String(code))
     fallback.write(error && typeof error === 'object' && 'status' in error ? Number(error.status) : Number(set.status ?? 500))
   })
@@ -233,12 +237,12 @@ export const logging = new Elysia({ name: 'logging' })
 
 Keep what earlier phases chose:
 - the `flow` macro only if the flow phase chose the route option;
-- `client_request_id` (read in `createLog`, written next to `request_id`) if the
+- `client_request_id` (read in `readRequest`, written next to `request_id`) if the
   request id phase chose option 3.
 
 Edit the existing file to match; don't replace code the user added since.
-The file is about 75 lines. That is expected: do not split it unless the user asks.
-The request context file does not change in this phase.
+The file is about 80 lines. That is expected: do not split it unless the user asks.
+The request context plugin does not change in this phase.
 
 ## Step 7 — Use it in app code
 **Domain errors explain themselves.** Error classes carry what a reader needs:

@@ -47,37 +47,50 @@ Update the constants file with the selected values (`REQUEST_HEADERS` is already
 from the layout phase):
 
 ```ts
+// Allow-listed request headers. Add any custom headers your clients send (x-device-id, x-app-version…).
 export const REQUEST_HEADERS = ['content-type', 'user-agent']
 export const CLIENT_IP: 'none' | 'socket' | 'proxy' = 'none'
 export const CLIENT_IP_HEADER = 'x-forwarded-for' // used only with 'proxy'
 ```
 
+`REQUEST_HEADERS` can grow at any time: when a client starts sending a new custom
+header worth tracing, adding its name here is all it takes.
+
 ## Step 4 — Request context
-The request context file after this phase, in full. `readRequest` now also reads the
-allow-listed headers and takes the client IP, and the two helpers below it are new:
+The request context plugin after this phase, in full. `readRequest` now also reads the
+allow-listed headers and the client's IP, and the two helpers below it are new. Every
+handler and service gets them through `client` (`client.headers['x-device-id']`,
+`client.ip`), and so does the line:
 
 ```ts
+import { Elysia } from 'elysia'
 import { CLIENT_IP, CLIENT_IP_HEADER, REQUEST_HEADERS } from '<constants path>'
 
 type Fields = Record<string, unknown>
-export type Arrival = { route?: string; params?: Fields; ip?: string }
+type Arrival = { route?: string; params?: Fields; socketIp?: string }
 
-/** What came in, read the moment the request arrives. */
-export function readRequest(request: Request, { route, params, ip }: Arrival) {
+/** Everything about the incoming request, read the moment it arrives. */
+export function readRequest(request: Request, { route, params, socketIp }: Arrival = {}) {
   const url = new URL(request.url)
   const query = Object.fromEntries(url.searchParams)
   return {
     method: request.method,
     path: url.pathname,
-    request: {
-      route,
-      params: params && Object.keys(params).length ? params : undefined,
-      query: Object.keys(query).length ? query : undefined,
-      headers: pickHeaders(request.headers),
-      ip,
-    },
+    route,
+    params: params && Object.keys(params).length ? params : undefined,
+    query: Object.keys(query).length ? query : undefined,
+    headers: pickHeaders(request.headers),
+    ip: clientIp(request, socketIp),
   }
 }
+
+export type Client = ReturnType<typeof readRequest>
+
+/** Makes `client` available to every handler, service and the logger. */
+export const requestContext = new Elysia({ name: 'request-context' })
+  .derive({ as: 'global' }, ({ request, route, params, server }) => ({
+    client: readRequest(request, { route, params, socketIp: server?.requestIP(request)?.address }),
+  }))
 
 /** Only the allow-listed request headers, lowercase names. */
 export function pickHeaders(headers: Headers): Record<string, string> {
@@ -98,104 +111,14 @@ export function clientIp(request: Request, socketIp?: string): string | undefine
 ```
 
 ## Step 5 — The request event
-The request event file after this phase, in full. Compared with before, it takes the
-client IP in `derive` (and in `onError` for lines it writes itself) and passes it to
-`readRequest`:
-
-```ts
-import { Elysia } from 'elysia'
-import { REQUEST_ID_HEADER } from '<constants path>'
-import { errorFields } from '<errors path>'
-import { levelFor } from '<level path>'
-import { logger } from '<logger path>'
-import { requestId } from '<request id path>'
-import { clientIp, readRequest, type Arrival } from '<request context path>'
-
-type Fields = Record<string, unknown>
-
-function createLog(request: Request, id: string, arrival: Arrival = {}) {
-  const start = performance.now()
-  const incoming = readRequest(request, arrival) // now, not at write: Bun may release the request after the response
-  const fields: Fields = {}
-  let written = false
-  let handled = false
-
-  return {
-    fields,
-    /** Add to an entity on this request's line; a second add merges into it. */
-    add(entity: string, data: Fields) {
-      const existing = fields[entity]
-      fields[entity] = existing && typeof existing === 'object' ? { ...existing, ...data } : data
-    },
-    /** Record an error you handled; the request can still succeed. */
-    capture(error: unknown) {
-      fields.error = errorFields(error)
-      handled = true
-    },
-    /** Write the line once. Called by the plugin only. */
-    write(status: number) {
-      if (written) return
-      written = true
-      try {
-        const duration_ms = Math.round(performance.now() - start)
-        const level = levelFor({ status, durationMs: duration_ms, handledError: handled })
-        logger[level]({
-          ...fields,
-          request_id: id,
-          ...incoming,
-          status_code: status,
-          duration_ms,
-        })
-      } catch {
-        // A logging failure must never affect the response or the process.
-      }
-    },
-  }
-}
-
-export type Log = Pick<ReturnType<typeof createLog>, 'add' | 'capture'>
-
-export const logging = new Elysia({ name: 'logging' })
-  .use(requestId)
-  .derive({ as: 'global' }, ({ request, requestId, server, route, params }) => ({
-    log: createLog(request, requestId, { route, params, ip: clientIp(request, server?.requestIP(request)?.address) }),
-  }))
-  .macro({
-    flow: (name: string) => ({
-      transform({ log }) {
-        log.fields.flow = name
-      },
-    }),
-  })
-  .onError({ as: 'global' }, (ctx) => {
-    const { error, code, request, set } = ctx
-    if ('log' in ctx) {
-      (ctx.log as ReturnType<typeof createLog>).fields.error = errorFields(error, String(code))
-      return
-    }
-    // derive never ran (unmatched route, unparsable body): write the line here
-    const fallback = createLog(request, String(set.headers[REQUEST_ID_HEADER]), {
-      ip: clientIp(request, ctx.server?.requestIP(request)?.address),
-    })
-    fallback.fields.error = errorFields(error, String(code))
-    fallback.write(error && typeof error === 'object' && 'status' in error ? Number(error.status) : Number(set.status ?? 500))
-  })
-  .onAfterResponse({ as: 'global' }, ({ log, set }) => {
-    log?.write(Number(set.status ?? 200))
-  })
-```
-
-Headers are read in `readRequest`, at arrival, for the same reason as the rest of the
-request: `write` runs after the response is sent, and in testing every header was gone
-by then unless something had read them earlier.
-
-Keep what earlier phases chose (the `flow` macro, `client_request_id`). Edit the
-existing file to match; don't replace code the user added since.
+The request event plugin does not change in this phase: it already builds the line
+from `client`. Keep what earlier phases chose.
 
 ## Done when
 - A line shows the chosen client details: the allow-listed headers under
   `request.headers` and, if chosen, the client's IP under `request.ip`. A 404 line
   shows them too.
 - The IP appears only if chosen, from the chosen source.
+- A handler can read the same details from `client`.
 - No header outside the allow-list appears on any line.
 Stop. Show the diff and the lines.
