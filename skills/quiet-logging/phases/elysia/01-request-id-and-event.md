@@ -184,8 +184,9 @@ Controllers add to the line with `log.add(entity, data)`, and can read the reque
 from `client`:
 
 ```ts
-.get('/:id', ({ params, log }) => {
+.get('/:id', ({ params, client, log }) => {
   log.add('order', { id: params.id })
+  if (client.query?.include === 'items') { … }   // the same data the line records
   …
 })
 ```
