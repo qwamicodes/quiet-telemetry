@@ -47,7 +47,7 @@ Run them in this order. Each framework folder has one file per phase.
 | 0 | Layout, logger and constants | [00-layout-logger-constants.md](phases/elysia/00-layout-logger-constants.md) |
 | 1 | Request id and request event | [01-request-id-and-event.md](phases/elysia/01-request-id-and-event.md) |
 | 2 | Flow names and outgoing ids | [02-flow-and-outgoing-ids.md](phases/elysia/02-flow-and-outgoing-ids.md) |
-| 3 | Business breadcrumbs (who, what, how much) | not written yet (under review) |
+| 3 | Business breadcrumbs (what happened, step by step) | [03-business-breadcrumbs.md](phases/elysia/03-business-breadcrumbs.md) |
 | 4 | Levels and error shape | not written yet |
 | 5 | Headers and redaction | not written yet |
 | 6 | Tail sampling | not written yet |

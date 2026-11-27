@@ -4,9 +4,9 @@ Follow the style rules and run order in `SKILL.md`. Tested on Elysia 1.4.32, Bun
 and pino 10.
 
 ## Goal
-Every request gets one id and produces exactly one event, including errors and 404s.
-Handlers add business fields to the event; the plugin writes it once when the response
-is sent. Writing it must never change the response or crash the process.
+Every request gets one id and produces exactly one line, including errors, 404s and
+unparsable bodies. App code adds to the line with `log.add`; the plugin writes it once
+when the response is sent. Writing it must never change the response or crash the process.
 
 Not in this phase: flow names and outgoing ids, business breadcrumbs, levels and
 error shape, headers and redaction, sampling, jobs. Log everything at `info`.
@@ -15,7 +15,7 @@ error shape, headers and redaction, sampling, jobs. Log everything at `info`.
 List (file:line): any existing request-id plugin, access-log plugins, per-route
 "request started/finished" logs, and anything that reads or sets `x-request-id`.
 If a request-id plugin already exists and does what Step 2 does, keep it and make
-the request event read the id from the response header it sets.
+the request event read the id from it.
 Stop.
 
 ## Step 2 — Request id
@@ -61,8 +61,10 @@ Option 3 only: in the request event, add `client_request_id: clientRequestId(req
 next to `request_id`.
 
 ## Step 3 — Request event
-The event starts in `onRequest` because `derive` does not run for 404s.
-The plugin's own fields come last so handlers can't overwrite them.
+The plugin builds one `log` per request in `derive` and writes the line once in
+`onAfterResponse`, when the final status is known. `derive` does not run for unmatched
+routes or unparsable bodies, so `onError` writes those lines itself. The plugin's own
+fields come last so app code can't overwrite them.
 
 ```ts
 import { Elysia } from 'elysia'
@@ -70,63 +72,86 @@ import { REQUEST_ID_HEADER } from '<constants path>'
 import { logger } from '<logger path>'
 import { requestId } from '<request id path>'
 
-export type WideEvent = Record<string, unknown>
+type Fields = Record<string, unknown>
 
-const events = new WeakMap<Request, { event: WideEvent; start: number }>()
+function createLog(request: Request, id: string) {
+  const start = performance.now()
+  const fields: Fields = {}
+  let written = false
 
-export const wideEvent = new Elysia({ name: 'wide-event' })
+  return {
+    fields,
+    /** Add to an entity on this request's line; a second add merges into it. */
+    add(entity: string, data: Fields) {
+      const existing = fields[entity]
+      fields[entity] = existing && typeof existing === 'object' ? { ...existing, ...data } : data
+    },
+    /** Write the line once. Called by the plugin only. */
+    write(status: number, route?: string) {
+      if (written) return
+      written = true
+      try {
+        logger.info({
+          ...fields,
+          request_id: id,
+          method: request.method,
+          path: new URL(request.url).pathname,
+          request: route ? { route } : undefined,
+          status_code: status,
+          duration_ms: Math.round(performance.now() - start),
+        })
+      } catch {
+        // A logging failure must never affect the response or the process.
+      }
+    },
+  }
+}
+
+export type Log = Pick<ReturnType<typeof createLog>, 'add'>
+
+export const logging = new Elysia({ name: 'logging' })
   .use(requestId)
-  .onRequest(({ request }) => {
-    events.set(request, { event: {}, start: performance.now() })
-  })
-  .derive({ as: 'global' }, ({ request }) => ({
-    wideEvent: events.get(request)!.event,
-  }))
-  .onError({ as: 'global' }, ({ request, error }) => {
-    const entry = events.get(request)
-    if (entry) entry.event.error = error instanceof Error ? { name: error.name, message: error.message } : error
-  })
-  .onAfterResponse({ as: 'global' }, ({ request, set, route }) => {
-    const entry = events.get(request)
-    if (!entry) return
-    try {
-      logger.info({
-        ...entry.event,
-        request_id: set.headers[REQUEST_ID_HEADER],
-        method: request.method,
-        path: new URL(request.url).pathname,
-        request: route ? { route } : undefined,
-        status_code: set.status,
-        duration_ms: Math.round(performance.now() - entry.start),
-      })
-    } catch {
-      // A logging failure must never affect the response or the process.
+  .derive({ as: 'global' }, ({ request, requestId }) => ({ log: createLog(request, requestId) }))
+  .onError({ as: 'global' }, (ctx) => {
+    const { error, request, set } = ctx
+    const errorField = error instanceof Error ? { name: error.name, message: error.message } : error
+    if ('log' in ctx) {
+      (ctx.log as ReturnType<typeof createLog>).fields.error = errorField
+      return
     }
+    // derive never ran (unmatched route, unparsable body): write the line here
+    const fallback = createLog(request, String(set.headers[REQUEST_ID_HEADER]))
+    fallback.fields.error = errorField
+    fallback.write(error && typeof error === 'object' && 'status' in error ? Number(error.status) : Number(set.status ?? 500))
+  })
+  .onAfterResponse({ as: 'global' }, ({ log, set, route }) => {
+    log?.write(Number(set.status ?? 200), route)
   })
 ```
 
 If the chosen logger isn't pino, change only the `logger.info(...)` call.
-`.use(wideEvent)` once in the entry file; it brings `requestId` with it. Sub-apps may
-also `.use(wideEvent)` for typing; the plugin name keeps it to one event.
+`.use(logging)` once in the entry file; it brings `requestId` with it. Sub-apps may
+also `.use(logging)` for typing; the plugin name keeps it to one line per request.
 Do not wrap `fetch`, clone responses or read bodies.
 
 ## Step 4 — Use it
-Handlers set fields directly, no helpers and no `null`s:
+Controllers add to the line with `log.add(entity, data)`:
 
 ```ts
-.get('/:id', ({ wideEvent, params }) => {
-  wideEvent.order = { id: params.id }
+.get('/:id', ({ params, log }) => {
+  log.add('order', { id: params.id })
   …
 })
 ```
 
-New project: enrich one route as the example.
+New project: add to one route as the example.
 Existing project: remove only the access-log lines from Step 1 that this replaces,
-and move their fields onto `wideEvent` in those handlers. Keep all other logs.
+and move their fields into `log.add` calls in those handlers. Keep all other logs.
 
 ## Done when
-- A 200, a thrown error and a 404 each print one line with `request_id`, and the
-  response's `x-request-id` header matches it.
+- A 200, a thrown error, a 404 and an unparsable JSON body each print exactly one line
+  with `request_id` and the status the client got, and the response's `x-request-id`
+  header matches it.
 - Send a request with `x-request-id: web-abc123` and one with `x-request-id: bad id`.
   Both lines follow the selected option.
 - No query string in `path`.

@@ -4,10 +4,10 @@ Follow the style rules and run order in `SKILL.md`. Tested on Elysia 1.4.32, Bun
 and pino 10.
 
 ## Goal
-Every route's event carries a `flow`: a short, stable business name such as
+Every route's line carries a `flow`: a short, stable business name such as
 `create_order`. quiet uses it to label rows in the stream. It is not an id.
 When this service calls another service of ours, it sends its `request_id` so both
-events share one id. Third-party APIs never receive it.
+lines share one id. Third-party APIs never receive it.
 
 Not in this phase: business breadcrumbs, levels and error shape, headers and
 redaction, sampling, jobs.
@@ -35,7 +35,7 @@ Ask the user to select one:
 
 1. **Route option**: `{ flow: 'create_order' }` next to `body` and `params`.
    It is set before validation, so 422s and errors still carry the flow.
-2. **In the handler**: `wideEvent.flow = 'create_order'` as the first line.
+2. **In the handler**: `log.fields.flow = 'create_order'` as the first line.
    Validation failures (422) have no flow, because the handler never runs.
 
 Stop.
@@ -46,8 +46,8 @@ Option 1: add this macro to the request event plugin, after its `derive`:
 ```ts
   .macro({
     flow: (name: string) => ({
-      transform({ wideEvent }) {
-        wideEvent.flow = name
+      transform({ log }) {
+        log.fields.flow = name
       },
     }),
   })
@@ -56,13 +56,13 @@ Option 1: add this macro to the request event plugin, after its `derive`:
 Then on each route:
 
 ```ts
-.post('/orders', ({ body, wideEvent }) => {
-  wideEvent.order = { item: body.item }
+.post('/orders', ({ body, log }) => {
+  log.add('order', { item_count: body.items.length })
   …
-}, { flow: 'create_order', body: t.Object({ item: t.String() }) })
+}, { flow: 'create_order', body: t.Object({ items: t.Array(t.String()) }) })
 ```
 
-Option 2: set `wideEvent.flow` as the first line of each handler.
+Option 2: set `log.fields.flow` as the first line of each handler.
 
 Use the reviewed names exactly. Add a **Flows** section to `docs/logging.md`
 listing them (method, route, flow), and keep it in sync when routes change.
@@ -76,11 +76,11 @@ Stop. The user confirms the list.
 For calls to our own services only, send the id in the header:
 
 ```ts
-.post('/orders', async ({ wideEvent, requestId }) => {
+.post('/orders', async ({ log, requestId }) => {
   const stock = await fetch(`${INVENTORY_URL}/stock`, {
     headers: { [REQUEST_ID_HEADER]: requestId },
   }).then((r) => r.json())
-  wideEvent.inventory = { in_stock: stock.inStock }
+  log.add('inventory', { in_stock: stock.inStock })
   …
 }, { flow: 'create_order' })
 ```
@@ -91,7 +91,7 @@ For calls to our own services only, send the id in the header:
 - Never send the id to third parties.
 - The receiving service must use the request id phase's option 2 (accept client id)
   to keep it. If it uses option 1 or 3, say so.
-- Record what came back as business fields (`wideEvent.payment = { provider, status }`),
+- Record what came back with `log.add` (`log.add('inventory', { in_stock })`),
   not as a list of calls.
 
 ## Done when
