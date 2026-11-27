@@ -98,8 +98,9 @@ Every request gets one id and produces exactly one event, including errors and 4
 Handlers add business fields to the event; the plugin writes it once when the response
 is sent. Writing it must never change the response or crash the process.
 
-Not in this phase: flow naming and passing ids on (2), levels and error shape (3),
-headers and redaction (4), sampling (5), jobs (6). Log everything at `info`.
+Not in this phase: flow naming and passing ids on (2), business breadcrumbs (3),
+levels and error shape (4), headers and redaction (5), sampling (6), jobs (7).
+Log everything at `info`.
 
 ### Step 1 — Look first
 List (file:line): any existing request-id plugin, access-log plugins, per-route
@@ -231,8 +232,8 @@ Every route's event carries a `flow`: a short, stable business name such as
 When this service calls another service of ours, it sends its `request_id` so both
 events share one id. Third-party APIs never receive it.
 
-Not in this phase: levels and error shape (3), headers and redaction (4),
-sampling (5), jobs (6).
+Not in this phase: business breadcrumbs (3), levels and error shape (4),
+headers and redaction (5), sampling (6), jobs (7).
 
 ### Step 1 — Name the flows
 List every route and propose a flow name:
@@ -324,7 +325,7 @@ For calls to our own services only, send the id in the header:
 - No third-party call sends `x-request-id`.
 Stop. Show the diff and the lines.
 
-## Phase 6 — Jobs and cron
+## Phase 7 — Jobs and cron
 
 ### Step 1 — Jobs in this project
 Read the jobs answer in the Layout section of `docs/logging.md`.
@@ -349,4 +350,4 @@ Read the jobs answer in the Layout section of `docs/logging.md`.
 If the Layout has no jobs answer (Phase 0 ran before this step existed), ask the
 Phase 0 jobs question first.
 
-The rest of Phase 6 is not written yet: stop after Step 1.
+The rest of Phase 7 is not written yet: stop after Step 1.

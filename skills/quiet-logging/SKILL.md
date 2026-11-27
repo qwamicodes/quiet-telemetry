@@ -43,16 +43,16 @@ phase before the next one starts.
 | 0 | Layout, logger and constants | ready |
 | 1 | Request id and request event | ready |
 | 2 | Flow names and outgoing ids | ready |
-| 2b | Business fields on the event | not written yet |
-| 3 | Levels and error shape | not written yet |
-| 4 | Headers and redaction | not written yet |
-| 5 | Tail sampling | not written yet |
-| 6 | Jobs and cron | Step 1 only |
-| 7 | Bodies (opt-in) | not written yet |
+| 3 | Business breadcrumbs (who, what, how much) | under review, not written yet |
+| 4 | Levels and error shape | not written yet |
+| 5 | Headers and redaction | not written yet |
+| 6 | Tail sampling | not written yet |
+| 7 | Jobs and cron | Step 1 only |
+| 8 | Bodies (opt-in) | not written yet |
 
 ## Bindings
 
 | Framework | File | Status |
 |---|---|---|
-| Elysia (Bun) | [bindings/elysia.md](bindings/elysia.md) | Phases 0–2, Phase 6 Step 1; tested on Elysia 1.4.32 |
+| Elysia (Bun) | [bindings/elysia.md](bindings/elysia.md) | Phases 0–2, Phase 7 Step 1; tested on Elysia 1.4.32 |
 | Django, Axum, Spring Boot, Laravel, Go net/http | — | not written yet |
