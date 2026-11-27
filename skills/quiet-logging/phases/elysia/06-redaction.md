@@ -7,8 +7,8 @@ and pino 10.
 No secret ever reaches the line, wherever it was added: the request's query or
 headers, `log.add` data, or error details. The request is read raw when it arrives
 (and stays raw in `client` for app code); redaction runs once on the whole line, just
-before it is written. Any key whose words
-match `REDACT_KEYS` becomes `"[REDACTED]"`, at any depth.
+before it is written. Any key whose words match `REDACT_KEYS` becomes `"[REDACTED]"`,
+at any depth.
 
 quiet also redacts credentials when it receives a line. That is a second line of
 defence, not a reason to skip this one.
