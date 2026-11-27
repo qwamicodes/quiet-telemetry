@@ -24,8 +24,15 @@ phase before the next one starts.
    files, and do not do work that belongs to a later phase.
 5. Run that phase. Obey every `Stop`: show the output and wait.
 6. When the phase's "Done when" is met, add a line to the Progress section of
-   `docs/logging.md` (`- <phase name> — done <date>`), then stop and name the next phase.
-7. If the next phase has no file yet, tell the user it is not written yet and stop.
+   `docs/logging.md` (`- <phase name> — done <date>`), then stop.
+7. End every run by saying which phases are done, which one is next, and that the setup
+   is not complete until every phase is done. Each phase builds on the ones before it,
+   so an unfinished setup is missing what the remaining phases add (errors, redaction,
+   sampling…).
+8. If the next phase has no file yet, tell the user it is not written yet and stop.
+
+The setup is complete only when every phase in the table below is done. Until then,
+the Progress section lists the remaining phases under **Not done yet**.
 
 ## Style (every phase)
 
@@ -49,7 +56,7 @@ Run them in this order. Each framework folder has one file per phase.
 | 2 | Flow names and outgoing ids | [02-flow-and-outgoing-ids.md](phases/elysia/02-flow-and-outgoing-ids.md) |
 | 3 | Business breadcrumbs (what happened, step by step) | [03-business-breadcrumbs.md](phases/elysia/03-business-breadcrumbs.md) |
 | 4 | Levels and error shape | [04-levels-and-errors.md](phases/elysia/04-levels-and-errors.md) |
-| 5 | Headers and redaction | not written yet |
+| 5 | Headers and redaction | under review, not written yet |
 | 6 | Tail sampling | not written yet |
 | 7 | Jobs and cron | [07-jobs.md](phases/elysia/07-jobs.md) (Step 1 only) |
 | 8 | Bodies (opt-in) | not written yet |

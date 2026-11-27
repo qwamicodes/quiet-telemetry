@@ -5,8 +5,10 @@ and pino 10.
 
 ## Goal
 Every request gets one id and produces exactly one line, including errors, 404s and
-unparsable bodies. App code adds to the line with `log.add`; the plugin writes it once
-when the response is sent. Writing it must never change the response or crash the process.
+unparsable bodies. The line says what came in (method, path, route, params, query),
+read the moment the request arrives, and how it ended (status, duration). App code
+adds to it with `log.add`; the plugin writes it once when the response is sent.
+Writing it must never change the response or crash the process.
 
 Not in this phase: flow names and outgoing ids, business breadcrumbs, levels and
 error shape, headers and redaction, sampling, jobs. Log everything at `info`.
@@ -57,27 +59,51 @@ export const requestId = new Elysia({ name: 'request-id' })
   }))
 ```
 
-Option 3 only: in the request event's `createLog`, read the client's id at the top
-(`const clientId = clientRequestId(request)`) and add `client_request_id: clientId` next
-to `request_id` in `write`. Read it in `createLog`, not in `write`: `write` runs after
-the response is sent, and by then Bun may have released the request's headers.
+Option 3 only: in the request event's `createLog`, read the client's id next to
+`readRequest` (`const clientId = clientRequestId(request)`) and add
+`client_request_id: clientId` next to `request_id` in `write`.
 
 ## Step 3 — Request event
-The plugin builds one `log` per request in `derive` and writes the line once in
-`onAfterResponse`, when the final status is known. `derive` does not run for unmatched
-routes or unparsable bodies, so `onError` writes those lines itself. The plugin's own
-fields come last so app code can't overwrite them.
+Two files. The request context file reads what came in (method, path, route, params,
+query) the moment the request arrives:
+
+```ts
+type Fields = Record<string, unknown>
+export type Arrival = { route?: string; params?: Fields }
+
+/** What came in, read the moment the request arrives. */
+export function readRequest(request: Request, { route, params }: Arrival) {
+  const url = new URL(request.url)
+  const query = Object.fromEntries(url.searchParams)
+  return {
+    method: request.method,
+    path: url.pathname,
+    request: {
+      route,
+      params: params && Object.keys(params).length ? params : undefined,
+      query: Object.keys(query).length ? query : undefined,
+    },
+  }
+}
+```
+
+The request event file builds one `log` per request in `derive`, reads the request
+there, and writes the line once in `onAfterResponse`, when the final status is known.
+`derive` does not run for unmatched routes or unparsable bodies, so `onError` writes
+those lines itself. The plugin's own fields come last so app code can't overwrite them.
 
 ```ts
 import { Elysia } from 'elysia'
 import { REQUEST_ID_HEADER } from '<constants path>'
 import { logger } from '<logger path>'
 import { requestId } from '<request id path>'
+import { readRequest, type Arrival } from '<request context path>'
 
 type Fields = Record<string, unknown>
 
-function createLog(request: Request, id: string) {
+function createLog(request: Request, id: string, arrival: Arrival = {}) {
   const start = performance.now()
+  const incoming = readRequest(request, arrival) // now, not at write: Bun may release the request after the response
   const fields: Fields = {}
   let written = false
 
@@ -89,16 +115,14 @@ function createLog(request: Request, id: string) {
       fields[entity] = existing && typeof existing === 'object' ? { ...existing, ...data } : data
     },
     /** Write the line once. Called by the plugin only. */
-    write(status: number, route?: string) {
+    write(status: number) {
       if (written) return
       written = true
       try {
         logger.info({
           ...fields,
           request_id: id,
-          method: request.method,
-          path: new URL(request.url).pathname,
-          request: route ? { route } : undefined,
+          ...incoming,
           status_code: status,
           duration_ms: Math.round(performance.now() - start),
         })
@@ -113,7 +137,7 @@ export type Log = Pick<ReturnType<typeof createLog>, 'add'>
 
 export const logging = new Elysia({ name: 'logging' })
   .use(requestId)
-  .derive({ as: 'global' }, ({ request, requestId }) => ({ log: createLog(request, requestId) }))
+  .derive({ as: 'global' }, ({ request, requestId, route, params }) => ({ log: createLog(request, requestId, { route, params }) }))
   .onError({ as: 'global' }, (ctx) => {
     const { error, request, set } = ctx
     const errorField = error instanceof Error ? { name: error.name, message: error.message } : error
@@ -126,10 +150,14 @@ export const logging = new Elysia({ name: 'logging' })
     fallback.fields.error = errorField
     fallback.write(error && typeof error === 'object' && 'status' in error ? Number(error.status) : Number(set.status ?? 500))
   })
-  .onAfterResponse({ as: 'global' }, ({ log, set, route }) => {
-    log?.write(Number(set.status ?? 200), route)
+  .onAfterResponse({ as: 'global' }, ({ log, set }) => {
+    log?.write(Number(set.status ?? 200))
   })
 ```
+
+Read the request in `createLog`, never in `write`: `write` runs after the response is
+sent, and by then Bun may have released the request. The query is read from the URL,
+so a 404 still shows what was asked for.
 
 If the chosen logger isn't pino, change only the `logger.info(...)` call.
 `.use(logging)` once in the entry file; it brings `requestId` with it. Sub-apps may
@@ -156,6 +184,8 @@ and move their fields into `log.add` calls in those handlers. Keep all other log
   header matches it.
 - Send a request with `x-request-id: web-abc123` and one with `x-request-id: bad id`.
   Both lines follow the selected option.
-- No query string in `path`.
+- `path` has no query string; the query is under `request.query`, and route params
+  under `request.params`.
+- A 404 line shows its path and query.
 - Note any streaming routes (`duration_ms` only covers until the stream starts).
 Stop. Show the diff and the lines.

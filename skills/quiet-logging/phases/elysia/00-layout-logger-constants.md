@@ -16,7 +16,7 @@ Report each row with one real file path as evidence:
 | Existing logger or logging plugin | | |
 | Background jobs: queue, scheduler or cron (package, where workers run) | | |
 
-Then propose a path for: logger, constants, request id plugin, request event plugin.
+Then propose a path for: logger, constants, request id plugin, request context, request event plugin.
 If the codebase has no structure yet, start from Elysia's feature layout
 (`src/modules/<feature>/`) and offer places for shared plugins as options.
 Where more than one path fits, give a numbered list and ask the user to select.

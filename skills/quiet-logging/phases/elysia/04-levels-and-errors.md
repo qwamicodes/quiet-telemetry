@@ -159,11 +159,13 @@ import { errorFields } from '<errors path>'
 import { levelFor } from '<level path>'
 import { logger } from '<logger path>'
 import { requestId } from '<request id path>'
+import { readRequest, type Arrival } from '<request context path>'
 
 type Fields = Record<string, unknown>
 
-function createLog(request: Request, id: string) {
+function createLog(request: Request, id: string, arrival: Arrival = {}) {
   const start = performance.now()
+  const incoming = readRequest(request, arrival) // now, not at write: Bun may release the request after the response
   const fields: Fields = {}
   let written = false
   let handled = false
@@ -181,7 +183,7 @@ function createLog(request: Request, id: string) {
       handled = true
     },
     /** Write the line once. Called by the plugin only. */
-    write(status: number, route?: string) {
+    write(status: number) {
       if (written) return
       written = true
       try {
@@ -190,9 +192,7 @@ function createLog(request: Request, id: string) {
         logger[level]({
           ...fields,
           request_id: id,
-          method: request.method,
-          path: new URL(request.url).pathname,
-          request: route ? { route } : undefined,
+          ...incoming,
           status_code: status,
           duration_ms,
         })
@@ -207,7 +207,7 @@ export type Log = Pick<ReturnType<typeof createLog>, 'add' | 'capture'>
 
 export const logging = new Elysia({ name: 'logging' })
   .use(requestId)
-  .derive({ as: 'global' }, ({ request, requestId }) => ({ log: createLog(request, requestId) }))
+  .derive({ as: 'global' }, ({ request, requestId, route, params }) => ({ log: createLog(request, requestId, { route, params }) }))
   .macro({
     flow: (name: string) => ({
       transform({ log }) {
@@ -226,8 +226,8 @@ export const logging = new Elysia({ name: 'logging' })
     fallback.fields.error = errorFields(error, String(code))
     fallback.write(error && typeof error === 'object' && 'status' in error ? Number(error.status) : Number(set.status ?? 500))
   })
-  .onAfterResponse({ as: 'global' }, ({ log, set, route }) => {
-    log?.write(Number(set.status ?? 200), route)
+  .onAfterResponse({ as: 'global' }, ({ log, set }) => {
+    log?.write(Number(set.status ?? 200))
   })
 ```
 
@@ -238,6 +238,7 @@ Keep what earlier phases chose:
 
 Edit the existing file to match; don't replace code the user added since.
 The file is about 75 lines. That is expected: do not split it unless the user asks.
+The request context file does not change in this phase.
 
 ## Step 7 — Use it in app code
 **Domain errors explain themselves.** Error classes carry what a reader needs:
