@@ -148,35 +148,96 @@ for (const { expected, why, ...input } of cases) {
 ```
 
 ## Step 6 — Use them in the request event
-In the request event file:
+The request event file after this phase, in full. Compared with before, it imports
+`errorFields` and `levelFor`, has a `handled` flag and a `capture` method, picks the
+level in `write`, and passes Elysia's error `code` to `errorFields` in `onError`:
 
-1. Import `errorFields` and `levelFor`.
-2. Add a `handled` flag and a `capture` method next to `add`:
+```ts
+import { Elysia } from 'elysia'
+import { REQUEST_ID_HEADER } from '<constants path>'
+import { errorFields } from '<errors path>'
+import { levelFor } from '<level path>'
+import { logger } from '<logger path>'
+import { requestId } from '<request id path>'
 
-   ```ts
-   let handled = false
-   …
-   /** Record an error you handled; the request can still succeed. */
-   capture(error: unknown) {
-     fields.error = errorFields(error)
-     handled = true
-   },
-   ```
+type Fields = Record<string, unknown>
 
-3. In `write`, pick the level and call the logger with it:
+function createLog(request: Request, id: string) {
+  const start = performance.now()
+  const fields: Fields = {}
+  let written = false
+  let handled = false
 
-   ```ts
-   const duration_ms = Math.round(performance.now() - start)
-   const level = levelFor({ status, durationMs: duration_ms, handledError: handled })
-   logger[level]({ …same fields as before…, duration_ms })
-   ```
+  return {
+    fields,
+    /** Add to an entity on this request's line; a second add merges into it. */
+    add(entity: string, data: Fields) {
+      const existing = fields[entity]
+      fields[entity] = existing && typeof existing === 'object' ? { ...existing, ...data } : data
+    },
+    /** Record an error you handled; the request can still succeed. */
+    capture(error: unknown) {
+      fields.error = errorFields(error)
+      handled = true
+    },
+    /** Write the line once. Called by the plugin only. */
+    write(status: number, route?: string) {
+      if (written) return
+      written = true
+      try {
+        const duration_ms = Math.round(performance.now() - start)
+        const level = levelFor({ status, durationMs: duration_ms, handledError: handled })
+        logger[level]({
+          ...fields,
+          request_id: id,
+          method: request.method,
+          path: new URL(request.url).pathname,
+          request: route ? { route } : undefined,
+          status_code: status,
+          duration_ms,
+        })
+      } catch {
+        // A logging failure must never affect the response or the process.
+      }
+    },
+  }
+}
 
-4. Export `capture` to app code: `export type Log = Pick<ReturnType<typeof createLog>, 'add' | 'capture'>`.
-5. In `onError`, use `errorFields(error, String(code))` in both places, taking `code`
-   from the hook's context.
+export type Log = Pick<ReturnType<typeof createLog>, 'add' | 'capture'>
 
-The request event file grows to about 75 lines with these changes. That is expected
-for this file: do not split it unless the user asks.
+export const logging = new Elysia({ name: 'logging' })
+  .use(requestId)
+  .derive({ as: 'global' }, ({ request, requestId }) => ({ log: createLog(request, requestId) }))
+  .macro({
+    flow: (name: string) => ({
+      transform({ log }) {
+        log.fields.flow = name
+      },
+    }),
+  })
+  .onError({ as: 'global' }, (ctx) => {
+    const { error, code, request, set } = ctx
+    if ('log' in ctx) {
+      (ctx.log as ReturnType<typeof createLog>).fields.error = errorFields(error, String(code))
+      return
+    }
+    // derive never ran (unmatched route, unparsable body): write the line here
+    const fallback = createLog(request, String(set.headers[REQUEST_ID_HEADER]))
+    fallback.fields.error = errorFields(error, String(code))
+    fallback.write(error && typeof error === 'object' && 'status' in error ? Number(error.status) : Number(set.status ?? 500))
+  })
+  .onAfterResponse({ as: 'global' }, ({ log, set, route }) => {
+    log?.write(Number(set.status ?? 200), route)
+  })
+```
+
+Keep what earlier phases chose:
+- the `flow` macro only if the flow phase chose the route option;
+- `client_request_id: clientRequestId(request)` next to `request_id` if the request
+  id phase chose option 3.
+
+Edit the existing file to match; don't replace code the user added since.
+The file is about 75 lines. That is expected: do not split it unless the user asks.
 
 ## Step 7 — Use it in app code
 **Domain errors explain themselves.** Error classes carry what a reader needs:
