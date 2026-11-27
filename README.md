@@ -76,6 +76,7 @@ quiet works with any JSON (or plain text), but flows are best when each request,
 
 - The contract: [docs/logging-guide.md](docs/logging-guide.md)
 - In the app: **Guide → Instrument with an agent** builds a prompt for your coding agent; **Check my logs** scores what arrives.
+- As an agent skill: [skills/quiet-logging](skills/quiet-logging/SKILL.md) sets the logging up one reviewed phase at a time (layout, logger, request id, request event, flows…), asking you at every choice. Install it with `npx skills add qwamicodes/quiet-telemetry --skill quiet-logging`, or copy the folder into `.claude/skills/`. Bindings so far: Elysia.
 - Examples in four languages: [examples/logging/](examples/logging/)
 
 ## Documentation
