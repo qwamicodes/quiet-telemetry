@@ -56,10 +56,11 @@ Run them in this order. Each framework folder has one file per phase.
 | 2 | Flow names and outgoing ids | [02-flow-and-outgoing-ids.md](phases/elysia/02-flow-and-outgoing-ids.md) |
 | 3 | Business breadcrumbs (what happened, step by step) | [03-business-breadcrumbs.md](phases/elysia/03-business-breadcrumbs.md) |
 | 4 | Levels and error shape | [04-levels-and-errors.md](phases/elysia/04-levels-and-errors.md) |
-| 5 | Headers and redaction | [05-headers-and-redaction.md](phases/elysia/05-headers-and-redaction.md) |
-| 6 | Tail sampling | not written yet |
-| 7 | Jobs and cron | [07-jobs.md](phases/elysia/07-jobs.md) (Step 1 only) |
-| 8 | Bodies (opt-in) | not written yet |
+| 5 | Headers (who sent the request) | [05-headers.md](phases/elysia/05-headers.md) |
+| 6 | Redaction | [06-redaction.md](phases/elysia/06-redaction.md) |
+| 7 | Tail sampling | not written yet |
+| 8 | Jobs and cron | [08-jobs.md](phases/elysia/08-jobs.md) (Step 1 only) |
+| 9 | Bodies (opt-in) | not written yet |
 
 ## Frameworks
 

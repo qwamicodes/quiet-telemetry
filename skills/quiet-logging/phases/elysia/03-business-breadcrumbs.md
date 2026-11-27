@@ -15,7 +15,7 @@ Controllers and services add to the line with `log.add(entity, data)`. Entities 
 keys are free-form: add whatever explains the flow. A second `add` on the same entity
 merges into it.
 
-Not in this phase: levels and error shape, headers and redaction, sampling, jobs,
+Not in this phase: levels and error shape, headers, redaction, sampling, jobs,
 request/response bodies.
 
 ## Rules

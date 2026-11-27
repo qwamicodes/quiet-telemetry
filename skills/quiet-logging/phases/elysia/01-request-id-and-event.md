@@ -11,7 +11,7 @@ adds to it with `log.add`; the plugin writes it once when the response is sent.
 Writing it must never change the response or crash the process.
 
 Not in this phase: flow names and outgoing ids, business breadcrumbs, levels and
-error shape, headers and redaction, sampling, jobs. Log everything at `info`.
+error shape, headers, redaction, sampling, jobs. Log everything at `info`.
 
 ## Step 1 — Look first
 List (file:line): any existing request-id plugin, access-log plugins, per-route

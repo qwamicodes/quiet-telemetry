@@ -19,7 +19,7 @@ The levels are the same in every project:
 A failure is always `error`, even if it was also slow. Noise from expected 4xx (bots
 probing for pages, expired tokens) is handled by sampling, not by lowering the level.
 
-Not in this phase: headers and redaction, sampling, jobs, request/response bodies.
+Not in this phase: headers, redaction, sampling, jobs, request/response bodies.
 
 ## Step 1 — Look first
 List (file:line):

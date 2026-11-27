@@ -9,7 +9,7 @@ Every route's line carries a `flow`: a short, stable business name such as
 When this service calls another service of ours, it sends its `request_id` so both
 lines share one id. Third-party APIs never receive it.
 
-Not in this phase: business breadcrumbs, levels and error shape, headers and
+Not in this phase: business breadcrumbs, levels and error shape, headers,
 redaction, sampling, jobs.
 
 ## Step 1 — Name the flows

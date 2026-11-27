@@ -1,29 +1,22 @@
-# quiet · Elysia · Headers and redaction
+# quiet · Elysia · Headers
 
 Follow the style rules and run order in `SKILL.md`. Tested on Elysia 1.4.32, Bun 1.4
 and pino 10.
 
 ## Goal
 The line says who sent the request, so it can be traced back to a client: the user
-agent, the client's IP, a device id, the app version, whichever the user chooses. And
-no secret ever reaches the line, wherever it was added: `log.add` data, error details
-or headers.
+agent, the client's IP, a device id, the app version, whichever the user chooses.
+Only the headers the user names are logged (an allow-list), read when the request
+arrives.
 
-- **Headers are allow-listed.** Only the headers you name are logged.
-- **Redaction runs on the whole line**, just before it is written. Any key whose words
-  match `REDACT_KEYS` becomes `"[REDACTED]"`, at any depth.
-- quiet also redacts credentials when it receives a line. That is a second line of
-  defence, not a reason to skip this one.
-
-Not in this phase: sampling, jobs, request/response bodies.
+Not in this phase: redaction, sampling, jobs, request/response bodies.
 
 ## Step 1 — Look first
 List:
 - request headers the app relies on (user agent, app version, device id, tenant…)
   and where they are read (file:line);
 - what sits in front of the app (Traefik, Nginx, Cloudflare, a load balancer) and which
-  header carries the client's IP there;
-- any redaction already configured (pino `redact`, custom scrubbers).
+  header carries the client's IP there.
 Stop.
 
 ## Step 2 — Choose
@@ -49,97 +42,17 @@ proxy's address, and which header that proxy sets for option 3.
 
 Stop.
 
-Redact keys are not a choice: this phase sets the standard credentials in Step 3. The
-app's own secret names (a PIN, an OTP, a national id number…) are the user's to add to
-`REDACT_KEYS` later; do not search the codebase for them.
-
 ## Step 3 — Constants
-Update the constants file with the selected values (`REQUEST_HEADERS` and
-`REDACT_KEYS` are already there from the layout phase):
+Update the constants file with the selected values (`REQUEST_HEADERS` is already there
+from the layout phase):
 
 ```ts
 export const REQUEST_HEADERS = ['content-type', 'user-agent']
-// Standard credentials. Add the app's own secret names (pin, otp, national id…) here.
-export const REDACT_KEYS = [
-  'authorization', 'cookie', 'password', 'passwd', 'token', 'api_key', 'secret',
-  'private_key', 'credential', 'credentials', 'card_number', 'cvv',
-]
 export const CLIENT_IP: 'none' | 'socket' | 'proxy' = 'none'
 export const CLIENT_IP_HEADER = 'x-forwarded-for' // used only with 'proxy'
 ```
 
-## Step 4 — Redaction
-Add a redact file next to the request event file (propose the path if the Layout
-doesn't list one):
-
-```ts
-import { REDACT_KEYS } from '<constants path>'
-
-/** Split a key into lowercase words: "accessToken" → access, token; "x-api-key" → x, api, key. */
-const words = (key: string) =>
-  key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
-
-const secrets = REDACT_KEYS.map(words)
-
-/** A key is secret when its words contain one of REDACT_KEYS as whole words, in order. */
-function isSecret(key: string): boolean {
-  const keyWords = words(key)
-  return secrets.some((secret) =>
-    keyWords.some((_, start) => secret.every((word, i) => keyWords[start + i] === word)),
-  )
-}
-
-/** Copy a value with every secret key's value replaced by "[REDACTED]", at any depth. */
-export function redact(value: unknown, seen = new WeakSet<object>()): unknown {
-  if (!value || typeof value !== 'object') return value
-  if (seen.has(value)) return '[CIRCULAR]'
-  seen.add(value)
-  if (Array.isArray(value)) return value.map((item) => redact(item, seen))
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [key, isSecret(key) ? '[REDACTED]' : redact(item, seen)]),
-  )
-}
-```
-
-Keys match by whole words: `secret` redacts `client_secret` but not `secretary`, and
-`token` redacts `refresh_token` (and also `token_count`). Its test, next to it:
-
-```ts
-import { expect, test } from 'bun:test'
-import { redact } from '<redact path>'
-
-const R = '[REDACTED]'
-
-test('replaces secret keys at any depth', () => {
-  expect(redact({ user: { id: 'u1', password: 'p', profile: { api_key: 'k', refresh_token: 't' } } })).toEqual({
-    user: { id: 'u1', password: R, profile: { api_key: R, refresh_token: R } },
-  })
-})
-
-test('matches key variants', () => {
-  expect(redact({ accessToken: 'a', 'x-api-key': 'b', Authorization: 'c', client_secret: 'd', 'set-cookie': 'e' })).toEqual({
-    accessToken: R, 'x-api-key': R, Authorization: R, client_secret: R, 'set-cookie': R,
-  })
-})
-
-test('redacts inside arrays and leaves other values alone', () => {
-  expect(redact({ list: [{ token: 't' }, { name: 'ok', count: 2 }] })).toEqual({ list: [{ token: R }, { name: 'ok', count: 2 }] })
-})
-
-test('survives circular objects', () => {
-  const loop: Record<string, unknown> = { id: 'x' }
-  loop.self = loop
-  expect(redact(loop)).toEqual({ id: 'x', self: '[CIRCULAR]' })
-})
-
-test('matches whole words only', () => {
-  expect(redact({ secretary: 'Ama', keyboard: 'qwerty', card_type: 'visa', secret_key: 's', card_number: 'n' })).toEqual({
-    secretary: 'Ama', keyboard: 'qwerty', card_type: 'visa', secret_key: R, card_number: R,
-  })
-})
-```
-
-## Step 5 — Request context
+## Step 4 — Request context
 The request context file after this phase, in full. `readRequest` now also reads the
 allow-listed headers and takes the client IP, and the two helpers below it are new:
 
@@ -184,23 +97,21 @@ export function clientIp(request: Request, socketIp?: string): string | undefine
 }
 ```
 
-## Step 6 — The request event
+## Step 5 — The request event
 The request event file after this phase, in full. Compared with before, it takes the
-client IP in `derive` (and in `onError` for lines it writes itself), passes it to
-`readRequest`, and redacts the whole line before writing it:
+client IP in `derive` (and in `onError` for lines it writes itself) and passes it to
+`readRequest`:
 
 ```ts
 import { Elysia } from 'elysia'
 import { REQUEST_ID_HEADER } from '<constants path>'
 import { errorFields } from '<errors path>'
 import { levelFor } from '<level path>'
-import { redact } from '<redact path>'
 import { logger } from '<logger path>'
 import { requestId } from '<request id path>'
 import { clientIp, readRequest, type Arrival } from '<request context path>'
 
 type Fields = Record<string, unknown>
-
 function createLog(request: Request, id: string, arrival: Arrival = {}) {
   const start = performance.now()
   const incoming = readRequest(request, arrival) // now, not at write: Bun may release the request after the response
@@ -227,13 +138,13 @@ function createLog(request: Request, id: string, arrival: Arrival = {}) {
       try {
         const duration_ms = Math.round(performance.now() - start)
         const level = levelFor({ status, durationMs: duration_ms, handledError: handled })
-        logger[level](redact({
+        logger[level]({
           ...fields,
           request_id: id,
           ...incoming,
           status_code: status,
           duration_ms,
-        }))
+        })
       } catch {
         // A logging failure must never affect the response or the process.
       }
@@ -280,15 +191,10 @@ by then unless something had read them earlier.
 Keep what earlier phases chose (the `flow` macro, `client_request_id`). Edit the
 existing file to match; don't replace code the user added since.
 
-Existing project: keep any existing logger redaction as well; this one covers the
-whole line regardless of logger.
-
 ## Done when
-- The redaction test passes.
 - A line shows the chosen client details: the allow-listed headers under
   `request.headers` and, if chosen, the client's IP under `request.ip`. A 404 line
   shows them too.
 - The IP appears only if chosen, from the chosen source.
-- Show one line where `log.add` data, error `details` and an allow-listed header all
-  hold a secret-like key: every one shows `"[REDACTED]"`.
+- No header outside the allow-list appears on any line.
 Stop. Show the diff and the lines.
