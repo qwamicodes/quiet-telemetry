@@ -4,9 +4,20 @@ Follow the style rules and run order in `SKILL.md`. Tested on Elysia 1.4.32, Bun
 and pino 10.
 
 ## Goal
-Each line's `level` says how bad it was, and its `error` says what broke and why,
-in plain fields: the error's real type, a readable message, its details and its
+Each line's `level` says how the request went, and its `error` says what broke and
+why, in plain fields: the error's real type, a readable message, its details and its
 cause. A validation failure lists what was wrong without repeating what was sent.
+
+The levels are the same in every project:
+
+| Level | Meaning | Examples |
+|---|---|---|
+| `error` | The request didn't do what was asked | any 4xx or 5xx: 401, 404, 422, 500 |
+| `warn` | It worked, but not cleanly | an error was handled with `log.capture`, or it was slow |
+| `info` | It worked cleanly | everything else |
+
+A failure is always `error`, even if it was also slow. Noise from expected 4xx (bots
+probing for pages, expired tokens) is handled by sampling, not by lowering the level.
 
 Not in this phase: headers and redaction, sampling, jobs, request/response bodies.
 
@@ -22,14 +33,6 @@ Stop.
 ## Step 2 — Choose the rules
 Ask the user to select one for each:
 
-**Client errors (4xx)**
-1. `error`: every failed request is an error.
-2. `warn`: 4xx is `warn`, only 5xx is `error`.
-
-**Handled errors** (recorded with `log.capture`, request still succeeds)
-1. `error`
-2. `warn`
-
 **Stack traces**
 1. Never.
 2. Outside production only.
@@ -40,18 +43,13 @@ Ask the user to select one for each:
 2. Give error classes a `status` (such as 402 for a declined payment). This changes
    what the API returns, so confirm each class with the user.
 
-Stop. The level and stack choices become constants in Step 3.
-
-Whatever is chosen: a 5xx is always `error`, a success at or over `SLOW_MS` is `warn`,
-any other success is `info`.
+Stop. The stack choice becomes a constant in Step 3.
 
 ## Step 3 — Constants
 Add to the constants file, with the selected values:
 
 ```ts
-export const CLIENT_ERROR_LEVEL: 'error' | 'warn' = 'error'   // 4xx
-export const HANDLED_ERROR_LEVEL: 'error' | 'warn' = 'error'  // log.capture() on a successful request
-export const LOG_STACK = ENV !== 'production'                 // never: false, always: true
+export const LOG_STACK = ENV !== 'production' // never: false, always: true
 export const MAX_VALIDATION_ISSUES = 5
 ```
 
@@ -94,10 +92,65 @@ Why each line is there:
 - A validation error's `message` is a JSON string and its `value` is the submitted
   body, which can hold passwords. The issues list replaces both.
 
-## Step 5 — Levels and `log.capture` in the request event
+## Step 5 — Level
+Add a level file next to the request event file (propose the path if the Layout
+doesn't list one):
+
+```ts
+import { SLOW_MS } from '<constants path>'
+
+export type Level = 'info' | 'warn' | 'error'
+
+type LevelInput = {
+  /** The status the client received. */
+  status: number
+  /** How long the request took. */
+  durationMs: number
+  /** An error was recorded with log.capture() and the request carried on. */
+  handledError: boolean
+}
+
+/**
+ * How did this request go?
+ * - error: it didn't do what was asked (any 4xx or 5xx)
+ * - warn:  it worked, but not cleanly (an error was handled, or it was slow)
+ * - info:  it worked cleanly
+ */
+export function levelFor({ status, durationMs, handledError }: LevelInput): Level {
+  if (status >= 400) return 'error'
+  if (handledError) return 'warn'
+  if (durationMs >= SLOW_MS) return 'warn'
+  return 'info'
+}
+```
+
+And its test, next to it, following the codebase's test naming:
+
+```ts
+import { expect, test } from 'bun:test'
+import { SLOW_MS } from '<constants path>'
+import { levelFor } from '<level path>'
+
+const cases = [
+  { status: 200, durationMs: 5, handledError: false, expected: 'info', why: 'clean success' },
+  { status: 302, durationMs: 5, handledError: false, expected: 'info', why: 'redirect' },
+  { status: 200, durationMs: SLOW_MS, handledError: false, expected: 'warn', why: 'slow (at threshold)' },
+  { status: 200, durationMs: 5, handledError: true, expected: 'warn', why: 'handled error' },
+  { status: 404, durationMs: 5, handledError: false, expected: 'error', why: 'not found' },
+  { status: 422, durationMs: 5, handledError: false, expected: 'error', why: 'validation' },
+  { status: 402, durationMs: SLOW_MS * 2, handledError: true, expected: 'error', why: 'failure wins over slow and handled' },
+  { status: 500, durationMs: 5, handledError: false, expected: 'error', why: 'server error' },
+] as const
+
+for (const { expected, why, ...input } of cases) {
+  test(`${input.status} ${why} → ${expected}`, () => expect(levelFor(input)).toBe(expected))
+}
+```
+
+## Step 6 — Use them in the request event
 In the request event file:
 
-1. Import `errorFields` and the level constants.
+1. Import `errorFields` and `levelFor`.
 2. Add a `handled` flag and a `capture` method next to `add`:
 
    ```ts
@@ -114,12 +167,7 @@ In the request event file:
 
    ```ts
    const duration_ms = Math.round(performance.now() - start)
-   const level =
-     status >= 500 ? 'error'
-     : status >= 400 ? CLIENT_ERROR_LEVEL
-     : fields.error ? (handled ? HANDLED_ERROR_LEVEL : 'error')
-     : duration_ms >= SLOW_MS ? 'warn'
-     : 'info'
+   const level = levelFor({ status, durationMs: duration_ms, handledError: handled })
    logger[level]({ …same fields as before…, duration_ms })
    ```
 
@@ -127,10 +175,10 @@ In the request event file:
 5. In `onError`, use `errorFields(error, String(code))` in both places, taking `code`
    from the hook's context.
 
-The request event file grows to about 80 lines with these changes. That is expected
+The request event file grows to about 75 lines with these changes. That is expected
 for this file: do not split it unless the user asks.
 
-## Step 6 — Use it in app code
+## Step 7 — Use it in app code
 **Domain errors explain themselves.** Error classes carry what a reader needs:
 
 ```ts
@@ -169,7 +217,7 @@ with `details`, and a handled error on a successful request. For example:
 
 `{"level":"error","flow":"sign_up","status_code":422,"error":{"name":"ValidationError","message":"invalid body","code":"VALIDATION","details":{"on":"body","issues":[{"path":"/email","summary":"Property 'email' should be email"}]}},…}`
 
-- Levels follow the selected rules.
+- The level test passes, and each line's level matches the table in the Goal.
 - A domain error's `status_code` matches the selected status choice.
 - No submitted value (such as a password) appears in any validation error.
 Stop. Show the diff and the lines.
